@@ -25,12 +25,34 @@ int KYTY_SYSV_ABI PthreadJoin(Pthread thread, void**) {
 	delete thread;
 	return 0;
 }
+Pthread PthreadSelfOrNull() { return nullptr; }
+Pthread PthreadSwapSelfForSignal(Pthread p) { return p; }
 namespace FileSystem {
 std::filesystem::path GetRealFilename(const std::string& path) {
 	return path.starts_with("/app0/") ? content_root / path.substr(6) : std::filesystem::path {};
 }
 }
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+namespace Memory {
+uint64_t AllocateRuntimeMemory(uint64_t, uint64_t, Common::VirtualMemory::Mode, const char*, bool) { return 0; }
+bool FreeGuestMemory(uint64_t, uint64_t) { return true; }
 }
+#endif
+}
+
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+namespace Loader {
+uint64_t RuntimeLinker::GetMainTlsBase() { return 0; }
+namespace Fex {
+FexHleBridge& FexHleBridge::Instance() { return *reinterpret_cast<FexHleBridge*>(0x1000); }
+uint64_t FexHleBridge::GetHltAddress() { return 0; }
+FexGuestEngine& FexGuestEngine::Instance() { return *reinterpret_cast<FexGuestEngine*>(0x1000); }
+GuestThreadState* FexGuestEngine::CreateThread(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) { return nullptr; }
+uint64_t FexGuestEngine::Run(GuestThreadState*, bool) { return 0; }
+void FexGuestEngine::DestroyThread(GuestThreadState*) {}
+}
+}
+#endif
 
 namespace {
 using namespace Libs::Audio::AvPlayer;

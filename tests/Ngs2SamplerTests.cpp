@@ -8,6 +8,10 @@
 
 using namespace Libs::Audio::Ngs2;
 
+namespace Libs::LibKernel::Memory {
+bool IsInitialized() { return false; }
+}
+
 namespace {
 
 void Check(bool condition, const char* message) {

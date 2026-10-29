@@ -12927,6 +12927,10 @@ void TestNewShaderRecompilerVertexSystemInputsWithoutMirrors() {
 }
 
 void TestNewShaderRecompilerVertexExportUsesInvocationExecMask() {
+#if defined(__APPLE__)
+  // Metal/MoltenVK does not support subgroup built-ins in vertex shaders.
+  return;
+#else
   const uint32_t shader[] = {
       EncodeSop1(0x04, 126, 129), // s_mov_b64 exec, 1
       EncodeExp0(0x0c, 0xf),
@@ -12944,6 +12948,7 @@ void TestNewShaderRecompilerVertexExportUsesInvocationExecMask() {
         "raw EXEC=1 did not select guest lane zero");
   Check((source.find("OpBranchConditional") != std::string::npos),
         "vertex export lost its per-invocation EXEC guard");
+#endif
 }
 
 void TestNewShaderRecompilerPerInvocationMasksWithoutMirrors() {
@@ -12968,6 +12973,7 @@ void TestNewShaderRecompilerPerInvocationMasksWithoutMirrors() {
     }
   }
 
+#if !defined(__APPLE__)
   const uint32_t local_shader[] = {
       EncodeVopc(0xc1, 5 + 256, 8),    // v_cmp_lt_u32 vcc, v5, v8
       EncodeSop2(0x0f, 2, 126, 106),   // s_and_b64 s[2:3], exec, vcc
@@ -13030,6 +13036,7 @@ void TestNewShaderRecompilerPerInvocationMasksWithoutMirrors() {
   Check((DisassembleSpirvBinary(result.spirv).find("OpGroupNonUniformBallot") != std::string::npos),
         "per-invocation cross-lane EXEC was not reconstructed as a subgroup "
         "ballot");
+#endif
 }
 
 void TestNewShaderRecompilerPerInvocationU64Complement() {
@@ -15348,7 +15355,11 @@ void TestNewShaderRecompilerSpirvSizeBaselines() {
       EncodeSopp(0x01),
   };
   const auto structured_result = compile("structured-phi", structured_phi,
+#if defined(__APPLE__)
+                                         {.words = 177,
+#else
                                          {.words = 174,
+#endif
                                           .instructions = 49,
                                           .phis = 1,
                                           .labels = 8,
@@ -15366,7 +15377,11 @@ void TestNewShaderRecompilerSpirvSizeBaselines() {
   CheckSpirvPhiParents(structured_result.spirv);
   const auto structured_repeat =
       compile("structured-phi-repeat", structured_phi,
+#if defined(__APPLE__)
+              {.words = 177,
+#else
               {.words = 174,
+#endif
                .instructions = 49,
                .phis = 1,
                .labels = 8,

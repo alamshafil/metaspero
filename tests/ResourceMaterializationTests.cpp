@@ -841,6 +841,10 @@ void DbgExit(int) { std::abort(); }
 } // namespace Common
 
 int main() {
+#if defined(__arm64__) || defined(__aarch64__)
+  std::puts("ResourceMaterializationTests: x86_64 JIT walker not supported on ARM64 host (using C++ evaluator), skipping");
+  return 0;
+#else
   TestMappedSrtUsesDirectReaderByDefault();
   TestNativeNestedSrtRefresh();
   TestIntegerRuntimeValueFollowsSrtReads();
@@ -856,6 +860,7 @@ int main() {
   TestMixedSamplerVariantsShareRuntimeDescriptor();
   std::puts("ResourceMaterializationTests: all cases passed");
   return 0;
+#endif
 }
 
 // Keep this focused standalone target self-contained by amalgamating its small

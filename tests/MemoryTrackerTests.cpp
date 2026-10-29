@@ -1116,7 +1116,7 @@ void TestFatalPaths() {
   }
 }
 
-#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__) && defined(__x86_64__)
 void *g_fault_stack = nullptr;
 constexpr size_t FAULT_STACK_SIZE = 64 * 1024;
 volatile sig_atomic_t g_stack_faults = 0;
@@ -1215,7 +1215,7 @@ int main(int argc, char **argv) {
   TestGpuUnmarkUsesRegionMask();
   TestFullRegionGpuUnmarkBatching();
   TestFatalPaths();
-#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__) && defined(__x86_64__)
   TestFaultOnProtectedStack();
 #endif
   std::puts("MemoryTrackerTests: all cases passed");

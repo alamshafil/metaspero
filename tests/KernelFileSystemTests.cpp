@@ -1762,6 +1762,18 @@ void CheckSocketWakeup() {
                    address.data(), address_size) == sizeof(payload) &&
             *net_errno == Libs::Posix::POSIX_EINVAL,
         "Net sendto delivers to a guest sockaddr and preserves errno on success");
+#if defined(__APPLE__)
+  auto wait_datagram = [&] {
+    std::array<uint64_t, 16> datagram_readable {};
+    const auto d_bit = uint64_t {1} << (datagram % 64);
+    datagram_readable[datagram / 64] = d_bit;
+    const std::array<int64_t, 2> d_deadline {1, 0};
+    Check(Net::Select(datagram + 1, datagram_readable.data(), nullptr, nullptr,
+                      d_deadline.data()) == 1 && datagram_readable[datagram / 64] == d_bit,
+          "select reports the datagram descriptor after UDP sendto");
+  };
+  wait_datagram();
+#endif
   Check(net_recvfrom(datagram, received.data(), received.size(), 0,
                      peer.data(), &peer_size) == sizeof(payload) &&
             std::memcmp(received.data(), payload, sizeof(payload)) == 0 &&
@@ -1773,6 +1785,17 @@ void CheckSocketWakeup() {
             *net_errno == Libs::Posix::POSIX_EWOULDBLOCK,
         "Net recvfrom translates nonblocking failure with an omitted sender address");
   *net_errno = Libs::Posix::POSIX_EINVAL;
+#if defined(__APPLE__)
+  Check(net_connect(datagram_writer, address.data(), address_size) == 0 &&
+            *net_errno == Libs::Posix::POSIX_EINVAL &&
+            net_sendto(datagram_writer, payload, sizeof(payload), 0, nullptr, 0) ==
+                sizeof(payload) && *net_errno == Libs::Posix::POSIX_EINVAL,
+        "Net connect selects the peer used by sendto with an omitted destination");
+  wait_datagram();
+  Check(net_recvfrom(datagram, received.data(), received.size(), 0, nullptr, nullptr) ==
+            sizeof(payload) && std::memcmp(received.data(), payload, sizeof(payload)) == 0,
+        "Net recvfrom receives connected datagram bytes");
+#else
   Check(net_connect(datagram_writer, address.data(), address_size) == 0 &&
             *net_errno == Libs::Posix::POSIX_EINVAL &&
             net_sendto(datagram_writer, payload, sizeof(payload), 0, nullptr, 0) ==
@@ -1780,6 +1803,7 @@ void CheckSocketWakeup() {
             net_recvfrom(datagram, received.data(), received.size(), 0, nullptr, nullptr) ==
                 sizeof(payload) && std::memcmp(received.data(), payload, sizeof(payload)) == 0,
         "Net connect selects the peer used by sendto with an omitted destination");
+#endif
   Check(net_connect(-1, address.data(), address_size) == Libs::Network::NET_ERROR_EBADF &&
             *net_errno == Libs::Posix::POSIX_EBADF,
         "Net connect translates an invalid socket");

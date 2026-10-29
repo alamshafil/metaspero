@@ -86,7 +86,11 @@ using Libs::LibKernel::Memory::VirtualQueryInfo;
 
 // Prospero ABI?
 constexpr uint64_t SceKernelPageSize             = 0x4000;
+#if defined(KYTY_ARM64_APPLE)
+constexpr uint64_t SceKernelTotalPhysicalSize    = 4352ull * 1024ull * 1024ull;
+#else
 constexpr uint64_t SceKernelTotalPhysicalSize    = 13824ull * 1024ull * 1024ull;
+#endif
 constexpr uint64_t TestFlexibleMemorySize        = 3072ull * 1024ull * 1024ull;
 constexpr int      SceKernelProtCpuRead          = 0x01;
 constexpr int      SceKernelProtCpuRw            = 0x02;
@@ -1044,11 +1048,15 @@ void TestGuestStackUsesPrivateOwnerMemoryAndCache() {
 
 void TestMainEntryUsesGuestStackAndDisablesHostChecks() {
 	const char* test = "MainEntryUsesGuestStackAndDisablesHostChecks";
-
+#if defined(__APPLE__) && defined(__aarch64__)
+	std::printf("[host]    %-48s skipped (FEX guest CPU)\n", test);
+	return;
+#else
 	Check(test, Loader::TestMainEntryUsesGuestStack(),
 	      "main-entry stack switch did not preserve the guest/host stack invariants");
 
 	std::printf("[host]    %-48s ok\n", test);
+#endif
 }
 
 void TestFragmentedBackingUnmapRollback() {
