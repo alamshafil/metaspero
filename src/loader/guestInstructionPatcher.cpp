@@ -48,6 +48,7 @@ using s64 = int64_t;
 
 constexpr size_t NearJumpSize = 5;
 
+#if !defined(KYTY_ENABLE_FEX_GUEST_CPU) && !defined(__arm64__) && !defined(__aarch64__)
 struct PatchModule {
 	std::mutex           mutex {};
 	u8*                  start = nullptr;
@@ -73,6 +74,7 @@ static PatchModule* GetContainingModule(const void* ptr) {
 	auto* address = static_cast<const u8*>(ptr);
 	return address >= module->start && address < module->end ? module : nullptr;
 }
+
 
 static bool HandleTrampolineError(PatchModule* module, int error) {
 	if (error != Xbyak::ERR_CODE_IS_TOO_BIG) {
@@ -1477,8 +1479,12 @@ void RelocateGuestInstructions(PatchModule* module, const DecodedFunction& funct
 	}
 }
 } // namespace
+#endif // !defined(KYTY_ENABLE_FEX_GUEST_CPU) && !defined(__arm64__) && !defined(__aarch64__)
 
 GuestInstructionHostFeatures GetGuestInstructionHostFeatures() {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU) || defined(__arm64__) || defined(__aarch64__)
+	return GuestInstructionHostFeatures {true, true, true};
+#else
 	static const auto features = [] {
 		const Xbyak::util::Cpu cpu;
 		uint32_t               leaf[4] {};
@@ -1492,6 +1498,7 @@ GuestInstructionHostFeatures GetGuestInstructionHostFeatures() {
 		                                     cpu.has(Xbyak::util::Cpu::tCLWB)};
 	}();
 	return features;
+#endif
 }
 
 GuestInstructionPatchResult PatchGuestInstructions(u64 segment_addr, u64 segment_size,
@@ -1499,6 +1506,9 @@ GuestInstructionPatchResult PatchGuestInstructions(u64 segment_addr, u64 segment
                                                    bool protect_memory, bool emulate_amd,
                                                    GuestInstructionHostFeatures host_features) {
 	GuestInstructionPatchResult result {};
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU) || defined(__arm64__) || defined(__aarch64__)
+	return result;
+#else
 	if (!protect_memory && !emulate_amd) {
 		return result;
 	}
@@ -1565,6 +1575,7 @@ GuestInstructionPatchResult PatchGuestInstructions(u64 segment_addr, u64 segment
 		Common::VirtualMemory::FlushInstructionCache(trampoline_addr, trampoline_size);
 	}
 	return result;
+#endif
 }
 
 namespace {
@@ -1744,6 +1755,13 @@ bool DecodeEhFrameFunctionStarts(uint64_t eh_frame_header_addr, uint64_t eh_fram
 
 void RegisterGuestInstructionPatchModule(void* module_ptr, uint64_t module_size,
                                          void* trampoline_area_ptr, uint64_t trampoline_area_size) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU) || defined(__arm64__) || defined(__aarch64__)
+	(void)module_ptr;
+	(void)module_size;
+	(void)trampoline_area_ptr;
+	(void)trampoline_area_size;
+	return;
+#else
 	EXIT_IF(module_ptr == nullptr || module_size == 0 || trampoline_area_ptr == nullptr ||
 	        trampoline_area_size == 0);
 	const auto module_addr = reinterpret_cast<u64>(module_ptr);
@@ -1752,12 +1770,31 @@ void RegisterGuestInstructionPatchModule(void* module_ptr, uint64_t module_size,
 	                        std::forward_as_tuple(static_cast<u8*>(module_ptr), module_size,
 	                                              static_cast<u8*>(trampoline_area_ptr),
 	                                              trampoline_area_size));
+#endif
 }
 
 void UnregisterGuestInstructionPatchModule(void* module_ptr) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU) || defined(__arm64__) || defined(__aarch64__)
+	(void)module_ptr;
+	return;
+#else
 	g_patch_modules.erase(reinterpret_cast<u64>(module_ptr));
+#endif
 }
 
+uint64_t GetGuestInstructionTrampolineBytesUsed(void* module_ptr) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU) || defined(__arm64__) || defined(__aarch64__)
+	(void)module_ptr;
+	return 0;
+#else
+	const auto found = g_patch_modules.find(reinterpret_cast<u64>(module_ptr));
+	if (found == g_patch_modules.end()) {
+		return 0;
+	}
+	// Keep whatever follows 16-byte aligned, like the code the patcher emits.
+	return (found->second.trampoline_gen.getSize() + 15u) & ~static_cast<uint64_t>(15u);
+#endif
+}
 #undef ASSERT
 
 } // namespace Loader

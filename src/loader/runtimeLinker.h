@@ -171,7 +171,12 @@ public:
 	void Resolve(const std::string& name, SymbolType type, Program* program, SymbolRecord* out_info,
 	             bool* bind_self);
 
-	SymbolDatabase* Symbols() { return m_symbols.get(); }
+	SymbolDatabase* Symbols() {
+		if (!m_symbols) {
+			m_symbols = std::make_unique<SymbolDatabase>();
+		}
+		return m_symbols.get();
+	}
 
 	static uint64_t ReadFromElf(Program* program, uint64_t vaddr);
 	Program*        FindProgramByAddr(uint64_t vaddr);
@@ -180,6 +185,7 @@ public:
 
 	static uint8_t* TlsGetAddr(Program* program);
 	static void     DeleteTls(Program* program, int thread_id);
+	static uint64_t GetMainTlsBase();
 
 	void StackTrace(uint64_t frame_ptr, uint64_t stack_ptr);
 

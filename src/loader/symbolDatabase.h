@@ -4,6 +4,7 @@
 #include "common/abi.h"
 #include "common/common.h"
 #include "common/stringUtils.h"
+#include "loader/fex/fexHleBridge.h"
 
 #include <unordered_map>
 #include <vector>
@@ -40,7 +41,13 @@ public:
 	virtual ~SymbolDatabase() = default;
 
 	void Add(const SymbolResolve& s, uint64_t vaddr);
-	void Add(const SymbolResolve& s, uint64_t vaddr, const std::string& dbg_name);
+	void Add(const SymbolResolve& s, uint64_t vaddr, const std::string& dbg_name,
+	         Fex::HleDescriptor desc = {});
+
+	template <typename F>
+	void AddFunction(const SymbolResolve& s, F func, const std::string& dbg_name) {
+		Add(s, reinterpret_cast<uint64_t>(func), dbg_name, Fex::MakeHleDescriptor(func));
+	}
 
 	[[nodiscard]] const SymbolRecord* Find(const SymbolResolve& s) const;
 	[[nodiscard]] const SymbolRecord* FindByNid(const std::string& nid, SymbolType type,

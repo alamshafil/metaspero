@@ -5,6 +5,12 @@
 #include <fmt/format.h>
 #include <magic_enum.hpp>
 
+#ifdef __APPLE__
+#include <dlfcn.h>
+#endif
+
+#include "loader/fex/fexHleBridge.h"
+
 namespace Loader {
 
 constexpr char LIB_PREFIX[] = "libSce";
@@ -29,7 +35,22 @@ void SymbolDatabase::Add(const SymbolResolve& s, uint64_t vaddr) {
 	m_symbols.push_back(r);
 }
 
-void SymbolDatabase::Add(const SymbolResolve& s, uint64_t vaddr, const std::string& dbg_name) {
+void SymbolDatabase::Add(const SymbolResolve& s, uint64_t vaddr, const std::string& dbg_name,
+                         Fex::HleDescriptor desc) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	if (s.type == SymbolType::Func && vaddr != 0) {
+#if defined(__APPLE__)
+		Dl_info dli {};
+		if (dladdr(reinterpret_cast<void*>(vaddr), &dli) != 0 && dli.dli_fname != nullptr) {
+			vaddr = Loader::Fex::FexHleBridge::Instance().RegisterFunction(
+			    vaddr, dbg_name.empty() ? s.name : dbg_name, Fex::ThunkSignature::Auto, desc);
+		}
+#else
+		vaddr = Loader::Fex::FexHleBridge::Instance().RegisterFunction(
+		    vaddr, dbg_name.empty() ? s.name : dbg_name, Fex::ThunkSignature::Auto, desc);
+#endif
+	}
+#endif
 	SymbolRecord r {};
 	r.name     = GenerateName(s);
 	r.vaddr    = vaddr;

@@ -11,6 +11,7 @@
 #include "common/subsystems.h"
 #include "common/systemInfo.h"
 #include "common/threads.h"
+#include "common/virtualMemory.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/window.h"
 #include "kernel/fileSystem.h"
@@ -22,9 +23,14 @@
 #include "libs/controller.h"
 #include "libs/libs.h"
 #include "libs/network.h"
+#include "common/hostException.h"
 #include "loader/runtimeLinker.h"
 #include "loader/systemContent.h"
 #include "loader/timer.h"
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+#include "loader/fex/fexGuestEngine.h"
+#include "loader/fex/fexHleBridge.h"
+#endif
 
 #include <cstdlib>
 #include <filesystem>
@@ -180,11 +186,19 @@ static void Execute(const std::filesystem::path& game_patch) {
 		    rt->Execute(*static_cast<const std::filesystem::path*>(param));
 	    },
 	    &patch_path);
+	guest_thread.Detach();
 	Libs::Graphics::WindowRun();
+	Common::HostException::SetEmulationShuttingDown(true);
+#if !defined(__APPLE__)
 	std::quick_exit(0);
+#endif
 }
 
 void Run(const RunOptions& options) {
+	Common::HostException::SetEmulationShuttingDown(false);
+	Common::VirtualMemory::Init();
+	Common::InitializeThreads();
+
 	if (options.app0_dir.empty()) {
 		EXIT("app0 directory is required\n");
 	}
@@ -205,12 +219,16 @@ void Run(const RunOptions& options) {
 		Log::WriteToConsoleAndLog(fmt::format("Title ID: {}\n", title_id));
 	}
 
-	int ok = atexit(KytyClose);
-	EXIT_NOT_IMPLEMENTED(ok != 0);
+	static bool s_atexit_registered = false;
+	if (!s_atexit_registered) {
+		int ok = atexit(KytyClose);
+		EXIT_NOT_IMPLEMENTED(ok != 0);
 
-	// Guest threads are still running, so skip KytyClose() and only flush emergency state.
-	ok = at_quick_exit(Common::Subsystems::EmergencyShutdownActive);
-	EXIT_NOT_IMPLEMENTED(ok != 0);
+		// Guest threads are still running, so skip KytyClose() and only flush emergency state.
+		ok = at_quick_exit(Common::Subsystems::EmergencyShutdownActive);
+		EXIT_NOT_IMPLEMENTED(ok != 0);
+		s_atexit_registered = true;
+	}
 
 	Libs::LibKernel::FileSystem::Mount(options.app0_dir, "/app0");
 	Libs::LibKernel::FileSystem::Mount(options.app0_dir, "/hostapp");
@@ -218,11 +236,23 @@ void Run(const RunOptions& options) {
 	MountSandboxDirs();
 
 	auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
+	rt->Clear();
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	Loader::Fex::FexHleBridge::Instance().Reset();
+#endif
 	Libs::InitAll(rt->Symbols());
 
 	LoadElf(options.elf);
 
 	Execute(options.game_patch);
+
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	Loader::Fex::FexGuestEngine::Instance().StopAllThreads();
+#endif
+	rt->Clear();
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	Loader::Fex::FexHleBridge::Instance().Reset();
+#endif
 }
 
 } // namespace Emulator

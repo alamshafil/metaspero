@@ -1,5 +1,7 @@
 #include "loader/x64InstructionEmulator.h"
 
+#if defined(__x86_64__) || defined(_M_X64)
+
 #include "common/common.h"
 
 #include <Zydis/Zydis.h>
@@ -823,3 +825,15 @@ bool TryEmulate(void* native_context) {
 }
 
 } // namespace Loader::X64InstructionEmulator
+
+#else // !defined(__x86_64__) && !defined(_M_X64)
+
+namespace Loader::X64InstructionEmulator {
+
+bool TryEmulate(void* native_context) {
+	return false;
+}
+
+} // namespace Loader::X64InstructionEmulator
+
+#endif

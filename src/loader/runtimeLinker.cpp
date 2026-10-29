@@ -21,10 +21,14 @@
 #include "loader/guestInstructionPatcher.h"
 #include "loader/jit.h"
 #include "loader/symbolDatabase.h"
+#include "loader/systemContent.h"
 #include "loader/x64InstructionEmulator.h"
+#include "loader/fex/fexGuestEngine.h"
+#include "loader/fex/fexHleBridge.h"
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -32,6 +36,8 @@
 #include <fmt/format.h>
 #include <magic_enum.hpp>
 #include <memory>
+#include <string>
+#include <thread>
 #include <vector>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -40,9 +46,15 @@
 #endif
 #include <windows.h>
 #else
+#include <dlfcn.h>
+#include <unistd.h>
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <mach/mach.h>
+#if !TARGET_OS_IPHONE
 #include <mach/mach_vm.h>
+#endif
+#include <sys/sysctl.h>
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 #include <sys/uio.h>
 #include <unistd.h>
@@ -139,8 +151,13 @@ static uint64_t AllocateUnresolvedImportThunk(uint64_t record_id) {
 	if (g_unresolved_stub_thunk_pages.empty() ||
 	    g_unresolved_stub_thunk_offset + thunk_size > UNRESOLVED_STUB_PAGE_SIZE) {
 		auto page = Libs::LibKernel::Memory::AllocateRuntimeMemory(
-		    0, UNRESOLVED_STUB_PAGE_SIZE, Common::VirtualMemory::Mode::ExecuteReadWrite,
-		    "unresolved_import_thunk");
+		    0x800000000ull, UNRESOLVED_STUB_PAGE_SIZE,
+		    Common::VirtualMemory::Mode::ExecuteReadWrite, "unresolved_import_thunk");
+		if (page == 0) {
+			page = Libs::LibKernel::Memory::AllocateRuntimeMemory(
+			    0, UNRESOLVED_STUB_PAGE_SIZE, Common::VirtualMemory::Mode::ExecuteReadWrite,
+			    "unresolved_import_thunk");
+		}
 		EXIT_NOT_IMPLEMENTED(page == 0);
 		g_unresolved_stub_thunk_pages.push_back(page);
 		g_unresolved_stub_thunk_offset = 0;
@@ -159,7 +176,12 @@ static uint64_t AllocateUnresolvedImportThunk(uint64_t record_id) {
 	    0x0f, 0x57, 0xc0,                     // xorps xmm0, xmm0
 	    0xc3,                                 // ret
 	};
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	const auto target = Loader::Fex::FexHleBridge::Instance().RegisterFunction(
+	    reinterpret_cast<uint64_t>(UnresolvedImportStub), "UnresolvedImportStub");
+#else
 	const auto target = reinterpret_cast<uint64_t>(UnresolvedImportStub);
+#endif
 	std::memcpy(bytes + 6, &record_id, sizeof(record_id));
 	std::memcpy(bytes + 16, &target, sizeof(target));
 	std::memcpy(code, bytes, sizeof(bytes));
@@ -205,6 +227,7 @@ static KYTY_SYSV_ABI uint64_t UnresolvedImportStub(uint64_t record_id) {
 			LOGF("Unresolved import stub called [%u]: record_id=%" PRIu64 " symbol=<bad-record>\n",
 			     log_index, record_id);
 		}
+		std::fflush(stdout);
 	}
 	return 0;
 }
@@ -219,12 +242,36 @@ static uint64_t g_desired_base_addr = SYSTEM_RESERVED + CODE_BASE_OFFSET;
 static uint64_t g_invalid_memory    = 0;
 
 static Program*              g_tls_main_program        = nullptr;
+static Program*              g_primary_tls_program     = nullptr;
 static thread_local Program* g_tls_cached_main_program = nullptr;
 static thread_local uint8_t* g_tls_cached_main_tcb     = nullptr;
+static std::atomic<uint64_t> g_linker_session_id {1};
 
 static KYTY_SYSV_ABI void RunEntry(uint64_t addr, EntryParams* params, atexit_func_t atexit_func,
                                    void* stack_top) {
-#if defined(__x86_64__) || defined(_M_X64)
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	uint64_t fex_rsp = reinterpret_cast<uint64_t>(stack_top) & ~0xFull;
+	fex_rsp -= 8;
+	*reinterpret_cast<uint64_t*>(fex_rsp) = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
+
+	uint64_t fs_base = RuntimeLinker::GetMainTlsBase();
+
+	std::printf("[RunEntry] Starting main program entry at 0x%016llx (RSP=0x%016llx, FS_BASE=0x%016llx)...\n",
+	            (unsigned long long)addr, (unsigned long long)fex_rsp, (unsigned long long)fs_base);
+	std::fflush(stdout);
+
+	auto* thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
+	    addr, fex_rsp,
+	    reinterpret_cast<uint64_t>(params),
+	    reinterpret_cast<uint64_t>(atexit_func),
+	    0, fs_base);
+	if (thread != nullptr) {
+		Loader::Fex::FexGuestEngine::Instance().Run(thread);
+		Loader::Fex::FexGuestEngine::Instance().DestroyThread(thread);
+	}
+	std::printf("[RunEntry] Main program entry execution finished.\n");
+	std::fflush(stdout);
+#elif defined(__x86_64__) || defined(_M_X64)
 	auto* func = reinterpret_cast<entry_func_t>(addr);
 
 	if (stack_top != nullptr) {
@@ -376,6 +423,7 @@ struct MainEntryStackTestState {
 static KYTY_SYSV_ABI void TestMainEntryStackCallback(EntryParams* params,
                                                      atexit_func_t /*atexit_func*/) {
 	auto* state = reinterpret_cast<MainEntryStackTestState*>(const_cast<char*>(params->argv[0]));
+#if defined(__x86_64__)
 	asm volatile("pushq %%r15\n\t"
 	             "pushq %%r14\n\t"
 	             "popq %%r14\n\t"
@@ -384,6 +432,13 @@ static KYTY_SYSV_ABI void TestMainEntryStackCallback(EntryParams* params,
 	             :
 	             : "memory");
 	asm volatile("movq %%rsp, %0" : "=r"(state->rsp) : : "memory");
+#elif defined(__aarch64__)
+	uint64_t current_sp = 0;
+	asm volatile("mov %0, sp" : "=r"(current_sp));
+	state->rsp = current_sp;
+#else
+	state->rsp = 0;
+#endif
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	asm volatile("movq %%gs:0x08, %0\n\t"
 	             "movq %%gs:0x10, %1\n\t"
@@ -600,6 +655,28 @@ static bool IsReadableRange(uint64_t addr, uint64_t size) {
 		current = std::min(region_end, end);
 	}
 #elif defined(__APPLE__)
+#if TARGET_OS_IPHONE
+	// Walk the Mach regions covering the range and require read permission.
+	uint64_t current = addr;
+	while (current < end) {
+		vm_address_t                   region_addr = static_cast<vm_address_t>(current);
+		vm_size_t                      region_size = 0;
+		vm_region_basic_info_data_64_t info {};
+		mach_msg_type_number_t         count       = VM_REGION_BASIC_INFO_COUNT_64;
+		mach_port_t                    object_name = MACH_PORT_NULL;
+		kern_return_t kr = vm_region_64(mach_task_self(), &region_addr, &region_size,
+		                                VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info),
+		                                &count, &object_name);
+		if (kr != KERN_SUCCESS || region_addr > current || (info.protection & VM_PROT_READ) == 0) {
+			return false;
+		}
+		if (region_size == 0) {
+			return false;
+		}
+		current = region_addr + region_size;
+	}
+	return true;
+#else
 	// Walk the Mach regions covering the range and require read permission. The fatal
 	// report dumps memory behind raw register values, and a fault inside the reporter
 	// re-enters the signal handler and wedges the reporting thread.
@@ -618,6 +695,7 @@ static bool IsReadableRange(uint64_t addr, uint64_t size) {
 		}
 		current = region_addr + region_size;
 	}
+#endif
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 	const auto page_size = static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
 	if (page_size == 0) {
@@ -668,47 +746,9 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
 			return true;
 		}
+		return false;
 	}
-	// Report whatever guest context can be read safely before terminating: which guest thread
-	// faulted, the register file, the faulting code bytes and the top of its stack.
-	{
-		char thread_name[64] = "(host thread)";
-		if (auto self = Libs::LibKernel::PthreadSelfOrNull(); self != nullptr) {
-			if (Libs::LibKernel::PthreadGetname(self, thread_name) != 0) {
-				std::snprintf(thread_name, sizeof(thread_name), "(unnamed guest thread)");
-			}
-		}
-		std::printf("--- Guest fault context ---\n");
-		std::printf("thread: %s\n", thread_name);
-		std::printf("rax=%016" PRIx64 " rbx=%016" PRIx64 " rcx=%016" PRIx64 " rdx=%016" PRIx64 "\n"
-		            "rsi=%016" PRIx64 " rdi=%016" PRIx64 " rbp=%016" PRIx64 " rsp=%016" PRIx64 "\n"
-		            "r8 =%016" PRIx64 " r9 =%016" PRIx64 " r10=%016" PRIx64 " r11=%016" PRIx64 "\n"
-		            "r12=%016" PRIx64 " r13=%016" PRIx64 " r14=%016" PRIx64 " r15=%016" PRIx64 "\n",
-		            info->rax, info->rbx, info->rcx, info->rdx, info->rsi, info->rdi, info->rbp,
-		            info->rsp, info->r8, info->r9, info->r10, info->r11, info->r12, info->r13,
-		            info->r14, info->r15);
-		if (IsReadableRange(info->exception_address - 48, 96)) {
-			const auto* code = reinterpret_cast<const uint8_t*>(info->exception_address - 48);
-			std::printf("code (pc-48 .. pc+48, fault at byte 48):");
-			for (int i = 0; i < 96; i++) {
-				std::printf("%s%02x", (i % 16 == 0) ? "\n " : " ", code[i]);
-			}
-			std::printf("\n");
-		}
-		if (IsReadableRange(info->rsp, 32 * sizeof(uint64_t))) {
-			const auto* stack = reinterpret_cast<const uint64_t*>(info->rsp);
-			std::printf("stack:");
-			for (int i = 0; i < 32; i++) {
-				std::printf("%s %016" PRIx64, (i % 4 == 0) ? "\n " : "", stack[i]);
-			}
-			std::printf("\n");
-		}
-		std::fflush(stdout);
-	}
-	EXIT("Unhandled host exception: type=%u code=%u pc=0x%016" PRIx64
-	     " access=%u address=0x%016" PRIx64 "\n",
-	     static_cast<unsigned>(info->type), info->native_code, info->exception_address,
-	     static_cast<unsigned>(info->access_violation_type), info->access_violation_vaddr);
+	return false;
 }
 
 static void EncodeId64(uint16_t in_id, std::string* out_id) {
@@ -916,21 +956,24 @@ static void ForEachRelocation(Program* program, auto&& func) {
 }
 
 static KYTY_MS_ABI uint8_t* TlsMainGetAddr() {
-	EXIT_IF(g_tls_main_program == nullptr);
+	Program* prog = (g_primary_tls_program != nullptr) ? g_primary_tls_program : g_tls_main_program;
+	EXIT_IF(prog == nullptr);
 
-	if (g_tls_cached_main_program == g_tls_main_program && g_tls_cached_main_tcb != nullptr) {
+	if (g_tls_cached_main_program == prog && g_tls_cached_main_tcb != nullptr) {
 		return g_tls_cached_main_tcb;
 	}
 
-	g_tls_cached_main_program = g_tls_main_program;
-	g_tls_cached_main_tcb =
-	    RuntimeLinker::TlsGetAddr(g_tls_main_program) + g_tls_main_program->tls.tcb_offset;
+	g_tls_cached_main_program = prog;
+	const auto tcb_offset = prog->tls.tcb_offset != 0 ? prog->tls.tcb_offset : prog->tls.image_size;
+	g_tls_cached_main_tcb = RuntimeLinker::TlsGetAddr(prog) + tcb_offset;
 	return g_tls_cached_main_tcb;
 }
 
 static void PatchProgram(Program* program, uint64_t address, uint64_t size) {
 	EXIT_IF(program == nullptr);
 	EXIT_IF(program->elf == nullptr);
+
+
 
 	if (size >= 12) {
 		// Replace guest stack-canary/errno stores through fs:[0x28] with nops.
@@ -956,6 +999,38 @@ static void PatchProgram(Program* program, uint64_t address, uint64_t size) {
 		}
 	}
 
+#if defined(KYTY_ARM64_APPLE)
+	// On iOS/macOS Apple, force CoreCLR virtual GC arena calculation to 512 MB:
+	// Original 36-byte sequence starting at movabs rdx, 0x4000000000:
+	// 48 ba 00 00 00 00 40 00 00 00 48 d1 e9 48 01 c0 48 39 d0 48 0f 46 c2 48 39 c1 73 08 e8 1c 26 01 00 48 d1 e8
+	// Replaced with:
+	// b8 00 00 00 20 (mov eax, 0x20000000)
+	// eb 1d          (jmp +29 -> directly to rounding at 0x4aac7)
+	// 29 x 0x90      (nop)
+	if (size >= 36) {
+		const uint8_t gc_arena_256gb_pattern[10] = {0x48, 0xba, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00};
+		auto* start_ptr = reinterpret_cast<uint8_t*>(address);
+		auto* end_ptr   = start_ptr + size - 36;
+		for (auto* ptr = start_ptr; ptr <= end_ptr; ptr++) {
+			if (std::memcmp(ptr, gc_arena_256gb_pattern, sizeof(gc_arena_256gb_pattern)) == 0 &&
+			    ptr[10] == 0x48 && ptr[11] == 0xd1 && ptr[12] == 0xe9) {
+				std::printf("[PatchProgram] Found CoreCLR 256GB arena calculation at 0x%016llx, forcing arena to 512MB\n",
+				            reinterpret_cast<unsigned long long>(ptr));
+				std::fflush(stdout);
+				ptr[0] = 0xb8;
+				ptr[1] = 0x00;
+				ptr[2] = 0x00;
+				ptr[3] = 0x00;
+				ptr[4] = 0x20;
+				ptr[5] = 0xeb;
+				ptr[6] = 29;
+				std::memset(ptr + 7, 0x90, 29);
+			}
+		}
+	}
+#endif
+
+#if !defined(KYTY_ENABLE_FEX_GUEST_CPU)
 	if (!program->elf->IsShared() && program->tls.handler_vaddr != 0 &&
 	    size >= Jit::Call9::GetSize()) {
 		// Replace:
@@ -1005,6 +1080,7 @@ static void PatchProgram(Program* program, uint64_t address, uint64_t size) {
 			}
 		}
 	}
+#endif
 }
 
 uint64_t RuntimeLinker::GetEntry() {
@@ -1268,10 +1344,16 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 		}
 	}
 	if (libc != nullptr && libc->dynamic_info->init_vaddr != 0) {
-		StartModule(libc, 0, nullptr, nullptr);
+		std::printf("[RuntimeLinker] Initializing libc module...\n");
+		std::fflush(stdout);
+		int libc_res = StartModule(libc, 0, nullptr, nullptr);
+		std::printf("[RuntimeLinker] libc initialization completed with result %d\n", libc_res);
+		std::fflush(stdout);
 	}
 
-	LOGF_COLOR(Log::Color::BrightYellow, "---\n--- Execute: %s\n---\n", "Main");
+	std::printf("[RuntimeLinker] Starting Main program (entry=0x%llx)...\n",
+	            (unsigned long long)GetEntry());
+	std::fflush(stdout);
 
 	if (auto entry = GetEntry(); entry != 0) {
 		const auto& arguments = Config::GetGuestArguments();
@@ -1285,7 +1367,8 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 			params->argv[params->argc++] = argument.c_str();
 		}
 
-		LOGF("stack_addr = %" PRIx64 "\n", reinterpret_cast<uint64_t>(params));
+		std::printf("[RuntimeLinker] stack_addr = 0x%016llx\n", (unsigned long long)reinterpret_cast<uint64_t>(params));
+		std::fflush(stdout);
 
 		RunEntry(entry, params, ProgramExitHandler,
 		         reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(params) - 0x1000u));
@@ -1303,6 +1386,9 @@ void RuntimeLinker::Clear() {
 	}
 	m_programs.clear();
 	for (const auto page: g_unresolved_stub_thunk_pages) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+		Loader::Fex::FexGuestEngine::Instance().InvalidateCodeRange(page, UNRESOLVED_STUB_PAGE_SIZE);
+#endif
 		EXIT_IF(!Libs::LibKernel::Memory::FreeGuestMemory(page, UNRESOLVED_STUB_PAGE_SIZE));
 	}
 	g_unresolved_stub_thunk_pages.clear();
@@ -1314,9 +1400,11 @@ void RuntimeLinker::Clear() {
 		g_invalid_memory = 0;
 	}
 	g_tls_main_program        = nullptr;
+	g_primary_tls_program     = nullptr;
 	g_tls_cached_main_program = nullptr;
 	g_tls_cached_main_tcb     = nullptr;
 	g_desired_base_addr       = SYSTEM_RESERVED + CODE_BASE_OFFSET;
+	g_linker_session_id.fetch_add(1, std::memory_order_release);
 	m_symbols.reset();
 }
 
@@ -1549,8 +1637,69 @@ int RuntimeLinker::StartModule(Program* program, size_t args, const void* argp,
 	LOGF_COLOR(Log::Color::BrightYellow, "---\n--- Start module: %s\n---\n",
 	           Common::PathToString(program->file_name).c_str());
 
-	return reinterpret_cast<module_ini_fini_func_t>(program->dynamic_info->init_vaddr +
-	                                                program->base_vaddr)(args, argp, func);
+	const uint64_t entry_vaddr = program->dynamic_info->init_vaddr + program->base_vaddr;
+	if (entry_vaddr == 0 || program->dynamic_info->init_vaddr == 0) {
+		return 0;
+	}
+
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	constexpr uint64_t stack_size = 0x40000;
+	uint64_t stack_base = Libs::LibKernel::Memory::AllocateGuestStackMemory(
+	    0x00000007ea000000ULL, stack_size, Common::VirtualMemory::Mode::ReadWrite, "module_start_stack");
+	if (stack_base == 0) {
+		stack_base = Libs::LibKernel::Memory::AllocateGuestStackMemory(
+		    0, stack_size, Common::VirtualMemory::Mode::ReadWrite, "module_start_stack");
+	}
+	if (stack_base == 0) {
+		LOGF("StartModule: Failed to allocate stack for module %s\n",
+		     Common::PathToString(program->file_name).c_str());
+		return -1;
+	}
+
+	uint64_t stack_top = (stack_base + stack_size - 0x80) & ~0xFull;
+	stack_top -= 8;
+	*reinterpret_cast<uint64_t*>(stack_top) = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
+
+	uint64_t fs_base = 0;
+	if (program->tls.image_size != 0) {
+		uint8_t* tls_ptr = RuntimeLinker::TlsGetAddr(program);
+		if (tls_ptr != nullptr) {
+			const auto tcb_offset = program->tls.tcb_offset != 0 ? program->tls.tcb_offset : program->tls.image_size;
+			fs_base = reinterpret_cast<uint64_t>(tls_ptr + tcb_offset);
+		}
+	} else {
+		fs_base = GetMainTlsBase();
+	}
+
+	if (fs_base != 0 && (g_primary_tls_program == nullptr || !program->elf->IsShared())) {
+		g_primary_tls_program = program;
+	}
+
+	std::printf("[StartModule] Starting module: %s (entry_vaddr=0x%llx, stack_top=0x%llx, fs_base=0x%llx)\n",
+	            Common::PathToString(program->file_name).c_str(),
+	            (unsigned long long)entry_vaddr,
+	            (unsigned long long)stack_top,
+	            (unsigned long long)fs_base);
+	std::fflush(stdout);
+
+	auto* thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
+	    entry_vaddr, stack_top, args, reinterpret_cast<uint64_t>(argp), reinterpret_cast<uint64_t>(func), fs_base);
+	int result = 0;
+	if (thread != nullptr) {
+		result = Loader::Fex::FexGuestEngine::Instance().Run(thread);
+		Loader::Fex::FexGuestEngine::Instance().DestroyThread(thread);
+	}
+	std::printf("[StartModule] Module %s finished with code %d\n",
+	            Common::PathToString(program->file_name).c_str(), result);
+	std::fflush(stdout);
+	Libs::LibKernel::Memory::FreeGuestMemory(stack_base, stack_size);
+	return result;
+#elif defined(__x86_64__) || defined(_M_X64)
+	return reinterpret_cast<module_ini_fini_func_t>(entry_vaddr)(args, argp, func);
+#else
+	LOGF("StartModule: cannot execute guest code on this host architecture\n");
+	return 0;
+#endif
 }
 
 int RuntimeLinker::StopModule(Program* program, size_t args, const void* argp, module_func_t func) {
@@ -1564,8 +1713,46 @@ int RuntimeLinker::StopModule(Program* program, size_t args, const void* argp, m
 	LOGF_COLOR(Log::Color::BrightYellow, "---\n--- Stop module: %s\n---\n",
 	           Common::PathToString(program->file_name).c_str());
 
-	int result = reinterpret_cast<module_ini_fini_func_t>(program->dynamic_info->fini_vaddr +
-	                                                      program->base_vaddr)(args, argp, func);
+	const uint64_t entry_vaddr = program->dynamic_info->fini_vaddr + program->base_vaddr;
+	int result = 0;
+
+	if (entry_vaddr != 0 && program->dynamic_info->fini_vaddr != 0) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+		constexpr uint64_t stack_size = 0x40000;
+		uint64_t stack_base = Libs::LibKernel::Memory::AllocateGuestStackMemory(
+		    0x00000007ea000000ULL, stack_size, Common::VirtualMemory::Mode::ReadWrite, "module_stop_stack");
+		if (stack_base == 0) {
+			stack_base = Libs::LibKernel::Memory::AllocateGuestStackMemory(
+			    0, stack_size, Common::VirtualMemory::Mode::ReadWrite, "module_stop_stack");
+		}
+		if (stack_base != 0) {
+			uint64_t stack_top = (stack_base + stack_size - 0x80) & ~0xFull;
+			stack_top -= 8;
+			*reinterpret_cast<uint64_t*>(stack_top) = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
+
+			uint64_t stop_fs_base = 0;
+			if (program->tls.image_size != 0) {
+				uint8_t* tls_ptr = RuntimeLinker::TlsGetAddr(program);
+				if (tls_ptr != nullptr) {
+					const auto tcb_offset = program->tls.tcb_offset != 0 ? program->tls.tcb_offset : program->tls.image_size;
+					stop_fs_base = reinterpret_cast<uint64_t>(tls_ptr + tcb_offset);
+				}
+			} else {
+				stop_fs_base = GetMainTlsBase();
+			}
+
+			auto* thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
+			    entry_vaddr, stack_top, args, reinterpret_cast<uint64_t>(argp), reinterpret_cast<uint64_t>(func), stop_fs_base);
+			if (thread != nullptr) {
+				result = Loader::Fex::FexGuestEngine::Instance().Run(thread);
+				Loader::Fex::FexGuestEngine::Instance().DestroyThread(thread);
+			}
+			Libs::LibKernel::Memory::FreeGuestMemory(stack_base, stack_size);
+		}
+#elif defined(__x86_64__) || defined(_M_X64)
+		result = reinterpret_cast<module_ini_fini_func_t>(entry_vaddr)(args, argp, func);
+#endif
+	}
 
 	Libs::LibKernel::PthreadDeleteStaticObjects(program);
 
@@ -1626,6 +1813,58 @@ void RuntimeLinker::DeleteTls(Program* program, int thread_id) {
 	}
 }
 
+uint64_t RuntimeLinker::GetMainTlsBase() {
+	Program* target_program = nullptr;
+
+	if (g_primary_tls_program != nullptr && g_primary_tls_program->tls.image_size != 0) {
+		target_program = g_primary_tls_program;
+	} else if (g_tls_main_program != nullptr && g_tls_main_program->tls.image_size != 0) {
+		target_program = g_tls_main_program;
+	} else {
+		auto* linker = Common::Singleton<RuntimeLinker>::Instance();
+		if (linker != nullptr) {
+			Common::LockGuard lock(linker->m_mutex);
+			for (auto* p: linker->m_programs) {
+				if (p != nullptr && p->tls.image_size != 0) {
+					target_program        = p;
+					g_primary_tls_program = p;
+					break;
+				}
+			}
+		}
+	}
+
+	if (target_program == nullptr && g_tls_main_program != nullptr) {
+		target_program = g_tls_main_program;
+	}
+
+	if (target_program != nullptr) {
+		uint8_t* tls_ptr = TlsGetAddr(target_program);
+		if (tls_ptr != nullptr) {
+			const auto tcb_offset = target_program->tls.tcb_offset != 0
+			                            ? target_program->tls.tcb_offset
+			                            : target_program->tls.image_size;
+			return reinterpret_cast<uint64_t>(tls_ptr + tcb_offset);
+		}
+	}
+
+	// Final fallback: allocate a dedicated per-thread 4KB TCB page so %fs:0 is NEVER null
+	static thread_local uint64_t* s_fallback_thread_tcb     = nullptr;
+	static thread_local uint64_t  s_fallback_tcb_session_id = 0;
+	const uint64_t cur_session = g_linker_session_id.load(std::memory_order_acquire);
+	if (s_fallback_thread_tcb == nullptr || s_fallback_tcb_session_id != cur_session) {
+		s_fallback_tcb_session_id = cur_session;
+		s_fallback_thread_tcb = reinterpret_cast<uint64_t*>(
+		    Libs::LibKernel::Memory::AllocateRuntimeMemory(
+		        0, 0x1000, Common::VirtualMemory::Mode::ReadWrite, "fallback_tcb"));
+		if (s_fallback_thread_tcb != nullptr) {
+			std::memset(s_fallback_thread_tcb, 0, 0x1000);
+			s_fallback_thread_tcb[0] = reinterpret_cast<uint64_t>(s_fallback_thread_tcb);
+		}
+	}
+	return reinterpret_cast<uint64_t>(s_fallback_thread_tcb);
+}
+
 static uint64_t CalcBaseSize(const Elf64_Ehdr* ehdr, const Elf64_Phdr* phdr) {
 	uint64_t base_size = 0;
 	for (Elf64_Half i = 0; i < ehdr->e_phnum; i++) {
@@ -1672,7 +1911,11 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 #else
 	const bool protect_memory_faults = false;
 #endif
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU) || defined(__arm64__) || defined(__aarch64__)
+	const bool patch_guest_instructions = false;
+#else
 	const bool patch_guest_instructions = protect_memory_faults || emulate_amd;
+#endif
 
 	constexpr uint64_t INSTRUCTION_TRAMPOLINE_SIZE = 8u * 1024u * 1024u;
 	if (patch_guest_instructions) {
@@ -1684,6 +1927,7 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	    g_desired_base_addr, program->mapped_size, Common::VirtualMemory::Mode::ExecuteReadWrite,
 	    Common::PathToString(program->file_name.filename()).c_str());
 	EXIT_IF(program->base_vaddr == 0);
+	std::memset(reinterpret_cast<void*>(program->base_vaddr), 0, program->mapped_size);
 
 	if (patch_guest_instructions) {
 		const auto trampoline_addr           = program->base_vaddr + program->base_size_aligned;
@@ -1733,6 +1977,11 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 
 			program->elf->LoadSegment(segment_addr, phdr[i].p_offset, segment_file_size);
 
+			if (segment_memory_size > segment_file_size) {
+				std::memset(reinterpret_cast<void*>(segment_addr + segment_file_size), 0,
+				            segment_memory_size - segment_file_size);
+			}
+
 			bool skip_protect = (phdr[i].p_type == PT_LOAD && is_next_gen &&
 			                     mode == Common::VirtualMemory::Mode::NoAccess);
 
@@ -1758,6 +2007,10 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 			program->tls.init_size   = std::min(phdr[i].p_filesz, GetAlignedSize(phdr + i));
 			program->tls.image_size  = GetAlignedSize(phdr + i);
 			program->tls.tcb_offset  = program->tls.image_size;
+
+			if (g_primary_tls_program == nullptr || !program->elf->IsShared()) {
+				g_primary_tls_program = program;
+			}
 
 			LOGF("tls addr = 0x%016" PRIx64 "\n"
 			     "tls init   = %" PRIu64 "\n"
@@ -1851,6 +2104,9 @@ void RuntimeLinker::DeleteProgram(Program* p) {
 	if (g_tls_main_program == program.get()) {
 		g_tls_main_program = nullptr;
 	}
+	if (g_primary_tls_program == program.get()) {
+		g_primary_tls_program = nullptr;
+	}
 	if (g_tls_cached_main_program == program.get()) {
 		g_tls_cached_main_program = nullptr;
 		g_tls_cached_main_tcb     = nullptr;
@@ -1864,6 +2120,10 @@ void RuntimeLinker::DeleteProgram(Program* p) {
 
 	if (program->base_vaddr != 0 || program->mapped_size != 0) {
 		EXIT_IF(program->base_vaddr == 0 || program->mapped_size == 0);
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+		Loader::Fex::FexGuestEngine::Instance().InvalidateCodeRange(program->base_vaddr,
+		                                                            program->mapped_size);
+#endif
 		if (program->instruction_trampoline_size != 0) {
 			UnregisterGuestInstructionPatchModule(reinterpret_cast<void*>(program->base_vaddr));
 		}
@@ -1986,7 +2246,7 @@ void RuntimeLinker::Relocate(Program* program) {
 
 	if (g_invalid_memory == 0) {
 		g_invalid_memory = Libs::LibKernel::Memory::AllocateRuntimeMemory(
-		    INVALID_MEMORY, 4096, Common::VirtualMemory::Mode::NoAccess, "invalid_memory", true);
+		    INVALID_MEMORY, 4096, Common::VirtualMemory::Mode::NoAccess, "invalid_memory", false);
 		EXIT_NOT_IMPLEMENTED(g_invalid_memory == 0);
 	}
 
@@ -2171,18 +2431,42 @@ void RuntimeLinker::SetApplicationHeapApi(void* const api[10]) {
 void* RuntimeLinker::ApplicationHeapMemalign(uint64_t alignment, uint64_t size) {
 	Common::LockGuard lock(m_mutex);
 
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	if (alignment < 0x10u) {
+		alignment = 0x10u;
+	}
+	uint64_t alloc_size = (size + 0x3fffULL) & ~0x3fffULL;
+	if (alignment > 0x4000ULL) {
+		alloc_size += alignment;
+	}
+	uint64_t mem = Libs::LibKernel::Memory::AllocateRuntimeMemory(
+	    0, alloc_size, Common::VirtualMemory::Mode::ReadWrite, "app_heap_scripting", false);
+	if (mem == 0) {
+		return nullptr;
+	}
+	uint64_t aligned_mem = (mem + alignment - 1ULL) & ~(alignment - 1ULL);
+	return reinterpret_cast<void*>(aligned_mem);
+#else
 	if (m_application_heap_posix_memalign != nullptr) {
 		void* ptr = nullptr;
 		return m_application_heap_posix_memalign(&ptr, alignment, size) == 0 ? ptr : nullptr;
 	}
 
 	return nullptr;
+#endif
 }
 
 void* RuntimeLinker::ApplicationHeapMalloc(uint64_t size) {
 	Common::LockGuard lock(m_mutex);
 
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	uint64_t alloc_size = (size + 0x3fffULL) & ~0x3fffULL;
+	uint64_t mem = Libs::LibKernel::Memory::AllocateRuntimeMemory(
+	    0, alloc_size, Common::VirtualMemory::Mode::ReadWrite, "app_heap_malloc", false);
+	return reinterpret_cast<void*>(mem);
+#else
 	return m_application_heap_malloc != nullptr ? m_application_heap_malloc(size) : nullptr;
+#endif
 }
 
 } // namespace Loader
