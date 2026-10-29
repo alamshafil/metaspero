@@ -18,6 +18,8 @@ int KYTY_SYSV_ABI KernelWaitSema(KernelSema sem, int need, KernelUseconds* time)
 int KYTY_SYSV_ABI KernelPollSema(KernelSema sem, int need);
 int KYTY_SYSV_ABI KernelSignalSema(KernelSema sem, int count);
 int KYTY_SYSV_ABI KernelCancelSema(KernelSema sem, int count, int* threads);
+const char*       KernelGetSemaName(KernelSema sem);
+int               KernelGetSemaCount(KernelSema sem);
 int KYTY_SYSV_ABI PthreadSemInit(void* sem, int flag, unsigned int value, const char* name);
 int KYTY_SYSV_ABI PthreadSemDestroy(void* sem);
 int KYTY_SYSV_ABI PthreadSemWait(void* sem);

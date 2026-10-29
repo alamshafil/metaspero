@@ -337,14 +337,22 @@ static bool HasWindowsForbiddenFilenameCharacter(const std::string& relative_pat
 std::filesystem::path MountPoints::ResolvePath(const std::string& mounted_name) {
 	Common::LockGuard lock(m_mutex);
 
+	std::string normalized_name = Common::FixFilenameSlash(mounted_name);
+	while (normalized_name.starts_with("./")) {
+		normalized_name.erase(0, 2);
+	}
+	if (!normalized_name.empty() && normalized_name[0] != '/') {
+		normalized_name = "/app0/" + normalized_name;
+	}
+
 	// Match the entire guest path so a mount root works with or without a trailing slash.
-	const auto mounted_path = Common::FixDirectorySlash(mounted_name);
+	const auto mounted_path = Common::FixDirectorySlash(normalized_name);
 	const auto it           = std::find_if(
 	    m_mount_pairs.begin(), m_mount_pairs.end(),
 	    [&mounted_path](const MountPair& p) { return mounted_path.starts_with(p.point); });
 	if (it != m_mount_pairs.end()) {
 		const auto& p = *it;
-		auto rel_path = Common::RemoveFirst(Common::FixFilenameSlash(mounted_name), p.point.size());
+		auto rel_path = Common::RemoveFirst(normalized_name, p.point.size());
 		while (rel_path.starts_with('/')) {
 			rel_path = Common::RemoveFirst(rel_path, 1);
 		}
@@ -471,6 +479,8 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 	file->real_name = g_mount_points->ResolvePath(file->name);
 	if (file->real_name.empty()) {
 		g_files->DeleteDescriptor(descriptor);
+		std::printf("[KernelOpen] Failed: path '%s' cannot be resolved (ENOENT)\n", path);
+		std::fflush(stdout);
 		return KERNEL_ERROR_ENOENT;
 	}
 	if (Common::IsArchivePath(file->real_name) &&
@@ -491,6 +501,9 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 	// A missing path opened without O_CREAT is ENOENT
 	if (!creat && !dir_exist && !file_exist) {
 		g_files->DeleteDescriptor(descriptor);
+		std::printf("[KernelOpen] Failed: path '%s' (resolved '%s') not found (ENOENT)\n",
+		            path, Common::PathToString(file->real_name).c_str());
+		std::fflush(stdout);
 		return KERNEL_ERROR_ENOENT;
 	}
 
@@ -546,6 +559,9 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 
 		if (!result || file->f.IsInvalid()) {
 			g_files->DeleteDescriptor(descriptor);
+			std::printf("[KernelOpen] Failed: could not open/create '%s' (resolved '%s', rw_mode=%d) (EACCES)\n",
+			            path, Common::PathToString(file->real_name).c_str(), static_cast<int>(rw_mode));
+			std::fflush(stdout);
 			return KERNEL_ERROR_EACCES;
 		}
 	}

@@ -1,16 +1,39 @@
 // Internal memory address-space helpers included by memory.cpp.
 // Kept in the same translation unit because they depend on memory.cpp-local helpers.
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#include <mach/mach.h>
+#include <mach/vm_map.h>
+#endif
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+// iOS address space limitation: 36-bit VA max (64 GB)
+static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = 0x0200000000ull; // 8 GB (above __PAGEZERO & frameworks)
+static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x03ffffffffull; // 16 GB - 1
+static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x07ffffffffull; // 32 GB - 1
+static constexpr uint64_t HOST_USER_MIN            = 0x0800000000ull; // 32 GB
+static constexpr uint64_t HOST_USER_MAX            = 0x0fffffffe0ull; // 64 GB - 32
+#elif defined(KYTY_ARM64_APPLE)
+// macOS Apple Silicon (ARM64): 47-bit VA (128 TB), full user space supported
+static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = 0x0200000000ull; // 8 GB (above __PAGEZERO & frameworks)
+static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x03ffffffffull; // 16 GB - 1
+static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x07ffffffffull; // 32 GB - 1
+static constexpr uint64_t HOST_USER_MIN            = 0x0800000000ull; // 32 GB
+static constexpr uint64_t HOST_USER_MAX            = 0xfbffffffffull;
+#elif defined(__APPLE__) && (defined(__x86_64__) || defined(_M_X64))
 static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = 0x0000040000ull;
 static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x07ffffbfffull;
-#if defined(__APPLE__) && (defined(__x86_64__) || defined(_M_X64))
 static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x0fbfffffffull;
 static constexpr uint64_t HOST_USER_MIN            = 0x7000000000ull;
+static constexpr uint64_t HOST_USER_MAX            = 0xfbffffffffull;
 #else
+static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = 0x0000040000ull;
+static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x07ffffbfffull;
 static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x0fffffffffull;
 static constexpr uint64_t HOST_USER_MIN            = 0x1000000000ull;
+static constexpr uint64_t HOST_USER_MAX            = 0xfbffffffffull;
 #endif
-static constexpr uint64_t HOST_USER_MAX = 0xfbffffffffull;
 
 static bool GuestFreeRangeContains(uint64_t base, uint64_t range_size, uint64_t candidate,
                                    uint64_t size) {
@@ -64,30 +87,58 @@ public:
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 #if defined(__APPLE__)
 		{
-			char shm_name[64];
-			snprintf(shm_name, sizeof(shm_name), "/kyty-dm-%d-%llx", static_cast<int>(getpid()),
-			         static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(this)));
-			m_fd = shm_open(shm_name, O_RDWR | O_CREAT | O_EXCL, 0600);
-			if (m_fd >= 0) {
-				shm_unlink(shm_name);
+			// Darwin POSIX shared memory (shm_open) has a kernel limit of < 4 GB.
+			// Only attempt shm_open if the requested backing size is below 3.5 GB.
+			if (m_size < 3584ULL * 1024ULL * 1024ULL) {
+				char shm_name[64];
+				snprintf(shm_name, sizeof(shm_name), "/kyty-dm-%d-%llx", static_cast<int>(getpid()),
+				         static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(this)));
+				m_fd = shm_open(shm_name, O_RDWR | O_CREAT | O_EXCL, 0600);
+				if (m_fd >= 0) {
+					shm_unlink(shm_name);
+					if (ftruncate(m_fd, static_cast<off_t>(m_size)) != 0) {
+						close(m_fd);
+						m_fd = -1;
+					}
+				}
+			}
+			if (m_fd < 0) {
+				char tmp_path[256];
+				snprintf(tmp_path, sizeof(tmp_path), "_TempData/kyty-dm-%d-%llx.tmp", static_cast<int>(getpid()),
+				         static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(this)));
+				Common::File::CreateDirectories("_TempData");
+				m_fd = open(tmp_path, O_RDWR | O_CREAT | O_EXCL, 0600);
+				if (m_fd >= 0) {
+					unlink(tmp_path);
+				}
 			}
 		}
 #else
 		m_fd = static_cast<int>(syscall(SYS_memfd_create, "KytyDirectMemory", 0));
 #endif
 		if (m_fd < 0) {
+			std::fprintf(stderr, "[GuestBackingStore] shared fd creation failed: %d\n", errno);
 			LOGF_COLOR(Log::Color::Red, "\t direct-memory backing: shared fd creation failed: %d\n",
 			           errno);
 			return;
 		}
 		if (ftruncate(m_fd, static_cast<off_t>(m_size)) != 0) {
+			std::fprintf(stderr, "[GuestBackingStore] ftruncate failed (size=%llu MB): %d\n",
+			             (unsigned long long)(m_size / (1024 * 1024)), errno);
 			LOGF_COLOR(Log::Color::Red, "\t direct-memory backing: ftruncate failed: %d\n", errno);
 			close(m_fd);
 			m_fd = -1;
 			return;
 		}
+#if defined(KYTY_ARM64_APPLE)
+		m_backing_base = nullptr;
+		std::printf("[GuestBackingStore] Direct memory backing initialized with fd=%d (size=%llu MB, pread/pwrite mode)\n",
+		            m_fd, (unsigned long long)(m_size / (1024 * 1024)));
+#else
 		auto* backing = mmap(nullptr, m_size, PROT_READ | PROT_WRITE, MAP_SHARED, m_fd, 0);
 		if (backing == MAP_FAILED) {
+			std::fprintf(stderr, "[GuestBackingStore] writable alias mmap failed (size=%llu MB): %d\n",
+			             (unsigned long long)(m_size / (1024 * 1024)), errno);
 			LOGF_COLOR(Log::Color::Red, "\t direct-memory backing: writable alias failed: %d\n",
 			           errno);
 			close(m_fd);
@@ -95,6 +146,7 @@ public:
 			return;
 		}
 		m_backing_base = static_cast<uint8_t*>(backing);
+#endif
 #endif
 	}
 
@@ -145,7 +197,11 @@ public:
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		return m_handle != nullptr && m_backing_base != nullptr;
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+#if defined(KYTY_ARM64_APPLE)
+		return m_fd >= 0;
+#else
 		return m_fd >= 0 && m_backing_base != nullptr;
+#endif
 #else
 		return false;
 #endif
@@ -162,7 +218,23 @@ public:
 			return false;
 		}
 		std::lock_guard lock(m_mutex);
-		std::memset(m_backing_base + backing_offset, 0, size);
+		if (m_backing_base != nullptr) {
+			std::memset(m_backing_base + backing_offset, 0, size);
+		} else {
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+			static const uint8_t zeros[65536] = {0};
+			uint64_t rem = size;
+			uint64_t off = backing_offset;
+			while (rem > 0) {
+				size_t chunk = std::min<uint64_t>(rem, sizeof(zeros));
+				if (pwrite(m_fd, zeros, chunk, static_cast<off_t>(off)) < 0) {
+					return false;
+				}
+				rem -= chunk;
+				off += chunk;
+			}
+#endif
+		}
 		return true;
 	}
 
@@ -198,7 +270,15 @@ public:
 			const auto& entry  = mapping->second;
 			const auto  bytes  = std::min(end, entry.vaddr + entry.size) - current;
 			const auto  offset = entry.backing_offset + current - entry.vaddr;
-			std::memcpy(m_backing_base + offset, source + (current - vaddr), bytes);
+			if (m_backing_base != nullptr) {
+				std::memcpy(m_backing_base + offset, source + (current - vaddr), bytes);
+			} else {
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+				if (pwrite(m_fd, source + (current - vaddr), bytes, static_cast<off_t>(offset)) < 0) {
+					return false;
+				}
+#endif
+			}
 			current += bytes;
 		}
 		return true;
@@ -241,7 +321,15 @@ public:
 			const auto& entry  = mapping->second;
 			const auto  bytes  = std::min(end, entry.vaddr + entry.size) - current;
 			const auto  offset = entry.backing_offset + current - entry.vaddr;
-			std::memcpy(destination + (current - vaddr), m_backing_base + offset, bytes);
+			if (m_backing_base != nullptr) {
+				std::memcpy(destination + (current - vaddr), m_backing_base + offset, bytes);
+			} else {
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX || defined(__APPLE__)
+				if (pread(m_fd, destination + (current - vaddr), bytes, static_cast<off_t>(offset)) < 0) {
+					return false;
+				}
+#endif
+			}
 			current += bytes;
 		}
 		return true;
@@ -277,7 +365,15 @@ public:
 			if (cursor < start) {
 				std::memset(destination + (cursor - vaddr), 0, start - cursor);
 			}
-			std::memcpy(destination + (start - vaddr), m_backing_base + offset, bytes);
+			if (m_backing_base != nullptr) {
+				std::memcpy(destination + (start - vaddr), m_backing_base + offset, bytes);
+			} else {
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX || defined(__APPLE__)
+				if (pread(m_fd, destination + (start - vaddr), bytes, static_cast<off_t>(offset)) < 0) {
+					return false;
+				}
+#endif
+			}
 			cursor = start + bytes;
 		}
 		if (cursor < end) {
@@ -729,9 +825,15 @@ public:
 			}
 		}
 #else
+#if defined(KYTY_ARM64_APPLE)
+		for (const auto& [start, size]: m_owned) {
+			vm_deallocate(mach_task_self(), static_cast<vm_address_t>(start), static_cast<vm_size_t>(size));
+		}
+#else
 		for (const auto& [start, size]: m_owned) {
 			munmap(reinterpret_cast<void*>(start), size);
 		}
+#endif
 #endif
 	}
 
@@ -863,14 +965,25 @@ public:
 		}
 		alignment = std::max<uint64_t>(alignment != 0 ? alignment : PageSize(), PageSize());
 		std::lock_guard lock(m_mutex);
-		if (search_addr == 0) {
-			auto addr = FindFreeAlignedUnlocked(HOST_SYSTEM_MANAGED_MIN,
-			                                    HOST_SYSTEM_MANAGED_MAX + 1u, size, alignment);
-			return addr != 0 ? addr
-			                 : FindFreeAlignedUnlocked(HOST_USER_MIN, HOST_USER_MAX + 1u, size,
-			                                           alignment);
+		if (search_addr != 0) {
+			auto addr = FindFreeAlignedUnlocked(search_addr, HOST_USER_MAX + 1u, size, alignment);
+			if (addr != 0) {
+				return addr;
+			}
 		}
-		return FindFreeAlignedUnlocked(search_addr, HOST_USER_MAX + 1u, size, alignment);
+		auto addr = FindFreeAlignedUnlocked(HOST_SYSTEM_MANAGED_MIN,
+		                                    HOST_SYSTEM_MANAGED_MAX + 1u, size, alignment);
+		if (addr == 0) {
+			addr = FindFreeAlignedUnlocked(HOST_USER_MIN, HOST_USER_MAX + 1u, size, alignment);
+		}
+		if (addr == 0) {
+			addr = FindFreeAlignedUnlocked(HOST_SYSTEM_MANAGED_MIN, HOST_USER_MAX + 1u, size,
+			                               alignment);
+		}
+		if (addr == 0 && !m_free.empty()) {
+			addr = FindFreeAlignedUnlocked(m_free.begin()->first, UINT64_MAX, size, alignment);
+		}
+		return addr;
 	}
 
 	uint64_t FindFreeAligned(uint64_t search_start, uint64_t search_end, uint64_t size,
@@ -884,11 +997,25 @@ public:
 	}
 
 	bool ReserveFixed(uint64_t vaddr, uint64_t size) {
-		if (vaddr == 0 || size == 0 || !IsPageAligned(vaddr) || !IsPageAligned(size)) {
+		if (vaddr == 0 || size == 0 || UINT64_MAX - vaddr < size || !IsPageAligned(vaddr) || !IsPageAligned(size)) {
 			return false;
 		}
 		std::lock_guard lock(m_mutex);
-		return FindContaining(vaddr, size) != m_free.end();
+		if (FindContaining(vaddr, size) != m_free.end()) {
+			return true;
+		}
+#if defined(__APPLE__)
+		void* ptr = ::mmap(reinterpret_cast<void*>(vaddr), size, PROT_NONE,
+		                   MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+		if (ptr != MAP_FAILED) {
+			AddFreeUnlocked(vaddr, size);
+			m_owned.emplace_back(vaddr, size);
+			return true;
+		}
+		return false;
+#else
+		return false;
+#endif
 	}
 
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
@@ -970,27 +1097,38 @@ public:
 	}
 
 	bool SelfTest() {
+		std::printf("[GuestVM] Starting SelfTest...\n");
 		const auto addr = ReserveAligned(0, PageSize(), PageSize());
+		std::printf("[GuestVM] SelfTest: ReserveAligned(0, 0x%llx) -> 0x%016llx\n",
+		            (unsigned long long)PageSize(), (unsigned long long)addr);
 		if (addr == 0) {
-			LOGF_COLOR(Log::Color::Red,
-			           "\t guest address-space self-test: 16 KiB range unavailable\n");
+			std::printf("[GuestVM] SelfTest: No free range available! Free ranges count: %zu, Owned: %zu\n",
+			            m_free.size(), m_owned.size());
+			for (const auto& [base, rsize]: m_free) {
+				std::printf("[GuestVM]   Free: 0x%016llx - 0x%016llx (%llu MB)\n",
+				            (unsigned long long)base, (unsigned long long)(base + rsize),
+				            (unsigned long long)(rsize / (1024 * 1024)));
+			}
 			return false;
 		}
 		if (!Commit(addr, PageSize(), VirtualMemory::Mode::ReadWrite)) {
-			LOGF_COLOR(Log::Color::Red, "\t guest address-space self-test: commit failed\n");
+			std::printf("[GuestVM] SelfTest: Commit(0x%016llx) failed! errno = %d\n",
+			            (unsigned long long)addr, errno);
 			return false;
 		}
 
 		auto* ptr = reinterpret_cast<uint64_t*>(addr);
 		*ptr      = 0x4b59545950484f4cull; // "KYTYPHOL"
+		std::printf("[GuestVM] SelfTest: Memory write succeeded (*ptr = 0x%016llx)\n",
+		            (unsigned long long)*ptr);
 
 		if (!ReleaseCommitted(addr, PageSize())) {
-			LOGF_COLOR(Log::Color::Red,
-			           "\t guest address-space self-test: release-committed failed\n");
+			std::printf("[GuestVM] SelfTest: ReleaseCommitted(0x%016llx) failed!\n",
+			            (unsigned long long)addr);
 			return false;
 		}
 
-		LOGF_COLOR(Log::Color::Green, "\t guest address-space self-test: ok\n");
+		std::printf("[GuestVM] SelfTest: PASSED successfully\n");
 		return true;
 	}
 
@@ -1141,11 +1279,18 @@ private:
 #endif
 
 	void ReserveGuestRegions() {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		const std::array<std::pair<uint64_t, uint64_t>, 2> regions {{
+		    {HOST_SYSTEM_MANAGED_MIN, HOST_SYSTEM_RESERVED_MAX + 1u},
+		    {HOST_USER_MIN, HOST_USER_MAX + 1u},
+		}};
+#else
 		const std::array<std::pair<uint64_t, uint64_t>, 3> regions {{
 		    {HOST_SYSTEM_MANAGED_MIN, HOST_SYSTEM_RESERVED_MAX + 1u},
 		    {HOST_USER_MIN, HOST_USER_MAX + 1u},
 		    {kExtendedMemoryBase, kExtendedMemoryBase + kExtendedMemorySize},
 		}};
+#endif
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		constexpr uint64_t MinimumRegionSize = 0x1000000;
@@ -1254,6 +1399,165 @@ private:
 				reserve_range(current, region_end);
 			}
 		}
+#elif defined(__APPLE__)
+		std::vector<std::pair<uint64_t, uint64_t>> occupied;
+		// 0 to 4GB is __PAGEZERO on Darwin 64-bit
+		occupied.emplace_back(0, 0x100000000ULL);
+
+		vm_address_t address = 0x100000000ULL;
+		vm_size_t size = 0;
+		vm_region_basic_info_data_64_t info {};
+		mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+		mach_port_t object_name = MACH_PORT_NULL;
+		while (true) {
+			count = VM_REGION_BASIC_INFO_COUNT_64;
+			if (vm_region_64(mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64,
+			                 reinterpret_cast<vm_region_info_t>(&info), &count, &object_name) != KERN_SUCCESS) {
+				break;
+			}
+			if (MACH_PORT_VALID(object_name)) {
+				mach_port_deallocate(mach_task_self(), object_name);
+			}
+			occupied.emplace_back(static_cast<uint64_t>(address), static_cast<uint64_t>(address + size));
+			address += size;
+		}
+		std::sort(occupied.begin(), occupied.end());
+
+		auto reserve_chunk = [this](uint64_t start, uint64_t chunk_size) -> bool {
+#if defined(KYTY_ARM64_APPLE)
+			vm_address_t target = static_cast<vm_address_t>(start);
+			if (vm_allocate(mach_task_self(), &target, static_cast<vm_size_t>(chunk_size), VM_FLAGS_FIXED) != KERN_SUCCESS) {
+				return false;
+			}
+			vm_protect(mach_task_self(), target, static_cast<vm_size_t>(chunk_size), FALSE, VM_PROT_NONE);
+			AddFreeUnlocked(static_cast<uint64_t>(target), chunk_size);
+			m_owned.emplace_back(static_cast<uint64_t>(target), chunk_size);
+			return true;
+#else
+			void* ptr = mmap(reinterpret_cast<void*>(start), chunk_size, PROT_NONE,
+			                 MAP_PRIVATE | MAP_ANON, -1, 0);
+			if (ptr == MAP_FAILED || reinterpret_cast<uint64_t>(ptr) != start) {
+				if (ptr != MAP_FAILED) {
+					munmap(ptr, chunk_size);
+				}
+				return false;
+			}
+			AddFreeUnlocked(start, chunk_size);
+			m_owned.emplace_back(start, chunk_size);
+			return true;
+#endif
+		};
+
+		auto reserve_range = [&](uint64_t start, uint64_t end) {
+			start = AlignUp(start, PageSize());
+			end   = AlignDown(end, PageSize());
+			if (start == 0 || end <= start) {
+				return;
+			}
+
+			constexpr uint64_t CHUNK_SIZE = 256ULL * 1024ULL * 1024ULL; // 256 MB chunks
+			uint64_t curr = start;
+			while (curr < end) {
+				uint64_t sz = std::min(end - curr, CHUNK_SIZE);
+				if (!reserve_chunk(curr, sz)) {
+					constexpr uint64_t SMALL_CHUNK = 32ULL * 1024ULL * 1024ULL; // 32 MB fallback
+					if (sz > SMALL_CHUNK && reserve_chunk(curr, SMALL_CHUNK)) {
+						curr += SMALL_CHUNK;
+						continue;
+					}
+					curr += sz;
+					continue;
+				}
+				curr += sz;
+			}
+		};
+
+		for (const auto& [region_start, region_end]: regions) {
+			auto current = region_start;
+
+			for (const auto& [mapping_start, mapping_end]: occupied) {
+				if (mapping_end <= current) {
+					continue;
+				}
+				if (mapping_start >= region_end) {
+					break;
+				}
+
+				if (mapping_start > current) {
+					reserve_range(current, std::min(mapping_start, region_end));
+				}
+
+				current = std::max(current, mapping_end);
+				if (current >= region_end) {
+					break;
+				}
+			}
+
+			if (current < region_end) {
+				reserve_range(current, region_end);
+			}
+		}
+
+		// Fallback: If predefined regions yielded no free memory on this device,
+		// scan all gaps between occupied mappings and reserve them
+		if (m_free.empty()) {
+			std::printf("[GuestVM] Predefined regions empty, scanning all free gaps...\n");
+			for (size_t i = 0; i < occupied.size() - 1; ++i) {
+				uint64_t gap_start = occupied[i].second;
+				uint64_t gap_end   = occupied[i + 1].first;
+				if (gap_end > gap_start && (gap_end - gap_start) >= (32ULL * 1024ULL * 1024ULL)) {
+					reserve_range(gap_start, gap_end);
+				}
+			}
+			if (!occupied.empty()) {
+				uint64_t gap_start = occupied.back().second;
+				uint64_t gap_end   = 0x0200000000ULL; // Scan up to 8 GB
+				if (gap_end > gap_start && (gap_end - gap_start) >= (32ULL * 1024ULL * 1024ULL)) {
+					reserve_range(gap_start, gap_end);
+				}
+			}
+		}
+
+		uint64_t max_free_contiguous = 0;
+		uint64_t total_free_bytes = 0;
+		for (const auto& [base, rsz]: m_free) {
+			total_free_bytes += rsz;
+			if (rsz > max_free_contiguous) {
+				max_free_contiguous = rsz;
+			}
+		}
+
+		// Ensure we have at least one large contiguous chunk (at least 3.5 GB)
+		// so that large GPU direct memory allocations (like Dead Cells 3GB heap) succeed!
+		constexpr uint64_t REQUIRED_CONTIGUOUS = 3584ULL * 1024ULL * 1024ULL; // 3584 MB
+		if (max_free_contiguous < REQUIRED_CONTIGUOUS) {
+			std::printf("[GuestVM] Largest free range is %llu MB (< %llu MB), allocating contiguous pool with VM_FLAGS_ANYWHERE...\n",
+			            (unsigned long long)(max_free_contiguous / (1024 * 1024)),
+			            (unsigned long long)(REQUIRED_CONTIGUOUS / (1024 * 1024)));
+			constexpr uint64_t POOL_SIZES[] = {
+				3584ULL * 1024ULL * 1024ULL,              // 3584 MB
+				3200ULL * 1024ULL * 1024ULL,              // 3200 MB (enough for 3072 MB)
+				3072ULL * 1024ULL * 1024ULL               // 3072 MB exactly
+			};
+			for (uint64_t try_size : POOL_SIZES) {
+				if (try_size <= max_free_contiguous) break;
+				vm_address_t pool_addr = 0;
+				if (vm_allocate(mach_task_self(), &pool_addr, static_cast<vm_size_t>(try_size), VM_FLAGS_ANYWHERE) == KERN_SUCCESS) {
+					vm_protect(mach_task_self(), pool_addr, static_cast<vm_size_t>(try_size), FALSE, VM_PROT_NONE);
+					AddFreeUnlocked(static_cast<uint64_t>(pool_addr), try_size);
+					m_owned.emplace_back(static_cast<uint64_t>(pool_addr), try_size);
+					total_free_bytes += try_size;
+					max_free_contiguous = std::max(max_free_contiguous, try_size);
+					std::printf("[GuestVM] Allocated %llu MB contiguous pool at 0x%016llx\n",
+					            (unsigned long long)(try_size / (1024 * 1024)), (unsigned long long)pool_addr);
+					break;
+				}
+			}
+		}
+
+		std::printf("[GuestVM] ReserveGuestRegions finished: %zu owned chunks, %zu free ranges (%llu MB total free, max contiguous %llu MB)\n",
+		            m_owned.size(), m_free.size(), (unsigned long long)(total_free_bytes / (1024 * 1024)),
+		            (unsigned long long)(max_free_contiguous / (1024 * 1024)));
 #else
 		for (const auto& [start, end]: regions) {
 			int flags = MAP_PRIVATE | MAP_ANON | MAP_NORESERVE;

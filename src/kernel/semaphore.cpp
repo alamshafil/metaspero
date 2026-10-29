@@ -1,6 +1,7 @@
 #include "kernel/semaphore.h"
 
 #include "common/assert.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -45,6 +46,7 @@ public:
 	}
 
 	[[nodiscard]] const std::string& GetName() const { return m_name; }
+	[[nodiscard]] int                GetCount() const { return m_count; }
 
 private:
 	enum class Status { Set, Deleted };
@@ -223,6 +225,10 @@ KernelSemaPrivate::Result KernelSemaPrivate::Wait(int need_count, uint32_t* ptr_
 	AddWaiter(&waiter);
 
 	while (!waiter.ready) {
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			RemoveWaiter(&waiter);
+			return Result::TimedOut;
+		}
 		if ((elapsed >= micros && !infinitely)) {
 			RemoveWaiter(&waiter);
 			*ptr_micros = 0;
@@ -232,7 +238,12 @@ KernelSemaPrivate::Result KernelSemaPrivate::Wait(int need_count, uint32_t* ptr_
 		if (infinitely) {
 			m_cond_var.WaitFor(&m_mutex, SIGNAL_APC_POLL_MICROS);
 		} else {
-			m_cond_var.WaitFor(&m_mutex, micros - elapsed);
+			m_cond_var.WaitFor(&m_mutex, std::min<uint32_t>(SIGNAL_APC_POLL_MICROS, micros - elapsed));
+		}
+
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			RemoveWaiter(&waiter);
+			return Result::TimedOut;
 		}
 
 		m_mutex.Unlock();
@@ -270,6 +281,8 @@ int KYTY_SYSV_ABI KernelCreateSema(KernelSema* sem, const char* name, uint32_t a
 	}
 
 	*sem = new KernelSemaPrivate(std::string(name), fifo, init, max);
+	std::printf("[KernelCreateSema] sem=%p '%s' init=%d max=%d\n", static_cast<void*>(*sem), name ? name : "", init, max);
+	std::fflush(stdout);
 
 	return OK;
 }
@@ -281,9 +294,20 @@ int KYTY_SYSV_ABI KernelDeleteSema(KernelSema sem) {
 		return KERNEL_ERROR_ESRCH;
 	}
 
+	std::printf("[KernelDeleteSema] sem=%p '%s'\n", static_cast<void*>(sem), sem->GetName().c_str());
+	std::fflush(stdout);
+
 	delete sem;
 
 	return OK;
+}
+
+const char* KernelGetSemaName(KernelSema sem) {
+	return sem != nullptr ? sem->GetName().c_str() : "";
+}
+
+int KernelGetSemaCount(KernelSema sem) {
+	return sem != nullptr ? sem->GetCount() : -1;
 }
 
 int KYTY_SYSV_ABI KernelWaitSema(KernelSema sem, int need, KernelUseconds* time) {
@@ -291,7 +315,18 @@ int KYTY_SYSV_ABI KernelWaitSema(KernelSema sem, int need, KernelUseconds* time)
 		return KERNEL_ERROR_ESRCH;
 	}
 
-	auto result = sem->Wait(need, time);
+	std::atomic_thread_fence(std::memory_order_seq_cst);
+
+	uint32_t norm_micros = time != nullptr ? static_cast<uint32_t>(Libs::LibKernel::NormalizeKernelTimeoutUsec(*time)) : 0;
+	uint32_t* ptr_micros = time != nullptr ? &norm_micros : nullptr;
+
+	auto result = sem->Wait(need, ptr_micros);
+
+	if (time != nullptr) {
+		*time = norm_micros;
+	}
+
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 
 	int ret = OK;
 
@@ -313,7 +348,9 @@ int KYTY_SYSV_ABI KernelPollSema(KernelSema sem, int need) {
 		return KERNEL_ERROR_ESRCH;
 	}
 
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	auto result = sem->Poll(need);
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 
 	int ret = OK;
 
@@ -333,7 +370,9 @@ int KYTY_SYSV_ABI KernelSignalSema(KernelSema sem, int count) {
 		return KERNEL_ERROR_ESRCH;
 	}
 
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	auto result = sem->Signal(count);
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 
 	int ret = OK;
 
@@ -712,7 +751,7 @@ int KYTY_SYSV_ABI PthreadSemTrywait(void* sem) {
 }
 
 int KYTY_SYSV_ABI PthreadSemTimedwait(void* sem, KernelUseconds usec) {
-	uint32_t  micros = usec;
+	uint32_t  micros = static_cast<uint32_t>(Libs::LibKernel::NormalizeKernelTimeoutUsec(usec));
 	const int result = Posix::SemTimedwaitImpl(sem, &micros);
 	return (result == OK ? OK : Posix::PosixToKernel(result));
 }

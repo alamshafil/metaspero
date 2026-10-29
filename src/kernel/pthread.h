@@ -60,10 +60,18 @@ using Pthread           = PthreadPrivate*;
 using KernelCpumask     = uint64_t;
 using PthreadMutex      = PthreadMutexPrivate*;
 using PthreadMutexattr  = PthreadMutexattrPrivate*;
-using KernelSchedParam  = struct sched_param;
+struct KernelSchedParam {
+	int sched_priority;
+};
+static_assert(sizeof(KernelSchedParam) == 4, "KernelSchedParam must match PS5 ABI size of 4 bytes");
 using PthreadRwlock     = PthreadRwlockPrivate*;
 using PthreadRwlockattr = PthreadRwlockattrPrivate*;
 using KernelUseconds    = unsigned int;
+
+static inline uint64_t NormalizeKernelTimeoutUsec(KernelUseconds usec) {
+	return static_cast<uint64_t>(usec);
+}
+
 using PthreadCondattr   = PthreadCondattrPrivate*;
 using PthreadCond       = PthreadCondPrivate*;
 using KernelClockid     = int32_t;
@@ -76,6 +84,9 @@ using pthread_key_destructor_func_t = KYTY_SYSV_ABI void (*)(void*);
 void  PthreadInitSelfForMainThread();
 void* PthreadCreateMainGuestStack();
 void  PthreadDeleteStaticObjects(Loader::Program* program);
+
+KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func, void* stack_top);
+void               PthreadCallGuestDestructor(void (*func)(void*), void* arg);
 
 int KYTY_SYSV_ABI PthreadMutexattrInit(PthreadMutexattr* attr);
 int KYTY_SYSV_ABI PthreadMutexattrDestroy(PthreadMutexattr* attr);
@@ -114,6 +125,7 @@ uint64_t              PthreadGetHostThreadId(Pthread thread);
 void                  PthreadWakeForSignal(Pthread thread);
 void                  PthreadQueuePendingSignal(Pthread thread, int signum);
 bool                  PthreadHasPendingSignal(Pthread thread, int signum);
+bool                  PthreadHasAnyPendingSignal(Pthread thread);
 bool                  PthreadTakePendingSignal(Pthread thread, int signum);
 bool PthreadGetGuestStack(Pthread thread, uint64_t* stack_addr, uint64_t* stack_size);
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)

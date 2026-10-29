@@ -14,6 +14,7 @@ namespace Libs::LibKernel::Memory {
 
 void Initialize();
 void Shutdown();
+bool IsInitialized();
 
 struct Lifecycle {
 	static constexpr const char* name       = "Memory";
@@ -26,6 +27,12 @@ using callback_func_t = void (*)(uintptr_t addr, size_t size);
 constexpr uint32_t KERNEL_MAXIMUM_NAME_LENGTH = 32;
 constexpr uint64_t kExtendedMemoryBase       = 0x080000000000ull;
 constexpr uint64_t kExtendedMemorySize       = 512ull * 1024 * 1024 * 1024;
+
+constexpr int KERNEL_PROT_CPU_READ  = 0x01;
+constexpr int KERNEL_PROT_CPU_WRITE = 0x02;
+constexpr int KERNEL_PROT_CPU_EXEC  = 0x04;
+constexpr int KERNEL_PROT_GPU_READ  = 0x10;
+constexpr int KERNEL_PROT_GPU_WRITE = 0x20;
 
 struct VirtualQueryInfo {
 	uintptr_t start;
@@ -121,6 +128,7 @@ void                   WriteBacking(uint64_t vaddr, const void* data, uint64_t s
 void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
 void                   InstallGpuResources(Graphics::RenderContext* renderer) noexcept;
 [[nodiscard]] bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept;
+uint64_t KYTY_SYSV_ABI KernelTranslateAddress(uint64_t addr);
 
 int KYTY_SYSV_ABI KernelMapNamedFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags,
                                                const char* name);

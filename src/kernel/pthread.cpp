@@ -15,6 +15,8 @@
 #include "libs/libs.h"
 #include "loader/runtimeLinker.h"
 #include "loader/timer.h"
+#include "loader/fex/fexGuestEngine.h"
+#include "loader/fex/fexHleBridge.h"
 
 #include <algorithm>
 #include <array>
@@ -58,6 +60,7 @@
 
 #if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
 #include <csignal> // pthread_kill is declared here, not in <pthread.h>
+#include <dlfcn.h>
 #endif
 
 #if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS && (defined(_M_X64) || defined(__x86_64__))
@@ -92,7 +95,11 @@ constexpr size_t   PTHREAD_STACK_PAGE      = 0x4000;
 constexpr size_t   PTHREAD_STACK_INITIAL   = 0x200000;
 constexpr size_t   PTHREAD_STACK_EXTRA     = 0x100000;
 constexpr uint64_t PTHREAD_STACK_TOP       = 0x7efff8000ull;
+#if defined(KYTY_ARM64_APPLE)
+constexpr uint64_t PTHREAD_STACK_BOTTOM    = 0x0200000000ull;
+#else
 constexpr uint64_t PTHREAD_STACK_BOTTOM    = 0x0000040000ull;
+#endif
 constexpr uint32_t SIGNAL_APC_POLL_MICROS  = 10000;
 
 static constexpr KernelClockid KERNEL_CLOCK_REALTIME          = 0;
@@ -810,8 +817,47 @@ bool TestGuestStackOwnerLifecycle(uint64_t* first_address, uint64_t* second_addr
 }
 #endif
 
-static KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func, void* stack_top) {
-#if defined(__x86_64__) || defined(_M_X64)
+KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func, void* stack_top) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	if (Common::HostException::IsEmulationShuttingDown() ||
+	    Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()) {
+		return nullptr;
+	}
+
+#if defined(__APPLE__)
+	Dl_info host_info {};
+	if (dladdr(reinterpret_cast<void*>(func), &host_info) != 0 && host_info.dli_saddr != nullptr) {
+		std::printf("[RunOnGuestStack] Executing native host thread func %s (0x%016llx)...\n",
+		            host_info.dli_sname ? host_info.dli_sname : "?",
+		            (unsigned long long)reinterpret_cast<uint64_t>(func));
+		std::fflush(stdout);
+		return func(arg);
+	}
+#endif
+
+	uint64_t fex_rsp = (reinterpret_cast<uint64_t>(stack_top) - 128) & ~0xFull;
+	fex_rsp -= 8;
+	*reinterpret_cast<uint64_t*>(fex_rsp) = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
+
+	uint64_t fs_base = Loader::RuntimeLinker::GetMainTlsBase();
+
+	std::printf("[RunOnGuestStack] Starting thread func=0x%016llx (RSP=0x%016llx, FS_BASE=0x%016llx)...\n",
+	            (unsigned long long)reinterpret_cast<uint64_t>(func),
+	            (unsigned long long)fex_rsp,
+	            (unsigned long long)fs_base);
+	std::fflush(stdout);
+
+	auto* thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
+	    reinterpret_cast<uint64_t>(func),
+	    fex_rsp,
+	    reinterpret_cast<uint64_t>(arg),
+	    0, 0, fs_base);
+	if (thread != nullptr) {
+		Loader::Fex::FexGuestEngine::Instance().Run(thread);
+		Loader::Fex::FexGuestEngine::Instance().DestroyThread(thread);
+	}
+	return nullptr;
+#elif defined(__x86_64__) || defined(_M_X64)
 	void*      ret = nullptr;
 	const auto aligned_stack_top =
 	    reinterpret_cast<uintptr_t>(stack_top) & ~static_cast<uintptr_t>(0x0f);
@@ -935,6 +981,39 @@ static KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func,
 #endif
 }
 
+void PthreadCallGuestDestructor(void (*func)(void*), void* arg) {
+	if (func == nullptr) {
+		return;
+	}
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	void*    stack_top  = nullptr;
+	uint64_t stack_base = 0;
+	constexpr uint64_t stack_size = 0x40000;
+	if (g_pthread_self != nullptr && g_pthread_self->attr != nullptr &&
+	    g_pthread_self->attr->stack_addr != nullptr) {
+		stack_top = reinterpret_cast<void*>(
+		    (reinterpret_cast<uintptr_t>(g_pthread_self->attr->stack_addr) +
+		     g_pthread_self->attr->stack_size) &
+		    ~static_cast<uintptr_t>(0x0f));
+	} else {
+		stack_base = LibKernel::Memory::AllocateGuestStackMemory(
+		    0, stack_size, Common::VirtualMemory::Mode::ReadWrite, "destructor_stack");
+		if (stack_base != 0) {
+			stack_top = reinterpret_cast<void*>(
+			    (stack_base + stack_size - 0x80) & ~static_cast<uintptr_t>(0x0f));
+		}
+	}
+	if (stack_top != nullptr) {
+		RunOnGuestStack(arg, reinterpret_cast<pthread_entry_func_t>(func), stack_top);
+	}
+	if (stack_base != 0) {
+		LibKernel::Memory::FreeGuestMemory(stack_base, stack_size);
+	}
+#else
+	func(arg);
+#endif
+}
+
 static void UpdateCurrentThreadStackAttr(PthreadAttr* attr) {
 	if (attr == nullptr || *attr == nullptr) {
 		return;
@@ -995,7 +1074,13 @@ void PthreadDeleteStaticObjects(Loader::Program* program) {
 }
 
 void PthreadInitSelfForMainThread() {
-	EXIT_IF(g_pthread_self != nullptr);
+	if (g_pthread_self != nullptr) {
+		if (g_pthread_self->attr != nullptr) {
+			PthreadAttrDestroy(&g_pthread_self->attr);
+		}
+		delete g_pthread_self;
+		g_pthread_self = nullptr;
+	}
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 	if (!Common::HostException::InitializeThreadSignalStack()) {
@@ -1069,7 +1154,24 @@ void* PthreadCreateMainGuestStack() {
 void Initialize() {
 	PRINT_NAME_ENABLE(false);
 
-	EXIT_IF(g_pthread_context != nullptr);
+	{
+		Common::LockGuard lock(g_guest_stack_mutex);
+		g_guest_stack_cache.clear();
+		g_guest_stack_last = 0;
+	}
+	g_pthread_thread_id.store(0);
+	{
+		std::scoped_lock lock(g_pthread_keys_mutex);
+		for (auto& key : g_pthread_keys) {
+			key.generation.store(0, std::memory_order_relaxed);
+			key.destructor = nullptr;
+		}
+	}
+
+	if (g_pthread_context != nullptr) {
+		g_pthread_context->SetThreadDtors(nullptr);
+		return;
+	}
 
 	g_pthread_context = new PThreadContext;
 
@@ -1092,7 +1194,7 @@ void Initialize() {
 	g_pthread_context->SetDefaultCondattr(default_condattr);
 	g_pthread_context->SetDefaultAttr(default_attr);
 
-	PRINT_NAME_ENABLE(true);
+	PRINT_NAME_ENABLE(false);
 
 	Common::Thread thread(FreeDetachedThreads, nullptr);
 	thread.Detach();
@@ -1251,54 +1353,55 @@ static int NativeMutexLock(PthreadMutexPrivate* mutex, KernelUseconds* timeout_u
 	std::unique_lock lock(mutex->m);
 
 	if (mutex->owner == self) {
-		if (mutex->type == 2) {
-			if (mutex->count == UINT32_MAX) {
-				return EAGAIN;
-			}
-			mutex->count++;
-			return OK;
+		if (mutex->count == UINT32_MAX) {
+			return EAGAIN;
 		}
-		if (timeout_us != nullptr) {
-			if (*timeout_us > 0) {
-				mutex->cv.wait_for(lock, std::chrono::microseconds(*timeout_us));
-			}
-			return ETIMEDOUT;
-		}
-		return EDEADLK;
+		mutex->count++;
+		return OK;
 	}
 
 	if (timeout_us == nullptr) {
+		int wait_loops = 0;
 		while (mutex->owner != nullptr) {
 			mutex->cv.wait_for(lock, std::chrono::microseconds(SIGNAL_APC_POLL_MICROS));
 			if (mutex->owner != nullptr) {
+				if (++wait_loops % 1000 == 0) { // Every ~1 second
+					std::printf("[NativeMutexLock Contention] Thread %s (id=%d) waiting on mutex '%s' owned by thread %s (id=%d, count=%u)\n",
+					     self->name.c_str(), self->guest.thread_id, mutex->name.c_str(),
+					     mutex->owner->name.c_str(), mutex->owner->guest.thread_id, mutex->count);
+					std::fflush(stdout);
+				}
 				lock.unlock();
 				KernelDispatchPendingSignalForCurrentThread();
 				lock.lock();
 			}
-		}
-	} else if (*timeout_us == 0) {
-		if (mutex->owner != nullptr) {
-			return ETIMEDOUT;
 		}
 	} else {
-		const auto deadline =
-		    std::chrono::steady_clock::now() + std::chrono::microseconds(*timeout_us);
-		while (mutex->owner != nullptr) {
-			const auto now = std::chrono::steady_clock::now();
-			if (now >= deadline) {
+		const uint64_t wait_us = NormalizeKernelTimeoutUsec(*timeout_us);
+		if (wait_us == 0) {
+			if (mutex->owner != nullptr) {
 				return ETIMEDOUT;
 			}
+		} else {
+			const auto deadline =
+			    std::chrono::steady_clock::now() + std::chrono::microseconds(wait_us);
+			while (mutex->owner != nullptr) {
+				const auto now = std::chrono::steady_clock::now();
+				if (now >= deadline) {
+					return ETIMEDOUT;
+				}
 
-			const auto remaining = deadline - now;
-			const auto poll      = (remaining < std::chrono::microseconds(SIGNAL_APC_POLL_MICROS)
-			                            ? remaining
-			                            : std::chrono::steady_clock::duration(
-			                                  std::chrono::microseconds(SIGNAL_APC_POLL_MICROS)));
-			mutex->cv.wait_for(lock, poll);
-			if (mutex->owner != nullptr) {
-				lock.unlock();
-				KernelDispatchPendingSignalForCurrentThread();
-				lock.lock();
+				const auto remaining = deadline - now;
+				const auto poll      = (remaining < std::chrono::microseconds(SIGNAL_APC_POLL_MICROS)
+				                            ? remaining
+				                            : std::chrono::steady_clock::duration(
+				                                  std::chrono::microseconds(SIGNAL_APC_POLL_MICROS)));
+				mutex->cv.wait_for(lock, poll);
+				if (mutex->owner != nullptr) {
+					lock.unlock();
+					KernelDispatchPendingSignalForCurrentThread();
+					lock.lock();
+				}
 			}
 		}
 	}
@@ -1317,14 +1420,11 @@ static int NativeMutexTrylock(PthreadMutexPrivate* mutex) {
 	std::unique_lock lock(mutex->m);
 
 	if (mutex->owner == self) {
-		if (mutex->type == 2) {
-			if (mutex->count == UINT32_MAX) {
-				return EAGAIN;
-			}
-			mutex->count++;
-			return OK;
+		if (mutex->count == UINT32_MAX) {
+			return EAGAIN;
 		}
-		return EBUSY;
+		mutex->count++;
+		return OK;
 	}
 
 	if (mutex->owner != nullptr) {
@@ -1353,7 +1453,7 @@ static int NativeMutexUnlock(PthreadMutexPrivate* mutex, uint32_t* recurse = nul
 		mutex->count = 1;
 	}
 
-	if (mutex->type == 2 && mutex->count > 1) {
+	if (mutex->count > 1) {
 		mutex->count--;
 		return OK;
 	}
@@ -1397,8 +1497,8 @@ static bool NativeCondDeadlineFromAbs(KernelClockid clock_id, const KernelTimesp
 }
 
 void* PthreadStaticObjects::CreateObject(void* addr, PthreadStaticObject::Type type) {
-	if (addr == nullptr) {
-		return addr;
+	if (addr == nullptr || reinterpret_cast<uintptr_t>(addr) < 0x10000 || (reinterpret_cast<uintptr_t>(addr) & 7) != 0) {
+		return nullptr;
 	}
 
 	auto*      current       = static_cast<void**>(addr);
@@ -1549,7 +1649,18 @@ static void DestructPthreadSpecific() {
 			}
 			const auto destructor = entry.destructor;
 			lock.unlock();
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+			if (g_pthread_self != nullptr && g_pthread_self->attr != nullptr &&
+			    g_pthread_self->attr->stack_addr != nullptr) {
+				auto* spec_stack_top = reinterpret_cast<void*>(
+				    (reinterpret_cast<uintptr_t>(g_pthread_self->attr->stack_addr) +
+				     g_pthread_self->attr->stack_size) &
+				    ~static_cast<uintptr_t>(0x0f));
+				RunOnGuestStack(value.data, reinterpret_cast<pthread_entry_func_t>(destructor), spec_stack_top);
+			}
+#else
 			destructor(value.data);
+#endif
 			lock.lock();
 			called = true;
 		}
@@ -1908,11 +2019,12 @@ int KYTY_SYSV_ABI PthreadAttrGet(Pthread thread, PthreadAttr* attr) {
 int KYTY_SYSV_ABI PthreadAttrGetaffinity(const PthreadAttr* attr, KernelCpumask* mask) {
 	// PRINT_NAME();
 
-	if (mask == nullptr || attr == nullptr || *attr == nullptr) {
+	auto* attr_value = GetPthreadAttrValue(attr, "PthreadAttrGetaffinity");
+	if (mask == nullptr || attr_value == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	*mask = (*attr)->affinity;
+	*mask = attr_value->affinity;
 
 	return OK;
 }
@@ -1920,35 +2032,25 @@ int KYTY_SYSV_ABI PthreadAttrGetaffinity(const PthreadAttr* attr, KernelCpumask*
 int KYTY_SYSV_ABI PthreadAttrGetdetachstate(const PthreadAttr* attr, int* state) {
 	// PRINT_NAME();
 
-	if (state == nullptr || attr == nullptr || *attr == nullptr) {
+	auto* attr_value = GetPthreadAttrValue(attr, "PthreadAttrGetdetachstate");
+	if (state == nullptr || attr_value == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	// int result = pthread_attr_getdetachstate(&(*attr)->p, state);
-	int result = 0;
+	*state = (attr_value->detached ? 1 : 0);
 
-	*state = ((*attr)->detached ? PTHREAD_CREATE_DETACHED : PTHREAD_CREATE_JOINABLE);
-
-	switch (*state) {
-		case PTHREAD_CREATE_JOINABLE: *state = 0; break;
-		case PTHREAD_CREATE_DETACHED: *state = 1; break;
-		default: EXIT("unknown state: %d\n", *state);
-	}
-
-	if (result == 0) {
-		return OK;
-	}
-	return KERNEL_ERROR_EINVAL;
+	return OK;
 }
 
 int KYTY_SYSV_ABI PthreadAttrGetguardsize(const PthreadAttr* attr, size_t* guard_size) {
 	// PRINT_NAME();
 
-	if (guard_size == nullptr || attr == nullptr || *attr == nullptr) {
+	auto* attr_value = GetPthreadAttrValue(attr, "PthreadAttrGetguardsize");
+	if (guard_size == nullptr || attr_value == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	*guard_size = (*attr)->guard_size;
+	*guard_size = attr_value->guard_size;
 
 	return OK;
 }
@@ -1956,11 +2058,12 @@ int KYTY_SYSV_ABI PthreadAttrGetguardsize(const PthreadAttr* attr, size_t* guard
 int KYTY_SYSV_ABI PthreadAttrGetinheritsched(const PthreadAttr* attr, int* inherit_sched) {
 	// PRINT_NAME();
 
-	if (inherit_sched == nullptr || attr == nullptr || *attr == nullptr) {
+	auto* attr_value = GetPthreadAttrValue(attr, "PthreadAttrGetinheritsched");
+	if (inherit_sched == nullptr || attr_value == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	*inherit_sched = (*attr)->inherit_sched;
+	*inherit_sched = attr_value->inherit_sched;
 
 	switch (*inherit_sched) {
 		case 0:
@@ -1974,51 +2077,52 @@ int KYTY_SYSV_ABI PthreadAttrGetinheritsched(const PthreadAttr* attr, int* inher
 int KYTY_SYSV_ABI PthreadAttrGetschedparam(const PthreadAttr* attr, KernelSchedParam* param) {
 	// PRINT_NAME();
 
-	if (param == nullptr || attr == nullptr || *attr == nullptr) {
+	auto* attr_value = GetPthreadAttrValue(attr, "PthreadAttrGetschedparam");
+	if (param == nullptr || attr_value == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	int result = pthread_attr_getschedparam(&(*attr)->p, param);
-
 	// Host priority mapping is lossy; return the exact guest value.
-	param->sched_priority = (*attr)->guest_priority;
+	// Use memcpy to avoid unaligned write faults on ARM64 if guest stack is unaligned.
+	std::memcpy(&param->sched_priority, &attr_value->guest_priority, sizeof(param->sched_priority));
 
-	if (result == 0) {
-		return OK;
-	}
-	return KERNEL_ERROR_EINVAL;
+	return OK;
 }
 
 int KYTY_SYSV_ABI PthreadAttrGetschedpolicy(const PthreadAttr* attr, int* policy) {
 	// PRINT_NAME();
 
-	if (policy == nullptr || attr == nullptr || *attr == nullptr) {
+	auto* attr_value = GetPthreadAttrValue(attr, "PthreadAttrGetschedpolicy");
+	if (policy == nullptr || attr_value == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	int result = pthread_attr_getschedpolicy(&(*attr)->p, policy);
-
-	switch (*policy) {
-		case SCHED_OTHER: *policy = (*attr)->policy; break;
-		case SCHED_FIFO: *policy = 1; break;
-		case SCHED_RR: *policy = 3; break;
-		default: EXIT("unknown policy: %d\n", *policy);
-	}
+	int host_policy = 0;
+	int result = pthread_attr_getschedpolicy(&attr_value->p, &host_policy);
 
 	if (result == 0) {
+		switch (host_policy) {
+			case SCHED_OTHER: *policy = attr_value->policy; break;
+			case SCHED_FIFO: *policy = 1; break;
+			case SCHED_RR: *policy = 3; break;
+			default: *policy = attr_value->policy; break;
+		}
 		return OK;
 	}
-	return KERNEL_ERROR_EINVAL;
+
+	*policy = attr_value->policy;
+	return OK;
 }
 
 int KYTY_SYSV_ABI PthreadAttrGetsolosched(const PthreadAttr* attr, int* solosched) {
 	// PRINT_NAME();
 
-	if (solosched == nullptr || attr == nullptr || *attr == nullptr) {
+	auto* attr_value = GetPthreadAttrValue(attr, "PthreadAttrGetsolosched");
+	if (solosched == nullptr || attr_value == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	*solosched = (*attr)->solosched;
+	*solosched = attr_value->solosched;
 
 	return OK;
 }
@@ -2027,12 +2131,13 @@ int KYTY_SYSV_ABI PthreadAttrGetstack(const PthreadAttr* __restrict attr,
                                       void** __restrict stack_addr, size_t* __restrict stack_size) {
 	// PRINT_NAME();
 
-	if (stack_size == nullptr || stack_addr == nullptr || attr == nullptr || *attr == nullptr) {
+	auto* attr_value = GetPthreadAttrValue(attr, "PthreadAttrGetstack");
+	if (stack_size == nullptr || stack_addr == nullptr || attr_value == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	*stack_addr = (*attr)->stack_addr;
-	*stack_size = (*attr)->stack_size;
+	*stack_addr = attr_value->stack_addr;
+	*stack_size = attr_value->stack_size;
 
 	return OK;
 }
@@ -2040,11 +2145,12 @@ int KYTY_SYSV_ABI PthreadAttrGetstack(const PthreadAttr* __restrict attr,
 int KYTY_SYSV_ABI PthreadAttrGetstackaddr(const PthreadAttr* attr, void** stack_addr) {
 	// PRINT_NAME();
 
-	if (stack_addr == nullptr || attr == nullptr || *attr == nullptr) {
+	auto* attr_value = GetPthreadAttrValue(attr, "PthreadAttrGetstackaddr");
+	if (stack_addr == nullptr || attr_value == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	*stack_addr = (*attr)->stack_addr;
+	*stack_addr = attr_value->stack_addr;
 
 	return OK;
 }
@@ -2052,11 +2158,12 @@ int KYTY_SYSV_ABI PthreadAttrGetstackaddr(const PthreadAttr* attr, void** stack_
 int KYTY_SYSV_ABI PthreadAttrGetstacksize(const PthreadAttr* attr, size_t* stack_size) {
 	// PRINT_NAME();
 
-	if (stack_size == nullptr || attr == nullptr || *attr == nullptr) {
+	auto* attr_value = GetPthreadAttrValue(attr, "PthreadAttrGetstacksize");
+	if (stack_size == nullptr || attr_value == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	*stack_size = (*attr)->stack_size;
+	*stack_size = attr_value->stack_size;
 
 	return OK;
 }
@@ -2146,10 +2253,12 @@ int KYTY_SYSV_ABI PthreadAttrSetschedparam(PthreadAttr* attr, const KernelSchedP
 	}
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-	KernelSchedParam pparam {};
-	if (param->sched_priority <= 478) {
+	sched_param pparam {};
+	int priority = 0;
+	std::memcpy(&priority, &param->sched_priority, sizeof(priority));
+	if (priority <= 478) {
 		pparam.sched_priority = +2;
-	} else if (param->sched_priority >= 733) {
+	} else if (priority >= 733) {
 		pparam.sched_priority = -2;
 	} else {
 		pparam.sched_priority = 0;
@@ -2160,7 +2269,7 @@ int KYTY_SYSV_ABI PthreadAttrSetschedparam(PthreadAttr* attr, const KernelSchedP
 	}
 #endif
 
-	attr_value->guest_priority = param->sched_priority;
+	std::memcpy(&attr_value->guest_priority, &param->sched_priority, sizeof(attr_value->guest_priority));
 	return OK;
 }
 
@@ -2341,11 +2450,13 @@ static int RwlockLockCooperative(PthreadRwlock rwlock, bool write, KernelUsecond
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	const auto has_timeout = (timeout_us != nullptr);
-	const auto deadline =
-	    (has_timeout ? std::chrono::steady_clock::now() + std::chrono::microseconds(*timeout_us)
+	const auto     has_timeout = (timeout_us != nullptr);
+	const uint64_t wait_us     = has_timeout ? NormalizeKernelTimeoutUsec(*timeout_us) : 0;
+	const auto     deadline =
+	    (has_timeout ? std::chrono::steady_clock::now() + std::chrono::microseconds(wait_us)
 	                 : std::chrono::steady_clock::time_point {});
 	bool writer_wait_registered = false;
+	int  wait_loops             = 0;
 
 	for (;;) {
 		{
@@ -2385,7 +2496,7 @@ static int RwlockLockCooperative(PthreadRwlock rwlock, bool write, KernelUsecond
 
 			if (has_timeout) {
 				const auto now = std::chrono::steady_clock::now();
-				if (*timeout_us == 0 || now >= deadline) {
+				if (wait_us == 0 || now >= deadline) {
 					unregister_writer_wait();
 					return KERNEL_ERROR_ETIMEDOUT;
 				}
@@ -2397,6 +2508,13 @@ static int RwlockLockCooperative(PthreadRwlock rwlock, bool write, KernelUsecond
 				                             std::chrono::microseconds(SIGNAL_APC_POLL_MICROS)));
 				rwlock->cv.wait_for(lock, poll);
 			} else {
+				if (++wait_loops % 1000 == 0) { // Every ~1 second
+					std::printf("[NativeRwlock Contention] Thread %s (id=%d) waiting on rwlock '%s' (writer=%s, waiting_writers=%u, readers=%u)\n",
+					     self->name.c_str(), self->guest.thread_id, rwlock->name.c_str(),
+					     rwlock->writer ? rwlock->writer->name.c_str() : "none",
+					     rwlock->waiting_writers, rwlock->reader_count);
+					std::fflush(stdout);
+				}
 				rwlock->cv.wait_for(lock, std::chrono::microseconds(SIGNAL_APC_POLL_MICROS));
 			}
 		}
@@ -2869,13 +2987,14 @@ int KYTY_SYSV_ABI PthreadCondTimedwait(PthreadCond* cond, PthreadMutex* mutex,
 		return (result == EPERM ? KERNEL_ERROR_EPERM : KERNEL_ERROR_EINVAL);
 	}
 
-	const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(usec);
+	const uint64_t wait_us  = NormalizeKernelTimeoutUsec(usec);
+	const auto     deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(wait_us);
 	auto ready = [thread, thread_sequence] { return thread->cond_sequence != thread_sequence; };
 
-	if (usec == 0) {
+	if (wait_us == 0) {
 		result = ETIMEDOUT;
 	} else {
-		while (!ready()) {
+		while (!ready() && !Common::HostException::IsEmulationShuttingDown()) {
 			const auto now = std::chrono::steady_clock::now();
 			if (now >= deadline) {
 				break;
@@ -2888,7 +3007,7 @@ int KYTY_SYSV_ABI PthreadCondTimedwait(PthreadCond* cond, PthreadMutex* mutex,
 			                                  std::chrono::microseconds(SIGNAL_APC_POLL_MICROS)));
 			thread->cond_cv.wait_for(cond_lock, poll);
 
-			if (!ready()) {
+			if (!ready() && !Common::HostException::IsEmulationShuttingDown()) {
 				cond_lock.unlock();
 				KernelDispatchPendingSignalForCurrentThread();
 				cond_lock.lock();
@@ -2960,7 +3079,7 @@ int KYTY_SYSV_ABI PthreadCondTimedwaitAbs(PthreadCond* cond, PthreadMutex* mutex
 
 	auto ready = [thread, thread_sequence] { return thread->cond_sequence != thread_sequence; };
 
-	while (!ready()) {
+	while (!ready() && !Common::HostException::IsEmulationShuttingDown()) {
 		const auto now = std::chrono::steady_clock::now();
 		if (now >= deadline) {
 			break;
@@ -2973,7 +3092,7 @@ int KYTY_SYSV_ABI PthreadCondTimedwaitAbs(PthreadCond* cond, PthreadMutex* mutex
 		                                  std::chrono::microseconds(SIGNAL_APC_POLL_MICROS)));
 		thread->cond_cv.wait_for(cond_lock, poll);
 
-		if (!ready()) {
+		if (!ready() && !Common::HostException::IsEmulationShuttingDown()) {
 			cond_lock.unlock();
 			KernelDispatchPendingSignalForCurrentThread();
 			cond_lock.lock();
@@ -3036,9 +3155,18 @@ int KYTY_SYSV_ABI PthreadCondWait(PthreadCond* cond, PthreadMutex* mutex) {
 
 	auto ready = [thread, thread_sequence] { return thread->cond_sequence != thread_sequence; };
 
-	while (!ready()) {
+	int wait_loops = 0;
+
+	while (!ready() && !Common::HostException::IsEmulationShuttingDown()) {
 		thread->cond_cv.wait_for(cond_lock, std::chrono::microseconds(SIGNAL_APC_POLL_MICROS));
-		if (!ready()) {
+		if (!ready() && !Common::HostException::IsEmulationShuttingDown()) {
+			wait_loops++;
+			if (wait_loops % 1000 == 0) { // Every ~1 second
+				std::printf("[PthreadCondWait] Thread %s (id=%d) waiting on cond '%s' (mutex '%s') for %d s\n",
+				     thread->name.c_str(), thread->guest.thread_id, cond_value->name.c_str(),
+				     mutex_value->name.c_str(), wait_loops / 1000);
+				std::fflush(stdout);
+			}
 			cond_lock.unlock();
 			KernelDispatchPendingSignalForCurrentThread();
 			cond_lock.lock();
@@ -3108,6 +3236,10 @@ bool PthreadHasPendingSignal(Pthread thread, int signum) {
 	return (thread->pending_signal_mask.load(std::memory_order_acquire) & mask) != 0;
 }
 
+bool PthreadHasAnyPendingSignal(Pthread thread) {
+	return thread != nullptr && thread->pending_signal_mask.load(std::memory_order_relaxed) != 0;
+}
+
 bool PthreadTakePendingSignal(Pthread thread, int signum) {
 	if (thread == nullptr || signum < 0 || signum >= 64) {
 		return false;
@@ -3160,20 +3292,54 @@ int PthreadGetCurrentPriorityForKernel() {
 }
 
 static void CleanupThread(void* arg) {
+	static thread_local bool s_in_cleanup = false;
+	if (s_in_cleanup) {
+		return;
+	}
+	s_in_cleanup = true;
+
 	auto* thread = static_cast<Pthread>(arg);
 
-	LibcInternalExt::RunThreadAtexitDestructors();
+	const bool shutting_down =
+	    Common::HostException::IsEmulationShuttingDown()
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	    || Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()
+#endif
+	    ;
 
-	auto thread_dtors = g_pthread_context->GetThreadDtors();
+	if (!shutting_down) {
+		LibcInternalExt::RunThreadAtexitDestructors();
 
-	if (thread_dtors != nullptr) {
-		thread_dtors();
+		auto thread_dtors = g_pthread_context->GetThreadDtors();
+
+		if (thread_dtors != nullptr) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+			void* stack_top = nullptr;
+			if (thread != nullptr && thread->attr != nullptr && thread->attr->stack_addr != nullptr) {
+				stack_top = reinterpret_cast<void*>(
+				    (reinterpret_cast<uintptr_t>(thread->attr->stack_addr) + thread->attr->stack_size) &
+				    ~static_cast<uintptr_t>(0x0f));
+			}
+			if (stack_top != nullptr) {
+				RunOnGuestStack(nullptr, reinterpret_cast<pthread_entry_func_t>(thread_dtors), stack_top);
+			}
+#else
+			thread_dtors();
+#endif
+		}
+
+		DestructPthreadSpecific();
+	} else {
+		g_pthread_specific.reset();
 	}
-
-	DestructPthreadSpecific();
 
 	auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
 	rt->DeleteTlss(thread->unique_id);
+
+	std::printf("[Pthread] Exited thread '%s' (guest_id=%d, unique_id=%d)\n",
+	            thread ? thread->name.c_str() : "?", thread ? thread->guest.thread_id : -1,
+	            thread ? thread->unique_id : -1);
+	std::fflush(stdout);
 
 	thread->almost_done = true;
 }
@@ -3216,6 +3382,12 @@ static void* RunThread(void* arg) {
 	     reinterpret_cast<uint64_t>(thread->entry), reinterpret_cast<uint64_t>(thread->arg),
 	     reinterpret_cast<uint64_t>(thread->attr->stack_addr),
 	     static_cast<uint64_t>(thread->attr->stack_size));
+
+	std::printf("[Pthread] Starting thread '%s' (guest_id=%d, unique_id=%d, entry=0x%016llx, stack_addr=0x%016llx)...\n",
+	            thread->name.c_str(), thread->guest.thread_id, thread->unique_id,
+	            reinterpret_cast<unsigned long long>(thread->entry),
+	            reinterpret_cast<unsigned long long>(thread->attr->stack_addr));
+	std::fflush(stdout);
 
 	// NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
 	pthread_cleanup_push(CleanupThread, thread);
@@ -3283,6 +3455,11 @@ int KYTY_SYSV_ABI PthreadCreate(Pthread* thread, const PthreadAttr* attr,
 		result =
 		    pthread_create(&created_thread->p, &created_thread->attr->p, RunThread, created_thread);
 
+		std::printf("[Pthread] Created thread '%s' (guest_id=%d, entry=0x%016llx) result=%d\n",
+		            created_thread->name.c_str(), created_thread->guest.thread_id,
+		            reinterpret_cast<unsigned long long>(entry), result);
+		std::fflush(stdout);
+
 		if (result != 0) {
 			FreeGuestStack(created_thread->attr);
 		}
@@ -3297,7 +3474,7 @@ int KYTY_SYSV_ABI PthreadCreate(Pthread* thread, const PthreadAttr* attr,
 
 	PthreadAttrDbgPrint(&created_thread->attr);
 
-	PRINT_NAME_ENABLE(true);
+	PRINT_NAME_ENABLE(false);
 
 	if (result < 0) {
 		return result;
@@ -3334,7 +3511,14 @@ int KYTY_SYSV_ABI PthreadJoin(Pthread thread, void** value) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
+	std::printf("[PthreadJoin] Joining thread '%s' (guest_id=%d, unique_id=%d)...\n",
+	            thread->name.c_str(), thread->guest.thread_id, thread->unique_id);
+	std::fflush(stdout);
+
 	int result = pthread_join(thread->p, value);
+
+	std::printf("[PthreadJoin] Joined thread '%s' result=%d\n", thread->name.c_str(), result);
+	std::fflush(stdout);
 
 	if (PRINT_NAME_ENABLED) {
 		LOGF("\tthread join: %s, %d\n", thread->name.c_str(), result);
@@ -3558,6 +3742,10 @@ void KYTY_SYSV_ABI PthreadExit(void* value) {
 	}
 #endif
 
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	Loader::Fex::FexGuestEngine::CleanupCurrentThreadBeforeExit();
+#endif
+
 	pthread_exit(value);
 }
 
@@ -3690,6 +3878,11 @@ int KYTY_SYSV_ABI KernelGettimeofday(KernelTimeval* tp) {
 
 	if (tp == nullptr) {
 		return KERNEL_ERROR_EFAULT;
+	}
+
+	static thread_local uint64_t poll_count = 0;
+	if ((++poll_count % 1000) == 0) {
+		std::this_thread::yield();
 	}
 
 	int result = 0;
@@ -3840,7 +4033,7 @@ void KYTY_SYSV_ABI KernelSetThreadDtors(thread_dtors_func_t dtors) {
 }
 
 int KYTY_SYSV_ABI KernelUsleep(KernelUseconds microseconds) {
-	SleepMicroWithSignalPoll(microseconds);
+	SleepMicroWithSignalPoll(NormalizeKernelTimeoutUsec(microseconds));
 	return OK;
 }
 
@@ -4000,7 +4193,37 @@ int KYTY_SYSV_ABI pthread_once(void* once_control, void(KYTY_SYSV_ABI* init_rout
 	}
 
 run_init:
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	{
+		constexpr uint64_t stack_size = 0x40000;
+		uint64_t stack_base = LibKernel::Memory::AllocateGuestStackMemory(
+		    0, stack_size, Common::VirtualMemory::Mode::ReadWrite, "pthread_once_stack");
+		if (stack_base != 0) {
+			uint64_t stack_top = (stack_base + stack_size - 0x80) & ~0xFull;
+			stack_top -= 8;
+			*reinterpret_cast<uint64_t*>(stack_top) = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
+
+			uint64_t fs_base = Loader::RuntimeLinker::GetMainTlsBase();
+
+			std::printf("[Posix] pthread_once: executing guest callback at 0x%016llx via FEX...\n",
+			            (unsigned long long)reinterpret_cast<uint64_t>(init_routine));
+			std::fflush(stdout);
+
+			auto* thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
+			    reinterpret_cast<uint64_t>(init_routine),
+			    stack_top,
+			    0, 0, 0,
+			    fs_base);
+			if (thread != nullptr) {
+				Loader::Fex::FexGuestEngine::Instance().Run(thread);
+				Loader::Fex::FexGuestEngine::Instance().DestroyThread(thread);
+			}
+			LibKernel::Memory::FreeGuestMemory(stack_base, stack_size);
+		}
+	}
+#elif defined(__x86_64__) || defined(_M_X64)
 	init_routine();
+#endif
 
 	{
 		std::lock_guard lock(g_pthread_once_mutex);

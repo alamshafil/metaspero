@@ -1,16 +1,17 @@
 #include "kernel/syncOnAddress.h"
 
+#include "common/hostException.h"
 #include "common/threads.h"
 #include "libs/errno.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <climits>
+#include <condition_variable>
 #include <cstdint>
 #include <list>
-#include <memory>
 #include <mutex>
-#include <unordered_map>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__)
 #include <cerrno>
@@ -136,120 +137,128 @@ int WakeLinux(volatile void* address, int32_t count) {
 
 #endif
 
-struct PortableWaiter {
-	Common::CondVar condition;
-	bool            wake_requested = false;
+struct ParkingLotWaiter {
+	const volatile void*    address = nullptr;
+	std::condition_variable cv;
+	bool                    unparked = false;
 };
 
-struct PortableAddressEntry {
-	Common::Mutex              mutex;
-	std::list<PortableWaiter*> waiters;
+struct ParkingLotBucket {
+	std::mutex                   mutex;
+	std::list<ParkingLotWaiter*> waiters;
 };
 
-struct PortableAddressRegistry {
-	std::mutex                                                           mutex;
-	std::unordered_map<uintptr_t, std::shared_ptr<PortableAddressEntry>> entries;
+struct ParkingLotTable {
+	static constexpr size_t NUM_BUCKETS = 1024;
+	ParkingLotBucket        buckets[NUM_BUCKETS];
 };
 
-PortableAddressRegistry& GetPortableRegistry() {
-	static PortableAddressRegistry registry;
-	return registry;
-}
-
-std::shared_ptr<PortableAddressEntry> RegisterPortableWaiter(volatile void*  address,
-                                                             PortableWaiter* waiter) {
-	auto&           registry = GetPortableRegistry();
-	std::lock_guard registry_lock(registry.mutex);
-	auto&           entry = registry.entries[reinterpret_cast<uintptr_t>(address)];
-	if (!entry) {
-		entry = std::make_shared<PortableAddressEntry>();
-	}
-	entry->mutex.Lock();
-	entry->waiters.push_back(waiter);
-	return entry;
-}
-
-void UnregisterPortableWaiter(volatile void*                               address,
-                              const std::shared_ptr<PortableAddressEntry>& entry,
-                              PortableWaiter*                              waiter) {
-	entry->waiters.remove(waiter);
-	const bool empty = entry->waiters.empty();
-	entry->mutex.Unlock();
-	if (!empty) {
-		return;
-	}
-
-	auto&           registry = GetPortableRegistry();
-	std::lock_guard registry_lock(registry.mutex);
-	entry->mutex.Lock();
-	const auto it = registry.entries.find(reinterpret_cast<uintptr_t>(address));
-	if (it != registry.entries.end() && it->second == entry && entry->waiters.empty()) {
-		registry.entries.erase(it);
-	}
-	entry->mutex.Unlock();
+static ParkingLotBucket& GetParkingLotBucket(const volatile void* addr) {
+	static auto* table = new ParkingLotTable();
+	uintptr_t val = reinterpret_cast<uintptr_t>(addr) >> 3;
+	val ^= val >> 16;
+	val *= 0x85ebca6b72d2ae35ULL;
+	val ^= val >> 13;
+	return table->buckets[val % ParkingLotTable::NUM_BUCKETS];
 }
 
 template <typename T>
-int WaitPortable(volatile T* address, T expected, const WaitDeadline& deadline,
-                 signal_poll_func_t signal_poll) {
-	PortableWaiter waiter;
-	auto           entry      = RegisterPortableWaiter(address, &waiter);
-	bool           first_wait = true;
-	int            result     = OK;
+int WaitParkingLot(volatile T* address, T expected, const WaitDeadline& deadline,
+                   signal_poll_func_t signal_poll) {
+	auto& bucket = GetParkingLotBucket(address);
 
-	while (ReadWord(address) == expected && !waiter.wake_requested) {
+	ParkingLotWaiter waiter;
+	waiter.address  = const_cast<const volatile void*>(reinterpret_cast<volatile void*>(address));
+	waiter.unparked = false;
+
+	std::unique_lock<std::mutex> lock(bucket.mutex);
+
+	// CRITICAL: Check value WHILE HOLDING THE BUCKET MUTEX
+	// If the value was already modified by a waker, we must not sleep.
+	if (ReadWord(address) != expected) {
+		return OK;
+	}
+
+	bucket.waiters.push_back(&waiter);
+
+	bool timed_out  = false;
+	bool first_wait = true;
+
+	while (!waiter.unparked) {
 		const auto slice_micros = GetWaitSliceMicros(deadline, first_wait);
-		if (slice_micros == UINT32_MAX) {
-			result = KERNEL_ERROR_ETIMEDOUT;
-			break;
-		}
-		if (slice_micros == 0) {
-			result = KERNEL_ERROR_ETIMEDOUT;
+		if (slice_micros == UINT32_MAX || slice_micros == 0) {
+			timed_out = true;
 			break;
 		}
 
-		(void)waiter.condition.WaitFor(&entry->mutex, slice_micros);
-		entry->mutex.Unlock();
-		PollSignals(signal_poll);
-		entry->mutex.Lock();
+		(void)waiter.cv.wait_for(lock, std::chrono::microseconds(slice_micros));
 
-		if (deadline.finite && Clock::now() >= deadline.end && ReadWord(address) == expected &&
-		    !waiter.wake_requested) {
-			result = KERNEL_ERROR_ETIMEDOUT;
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			bucket.waiters.remove(&waiter);
+			lock.unlock();
+			return KERNEL_ERROR_ETIMEDOUT;
+		}
+
+		if (waiter.unparked) {
 			break;
 		}
+
+		if (ReadWord(address) != expected) {
+			waiter.unparked = true;
+			break;
+		}
+
+		if (deadline.finite && Clock::now() >= deadline.end) {
+			timed_out = true;
+			break;
+		}
+
+		if (signal_poll != nullptr) {
+			lock.unlock();
+			PollSignals(signal_poll);
+			lock.lock();
+
+			if (waiter.unparked || ReadWord(address) != expected) {
+				waiter.unparked = true;
+				break;
+			}
+		}
+
 		first_wait = false;
 	}
 
-	UnregisterPortableWaiter(address, entry, &waiter);
-	return result;
+	bucket.waiters.remove(&waiter);
+	lock.unlock();
+
+	if (timed_out && !waiter.unparked) {
+		return ReadWord(address) == expected ? KERNEL_ERROR_ETIMEDOUT : OK;
+	}
+
+	return OK;
 }
 
-int WakePortable(volatile void* address, int32_t count) {
+int WakeParkingLot(volatile void* address, int32_t count) {
 	if (count == 0) {
 		return OK;
 	}
-	auto&            registry = GetPortableRegistry();
-	std::unique_lock registry_lock(registry.mutex);
-	const auto       it = registry.entries.find(reinterpret_cast<uintptr_t>(address));
-	if (it == registry.entries.end()) {
-		return OK;
-	}
-	auto entry = it->second;
-	entry->mutex.Lock();
-	registry_lock.unlock();
 
-	int32_t remaining = count;
-	for (auto* waiter: entry->waiters) {
-		if (!waiter->wake_requested) {
-			waiter->wake_requested = true;
-			waiter->condition.Signal();
-			if (remaining != INT_MAX && --remaining == 0) {
+	auto& bucket = GetParkingLotBucket(address);
+	std::unique_lock<std::mutex> lock(bucket.mutex);
+
+	int32_t         woken       = 0;
+	const uintptr_t target_addr = reinterpret_cast<uintptr_t>(address);
+
+	for (auto* waiter: bucket.waiters) {
+		if (!waiter->unparked && reinterpret_cast<uintptr_t>(waiter->address) == target_addr) {
+			waiter->unparked = true;
+			waiter->cv.notify_one();
+			woken++;
+			if (count != INT_MAX && woken >= count) {
 				break;
 			}
 		}
 	}
-	entry->mutex.Unlock();
+
 	return OK;
 }
 
@@ -260,13 +269,21 @@ int WaitImpl(volatile T* address, T expected, const WaitDeadline& deadline,
 		return KERNEL_ERROR_EINVAL;
 	}
 
+	// Full memory barrier before wait
+	std::atomic_thread_fence(std::memory_order_seq_cst);
+
 	int result = OK;
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__)
 	result = WaitLinux(address, expected, deadline, signal_poll);
 #else
-	result = WaitPortable(address, expected, deadline, signal_poll);
+	result = WaitParkingLot(address, expected, deadline, signal_poll);
 #endif
 	PollSignals(signal_poll);
+
+	// Full memory barrier after wait: ensures ARM64 flushes speculative loads
+	// and subsequent guest instructions observe all writes by the waker core.
+	std::atomic_thread_fence(std::memory_order_seq_cst);
+
 	return result;
 }
 
@@ -292,10 +309,20 @@ int Wake(volatile void* address, int32_t count) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
+	// Full memory barrier before wake: ensure preceding stores are globally visible.
+	std::atomic_thread_fence(std::memory_order_seq_cst);
+
+	int result = OK;
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__)
-	return WakeLinux(address, count);
+	result = WakeLinux(address, count);
+#else
+	result = WakeParkingLot(address, count);
 #endif
-	return WakePortable(address, count);
+
+	// Full memory barrier after wake
+	std::atomic_thread_fence(std::memory_order_seq_cst);
+
+	return result;
 }
 
 } // namespace Libs::LibKernel::SyncOnAddress

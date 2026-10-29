@@ -2,12 +2,14 @@
 
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/timer.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
+#include "loader/fex/fexHleBridge.h"
 
 #include <algorithm>
 #include <chrono>
@@ -185,6 +187,9 @@ int KernelEqueuePrivate::WaitForEvents(KernelEvent* ev, int num, uint32_t micros
 	t.Start();
 
 	for (;;) {
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return 0;
+		}
 		int ret = GetTriggeredEvents(ev, num);
 
 		if (ret != 0 || (elapsed >= micros && micros != 0)) {
@@ -197,8 +202,13 @@ int KernelEqueuePrivate::WaitForEvents(KernelEvent* ev, int num, uint32_t micros
 			m_cond_var.Wait(&m_mutex);
 		} else {
 			const auto external_wait = micros != 0 ? micros - elapsed : UINT32_MAX;
-			m_cond_var.WaitFor(&m_mutex,
-			                   has_timer ? std::min(external_wait, timer_wait) : external_wait);
+			const auto wait_slice    = std::min<uint32_t>(
+			    10000u, has_timer ? std::min(external_wait, timer_wait) : external_wait);
+			m_cond_var.WaitFor(&m_mutex, wait_slice);
+		}
+
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return 0;
 		}
 
 		elapsed = static_cast<uint32_t>(t.GetTimeS() * 1000000.0);
@@ -420,16 +430,34 @@ int KYTY_SYSV_ABI KernelWaitEqueue(KernelEqueue eq, KernelEvent* ev, int num, in
 	     (timo == nullptr ? "inf" : fmt::format("{}", *timo).c_str()),
 	     Common::Thread::GetThreadIdUnique());
 
+	static std::atomic<uint32_t> s_wait_count{0};
+	uint32_t wc = ++s_wait_count;
+	if (wc <= 10) {
+		std::printf("[KernelWaitEqueue #%u] eq=%lld num=%d timo=%s\n",
+		            wc, (long long)eq, num, (timo ? std::to_string(*timo).c_str() : "inf"));
+		std::fflush(stdout);
+	}
+
 	if (timo == nullptr) {
 		*out = owner->WaitForEvents(ev, num, 0);
 	}
 
 	if (timo != nullptr) {
-		if (*timo == 0) {
+		const uint64_t wait_us = Libs::LibKernel::NormalizeKernelTimeoutUsec(*timo);
+		if (wait_us == 0) {
 			*out = owner->GetTriggeredEvents(ev, num);
 		} else {
-			*out = owner->WaitForEvents(ev, num, *timo);
+			*out = owner->WaitForEvents(ev, num, wait_us);
 		}
+	}
+
+	if (wc <= 10) {
+		std::printf("[KernelWaitEqueue #%u] returned out=%d (event ident=0x%llx, filter=%d, data=0x%llx)\n",
+		            wc, *out,
+		            (*out > 0 ? (unsigned long long)ev[0].ident : 0ull),
+		            (*out > 0 ? ev[0].filter : 0),
+		            (*out > 0 ? (unsigned long long)ev[0].data : 0ull));
+		std::fflush(stdout);
 	}
 
 	if (*out == KERNEL_ERROR_EBADF) {

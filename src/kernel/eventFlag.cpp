@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -9,9 +10,17 @@
 #include "libs/errno.h"
 #include "libs/libs.h"
 
+#include <atomic>
+
+namespace Libs::LibKernel {
+void KernelDispatchPendingSignalForCurrentThread();
+} // namespace Libs::LibKernel
+
 namespace Libs::LibKernel::EventFlag {
 
 LIB_NAME("libkernel", "libkernel");
+
+constexpr uint32_t SIGNAL_APC_POLL_MICROS = 10000;
 
 class KernelEventFlagPrivate {
 public:
@@ -37,6 +46,9 @@ public:
 		uint32_t micros = 0;
 		return Wait(bits, wait_mode, clear_mode, result, &micros);
 	}
+
+	[[nodiscard]] const std::string& GetName() const { return m_name; }
+	[[nodiscard]] uint64_t           GetBits() const { return m_bits; }
 
 private:
 	enum class Status { Set, Canceled, Deleted };
@@ -126,6 +138,9 @@ KernelEventFlagPrivate::Result KernelEventFlagPrivate::Wait(uint64_t bits, WaitM
 
 	while (!((wait_mode == WaitMode::And && (m_bits & bits) == bits) ||
 	         (wait_mode == WaitMode::Or && (m_bits & bits) != 0))) {
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return Result::TimedOut;
+		}
 		if ((elapsed >= micros && !infinitely)) {
 			if (result != nullptr) {
 				*result = m_bits;
@@ -137,12 +152,20 @@ KernelEventFlagPrivate::Result KernelEventFlagPrivate::Wait(uint64_t bits, WaitM
 		m_waiting_threads++;
 
 		if (infinitely) {
-			m_cond_var.Wait(&m_mutex);
+			m_cond_var.WaitFor(&m_mutex, SIGNAL_APC_POLL_MICROS);
 		} else {
-			m_cond_var.WaitFor(&m_mutex, micros - elapsed);
+			m_cond_var.WaitFor(&m_mutex, std::min<uint32_t>(SIGNAL_APC_POLL_MICROS, micros - elapsed));
 		}
 
 		m_waiting_threads--;
+
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return Result::TimedOut;
+		}
+
+		m_mutex.Unlock();
+		LibKernel::KernelDispatchPendingSignalForCurrentThread();
+		m_mutex.Lock();
 
 		elapsed = static_cast<uint32_t>(t.GetTimeS() * 1000000.0);
 
@@ -266,10 +289,20 @@ int KYTY_SYSV_ABI KernelCreateEventFlag(KernelEventFlag* ef, const char* name, u
 	}
 
 	*ef = new KernelEventFlagPrivate(std::string(name), single, fifo, init_pattern);
+	std::printf("[KernelCreateEventFlag] ef=%p '%s' init_pattern=0x%llx\n", static_cast<void*>(*ef), name ? name : "", (unsigned long long)init_pattern);
+	std::fflush(stdout);
 
 	LOGF("\tEventFlag create: %s\n", name);
 
 	return OK;
+}
+
+const char* KernelGetEventFlagName(KernelEventFlag ef) {
+	return ef != nullptr ? ef->GetName().c_str() : "";
+}
+
+uint64_t KernelGetEventFlagBits(KernelEventFlag ef) {
+	return ef != nullptr ? ef->GetBits() : 0;
 }
 
 int KYTY_SYSV_ABI KernelDeleteEventFlag(KernelEventFlag ef) {
@@ -296,8 +329,10 @@ int KYTY_SYSV_ABI KernelWaitEventFlag(KernelEventFlag ef, uint64_t bit_pattern, 
 		return KERNEL_ERROR_EINVAL;
 	}
 
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	const auto mode   = DecodeEventFlagWaitMode(wait_mode);
 	auto       result = ef->Wait(bit_pattern, mode.wait, mode.clear, result_pat, timeout);
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 
 	int ret = OK;
 
@@ -324,8 +359,10 @@ int KYTY_SYSV_ABI KernelPollEventFlag(KernelEventFlag ef, uint64_t bit_pattern, 
 		return KERNEL_ERROR_EINVAL;
 	}
 
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	const auto mode   = DecodeEventFlagWaitMode(wait_mode);
 	auto       result = ef->Poll(bit_pattern, mode.wait, mode.clear, result_pat);
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 
 	int ret = OK;
 
@@ -347,7 +384,9 @@ int KYTY_SYSV_ABI KernelSetEventFlag(KernelEventFlag ef, uint64_t bit_pattern) {
 		return KERNEL_ERROR_ESRCH;
 	}
 
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	ef->Set(bit_pattern);
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 
 	return OK;
 }
@@ -359,7 +398,9 @@ int KYTY_SYSV_ABI KernelClearEventFlag(KernelEventFlag ef, uint64_t bit_pattern)
 		return KERNEL_ERROR_ESRCH;
 	}
 
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	ef->Clear(bit_pattern);
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 
 	return OK;
 }
@@ -372,7 +413,9 @@ int KYTY_SYSV_ABI KernelCancelEventFlag(KernelEventFlag ef, uint64_t set_pattern
 		return KERNEL_ERROR_ESRCH;
 	}
 
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	ef->Cancel(set_pattern, num_wait_threads);
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 
 	return OK;
 }
