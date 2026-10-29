@@ -14,6 +14,7 @@
 #include <span>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace Libs::Graphics {
 
