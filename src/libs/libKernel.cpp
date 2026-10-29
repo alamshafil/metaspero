@@ -21,6 +21,12 @@
 #include "loader/runtimeLinker.h"
 #include "loader/symbolDatabase.h"
 
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+#include "loader/fex/fexGuestEngine.h"
+#include "loader/fex/fexHleBridge.h"
+#include "graphics/host_gpu/hostMemory.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -264,11 +270,22 @@ int KYTY_SYSV_ABI KernelDlsym(KernelModule handle, const char* symbol, void** ad
 	}
 
 	if (handle == 0 && std::strcmp(symbol, "scriptingGetMem") == 0) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+		auto thunk_addr = Loader::Fex::FexHleBridge::Instance().RegisterFunction(
+		    reinterpret_cast<uint64_t>(&KernelApplicationHeapGetMem),
+		    "scriptingGetMem");
+		*addr = reinterpret_cast<void*>(thunk_addr);
+		if (index < 32 || (index % 600) == 0) {
+			LOGF("\t resolved = 0x%016" PRIx64 " (application heap scriptingGetMem thunk)\n",
+			     reinterpret_cast<uint64_t>(*addr));
+		}
+#else
 		*addr = reinterpret_cast<void*>(&KernelApplicationHeapGetMem);
 		if (index < 32 || (index % 600) == 0) {
 			LOGF("\t resolved = 0x%016" PRIx64 " (application heap scriptingGetMem)\n",
 			     reinterpret_cast<uint64_t>(*addr));
 		}
+#endif
 		return OK;
 	}
 
@@ -462,7 +479,11 @@ static KYTY_SYSV_ABI void stack_chk_fail() {
 	PRINT_NAME();
 
 	uint64_t rsp = 0;
+#if defined(__x86_64__) || defined(_M_X64)
 	asm volatile("movq %%rsp, %0" : "=r"(rsp));
+#elif defined(__aarch64__) || defined(__arm64__)
+	asm volatile("mov %0, sp" : "=r"(rsp));
+#endif
 	dump_stack_chk_fail_context(reinterpret_cast<uint64_t>(__builtin_return_address(0)), rsp);
 
 	EXIT("stack fail!!!");
@@ -511,8 +532,8 @@ bool KernelIsDispatchingSignalOnCurrentThread() {
 
 #if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
 static void WaitForSignalDispatch(Pthread thread, int signum) {
-	constexpr auto DISPATCH_WAIT_STEP = std::chrono::microseconds(1000);
-	constexpr auto DISPATCH_WAIT_MAX  = std::chrono::milliseconds(2);
+	constexpr auto DISPATCH_WAIT_STEP = std::chrono::microseconds(500);
+	constexpr auto DISPATCH_WAIT_MAX  = std::chrono::milliseconds(100);
 
 	auto waited = std::chrono::microseconds(0);
 	while (PthreadHasPendingSignal(thread, signum) && waited < DISPATCH_WAIT_MAX) {
@@ -712,6 +733,8 @@ static SignalUcontext CreateCurrentGuestCallSignalUcontext(uint64_t rip) {
 	uint64_t r13 = 0;
 	uint64_t r14 = 0;
 	uint64_t r15 = 0;
+
+#if defined(__x86_64__)
 	asm volatile("movq %%rsp, %0\n\t"
 	             "movq %%rbp, %1\n\t"
 	             "movq %%rbx, %2\n\t"
@@ -722,6 +745,7 @@ static SignalUcontext CreateCurrentGuestCallSignalUcontext(uint64_t rip) {
 	             : "=r"(rsp), "=r"(rbp), "=r"(rbx), "=r"(r12), "=r"(r13), "=r"(r14), "=r"(r15)
 	             :
 	             : "memory");
+#endif
 
 	ctx.uc_mcontext.mc_rax = 0;
 	ctx.uc_mcontext.mc_rcx = 0;
@@ -770,6 +794,37 @@ static void SanitizeNonGuestSignalUcontext(SignalUcontext* ctx, Pthread thread) 
 	if (ctx == nullptr || IsGuestCodeAddress(ctx->uc_mcontext.mc_rip)) {
 		return;
 	}
+
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	// Guest suspend handlers (e.g. the GC stop-the-world handler) scan [mc_rsp, stack_end) and the
+	// saved registers. Report the target thread's real guest CPU state; a fake stack top with
+	// zeroed registers hides live objects from the collector and corrupts the heap.
+	Loader::Fex::GuestRegisterSnapshot regs;
+	if (Loader::Fex::FexGuestEngine::GetCurrentThreadRegisters(&regs)) {
+		uint64_t return_address = 0;
+		if (Graphics::HostMemoryIsReadable(regs.rsp)) {
+			return_address = *reinterpret_cast<const uint64_t*>(regs.rsp);
+		}
+		ctx->uc_mcontext.mc_rax = regs.rax;
+		ctx->uc_mcontext.mc_rbx = regs.rbx;
+		ctx->uc_mcontext.mc_rcx = regs.rcx;
+		ctx->uc_mcontext.mc_rdx = regs.rdx;
+		ctx->uc_mcontext.mc_rsi = regs.rsi;
+		ctx->uc_mcontext.mc_rdi = regs.rdi;
+		ctx->uc_mcontext.mc_rbp = regs.rbp;
+		ctx->uc_mcontext.mc_rsp = regs.rsp;
+		ctx->uc_mcontext.mc_r8  = regs.r8;
+		ctx->uc_mcontext.mc_r9  = regs.r9;
+		ctx->uc_mcontext.mc_r10 = regs.r10;
+		ctx->uc_mcontext.mc_r11 = regs.r11;
+		ctx->uc_mcontext.mc_r12 = regs.r12;
+		ctx->uc_mcontext.mc_r13 = regs.r13;
+		ctx->uc_mcontext.mc_r14 = regs.r14;
+		ctx->uc_mcontext.mc_r15 = regs.r15;
+		ctx->uc_mcontext.mc_rip = (return_address != 0 ? return_address : regs.rip);
+		return;
+	}
+#endif
 
 	uint64_t   stack_addr = 0;
 	uint64_t   stack_size = 0;
@@ -1063,9 +1118,73 @@ static void SignalApcHandler(void* arg1, void* arg2, void* /*arg3*/, PCONTEXT co
 
 #endif
 
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+static void ExecuteGuestExceptionHandler(exception_handler_func_t handler, int signum,
+                                         SignalUcontext* ctx, Pthread thread) {
+	if (handler == nullptr) {
+		return;
+	}
+
+	std::thread helper([handler, signum, ctx, thread]() {
+		SignalDispatchScope scope;
+		auto* previous_self = (thread != nullptr) ? PthreadSwapSelfForSignal(thread) : nullptr;
+
+		constexpr uint64_t stack_size = 0x40000;
+		uint64_t stack_base = LibKernel::Memory::AllocateGuestStackMemory(
+		    0, stack_size, Common::VirtualMemory::Mode::ReadWrite, "signal_handler_stack");
+		if (stack_base != 0) {
+			uint64_t stack_top = (stack_base + stack_size - 0x80) & ~0xFull;
+			stack_top -= 8;
+			*reinterpret_cast<uint64_t*>(stack_top) =
+			    Loader::Fex::FexHleBridge::Instance().GetHltAddress();
+
+			uint64_t guest_ctx_addr = stack_base + 0x1000;
+			if (ctx != nullptr) {
+				*reinterpret_cast<SignalUcontext*>(guest_ctx_addr) = *ctx;
+			} else {
+				*reinterpret_cast<SignalUcontext*>(guest_ctx_addr) = SignalUcontext {};
+			}
+
+			uint64_t fs_base = Loader::RuntimeLinker::GetMainTlsBase();
+
+			static std::atomic<uint32_t> s_dispatch_count{0};
+			if (s_dispatch_count.fetch_add(1, std::memory_order_relaxed) < 3) {
+				std::printf("[LibKernel] ExecuteGuestExceptionHandler: executing guest handler at 0x%016llx for signum=%d via FEX on helper thread...\n",
+				            (unsigned long long)reinterpret_cast<uint64_t>(handler), signum);
+				std::fflush(stdout);
+			}
+
+			auto* fex_thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
+			    reinterpret_cast<uint64_t>(handler),
+			    stack_top,
+			    static_cast<uint64_t>(signum),
+			    guest_ctx_addr,
+			    0,
+			    fs_base);
+			if (fex_thread != nullptr) {
+				Loader::Fex::FexGuestEngine::Instance().Run(fex_thread, false);
+				Loader::Fex::FexGuestEngine::Instance().DestroyThread(fex_thread);
+			}
+			if (ctx != nullptr) {
+				*ctx = *reinterpret_cast<SignalUcontext*>(guest_ctx_addr);
+			}
+			LibKernel::Memory::FreeGuestMemory(stack_base, stack_size);
+		}
+
+		if (previous_self != nullptr) {
+			PthreadSwapSelfForSignal(previous_self);
+		}
+	});
+
+	if (helper.joinable()) {
+		helper.join();
+	}
+}
+#endif
+
 void KernelDispatchPendingSignalForCurrentThread() {
 	Pthread current = PthreadSelfOrNull();
-	if (current == nullptr) {
+	if (current == nullptr || !PthreadHasAnyPendingSignal(current)) {
 		return;
 	}
 
@@ -1079,7 +1198,11 @@ void KernelDispatchPendingSignalForCurrentThread() {
 			SignalDispatchScope scope;
 			auto                ctx = CreateSignalUcontext();
 			SanitizeNonGuestSignalUcontext(&ctx, current);
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+			ExecuteGuestExceptionHandler(handler, signum, &ctx, current);
+#else
 			handler(signum, &ctx);
+#endif
 		}
 		return;
 	}
@@ -1167,6 +1290,18 @@ static int KYTY_SYSV_ABI KernelRaiseException(Pthread thread, int signum) {
 
 		PthreadWakeForSignal(thread);
 		CloseHandle(target_thread);
+#elif defined(KYTY_ENABLE_FEX_GUEST_CPU)
+		if (thread == PthreadSelfOrNull()) {
+			SignalDispatchScope scope;
+			auto                ctx = CreateSignalUcontext();
+			SanitizeNonGuestSignalUcontext(&ctx, thread);
+			ExecuteGuestExceptionHandler(handler, signum, &ctx, thread);
+			return OK;
+		}
+
+		PthreadQueuePendingSignal(thread, signum);
+		PthreadWakeForSignal(thread);
+		WaitForSignalDispatch(thread, signum);
 		return OK;
 #elif defined(__x86_64__)
 		// Deliver on the target thread.
@@ -1279,6 +1414,7 @@ static int KYTY_SYSV_ABI KernelStopUnloadModule(KernelModule handle, size_t args
 		return OK;
 	}
 
+#if !defined(KYTY_ENABLE_FEX_GUEST_CPU)
 	if (g_get_thread_atexit_count_func != nullptr &&
 	    g_get_thread_atexit_count_func(program->unique_id) > 0) {
 		LOGF("KernelStopUnloadModule: cannot unload %s\n",
@@ -1288,6 +1424,7 @@ static int KYTY_SYSV_ABI KernelStopUnloadModule(KernelModule handle, size_t args
 		}
 		return KERNEL_ERROR_EBUSY;
 	}
+#endif
 
 	int result = rt->StopModule(program, args, argp, nullptr);
 
@@ -1689,6 +1826,15 @@ static void KYTY_SYSV_ABI KernelDebugRaiseException(int /*c1*/, int /*c2*/) {
 	PRINT_NAME();
 }
 
+static int KYTY_SYSV_ABI KernelDebugOutText(int channel, const char* text) {
+	PRINT_NAME();
+	if (text != nullptr) {
+		std::printf("[GuestDebug %d] %s\n", channel, text);
+		std::fflush(stdout);
+	}
+	return OK;
+}
+
 static void KYTY_SYSV_ABI exit(int code) {
 	PRINT_NAME();
 
@@ -1924,6 +2070,32 @@ int KYTY_SYSV_ABI mkdir(const char* path, uint16_t mode) {
 	PRINT_NAME();
 
 	return POSIX_CALL(LibKernel::FileSystem::KernelMkdir(path, mode));
+}
+
+int KYTY_SYSV_ABI rename(const char* from, const char* to) {
+	PRINT_NAME();
+
+	return POSIX_CALL(LibKernel::FileSystem::KernelRename(from, to));
+}
+
+void* KYTY_SYSV_ABI mmap(void* addr, size_t len, int prot, int flags, int fd, int64_t offset) {
+	PRINT_NAME();
+
+	if (len == 0) {
+		*GetErrorAddr() = POSIX_EINVAL;
+		return reinterpret_cast<void*>(-1);
+	}
+	uint32_t sce_flags = 0;
+	if ((flags & 0x10) != 0) { // MAP_FIXED
+		sce_flags |= 0x10;
+	}
+	void* result = addr;
+	int status = LibKernel::Memory::KernelMapFlexibleMemory(&result, len, prot, sce_flags);
+	if (status != OK) {
+		*GetErrorAddr() = POSIX_ENOMEM;
+		return reinterpret_cast<void*>(-1);
+	}
+	return result;
 }
 
 int64_t KYTY_SYSV_ABI lseek(int d, int64_t offset, int whence) {
@@ -2168,6 +2340,8 @@ LIB_DEFINE(InitLibKernel_1_Posix) {
 	LIB_FUNC("yS8U2TGCe1A", nanosleep);
 	LIB_FUNC("E6ao34wPw+U", stat);
 	LIB_FUNC("JGMio+21L4c", mkdir);
+	LIB_FUNC("NN01qLRhiqU", rename);
+	LIB_FUNC("BPE9s9vQQXo", mmap);
 	LIB_FUNC("ih4CD9-gghM", Posix::ftruncate);
 	LIB_FUNC("8nY19bKoiZk", Posix::fcntl);
 	LIB_FUNC("pDuPEf3m4fI", Posix::sem_init);
@@ -2350,6 +2524,7 @@ struct FiberObject {
 	FiberCpuContext saved_context;
 	uint64_t        arg_on_run;
 	uint64_t        arg_on_return;
+	uint64_t*       wait_arg_out;
 	bool            context_valid;
 	uint32_t        magic_end;
 };
@@ -2379,6 +2554,7 @@ struct FiberThreadContext {
 	FiberObject*    returned_fiber;
 	FiberObject*    pending_idle_fiber;
 	FiberCpuContext cpu_context;
+	uint64_t*       arg_on_return_ptr;
 };
 
 static const auto g_fiber_context_key = [] {
@@ -2415,7 +2591,7 @@ static void FiberSetThreadContext(FiberThreadContext* context) {
 	}
 }
 
-static uint32_t FiberLoadState(const FiberObject* fiber) {
+[[maybe_unused]] static uint32_t FiberLoadState(const FiberObject* fiber) {
 	auto& state = const_cast<uint32_t&>(fiber->state);
 	return std::atomic_ref<uint32_t>(state).load(std::memory_order_acquire);
 }
@@ -2446,6 +2622,76 @@ static void FiberSetContextValid(FiberObject* fiber, bool valid) {
 	fiber->context       = valid ? &fiber->saved_context : nullptr;
 }
 
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+static FiberThreadContext& FiberGetHostThreadContextStorage() {
+	static thread_local FiberThreadContext s_fex_fiber_thread_context {};
+	return s_fex_fiber_thread_context;
+}
+
+static void FiberSaveGuestContext(FiberCpuContext* ctx) {
+	Loader::Fex::GuestFiberContext guest_ctx {};
+	if (Loader::Fex::FexHleBridge::Instance().ReadCurrentGuestFiberContext(&guest_ctx)) {
+		std::memcpy(ctx, &guest_ctx, sizeof(FiberCpuContext));
+	}
+}
+
+static void FiberRestoreGuestContext(const FiberCpuContext* ctx, uint64_t rax) {
+	Loader::Fex::GuestFiberContext guest_ctx {};
+	std::memcpy(&guest_ctx, ctx, sizeof(FiberCpuContext));
+	Loader::Fex::FexHleBridge::Instance().ScheduleGuestFiberRestore(guest_ctx, rax);
+}
+
+static int32_t KYTY_SYSV_ABI FiberExitTrampoline() {
+	auto* context = FiberGetThreadContext();
+	if (context == nullptr) {
+		return FIBER_ERROR_PERMISSION;
+	}
+	auto* fiber = context->current_fiber;
+	if (fiber != nullptr) {
+		FiberStoreState(fiber, FIBER_STATE_TERMINATED);
+		FiberSetContextValid(fiber, false);
+		fiber->wait_arg_out  = nullptr;
+		fiber->arg_on_return = 0;
+	}
+	auto*      thread_arg_out = context->arg_on_return_ptr;
+	const auto thread_ctx     = context->cpu_context;
+	FiberCompleteSwitch(nullptr);
+	FiberSetThreadContext(nullptr);
+	if (thread_arg_out != nullptr) {
+		*thread_arg_out = 0;
+	}
+	FiberRestoreGuestContext(&thread_ctx, static_cast<uint64_t>(static_cast<int64_t>(FIBER_ERROR_STATE)));
+	return FIBER_ERROR_STATE;
+}
+
+static void FiberSwitchToTargetGuest(FiberObject* fiber) {
+	FiberCompleteSwitch(fiber);
+	if (fiber->context_valid) {
+		if (fiber->wait_arg_out != nullptr) {
+			*fiber->wait_arg_out = fiber->arg_on_run;
+			fiber->wait_arg_out  = nullptr;
+		}
+		FiberRestoreGuestContext(&fiber->saved_context, static_cast<uint64_t>(OK));
+		return;
+	}
+
+	FiberCpuContext init_ctx {};
+	const auto      stack_top = reinterpret_cast<uintptr_t>(fiber->addr_context) +
+	                            static_cast<uintptr_t>(fiber->size_context);
+	auto            rsp       = (stack_top & ~static_cast<uintptr_t>(0x0f));
+	rsp -= sizeof(uint64_t);
+	*reinterpret_cast<uint64_t*>(rsp) = Loader::Fex::FexHleBridge::Instance().RegisterFunction(
+	    reinterpret_cast<uint64_t>(&FiberExitTrampoline), "Fiber::FiberExitTrampoline",
+	    Loader::Fex::ThunkSignature::FiberSwitch);
+
+	init_ctx.rsp = rsp;
+	init_ctx.rip = reinterpret_cast<uint64_t>(fiber->entry);
+	init_ctx.rdi = fiber->arg_on_initialize;
+	init_ctx.rsi = fiber->arg_on_run;
+
+	FiberRestoreGuestContext(&init_ctx, static_cast<uint64_t>(OK));
+}
+#else
 #if defined(__x86_64__) || defined(_M_X64)
 [[gnu::naked,
   gnu::returns_twice]] static KYTY_SYSV_ABI int FiberSaveContext(FiberCpuContext* /*ctx*/) {
@@ -2526,6 +2772,7 @@ static void FiberRestoreContext(FiberCpuContext* ctx, uint64_t ret) {
 
 	FiberRestoreContext(&context->cpu_context, 1);
 }
+#endif
 
 int32_t KYTY_SYSV_ABI FiberInitialize(FiberObject* fiber, const char* name, FiberEntry entry,
                                       uint64_t arg_on_initialize, void* addr_context,
@@ -2586,8 +2833,10 @@ int32_t KYTY_SYSV_ABI FiberInitialize(FiberObject* fiber, const char* name, Fibe
 int32_t KYTY_SYSV_ABI FiberInitializeInternal(FiberObject* fiber, const char* name,
                                               FiberEntry entry, uint64_t arg_on_initialize,
                                               void* addr_context, uint64_t size_context,
-                                              const FiberOptParam* opt_param, uint32_t flags,
-                                              uint32_t build_version) {
+                                              const FiberOptParam* opt_param, uint64_t flags_raw,
+                                              uint64_t build_version_raw) {
+	const auto flags         = static_cast<uint32_t>(flags_raw);
+	const auto build_version = static_cast<uint32_t>(build_version_raw);
 	auto ret = FiberInitialize(fiber, name, entry, arg_on_initialize, addr_context, size_context,
 	                           opt_param, build_version);
 	if (ret == OK && fiber != nullptr) {
@@ -2643,6 +2892,15 @@ int32_t KYTY_SYSV_ABI FiberRun(FiberObject* fiber, uint64_t arg_on_run, uint64_t
 
 	fiber->arg_on_run    = arg_on_run;
 	fiber->arg_on_return = 0;
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	auto& context             = FiberGetHostThreadContextStorage();
+	context                   = FiberThreadContext {};
+	context.arg_on_return_ptr = arg_on_return;
+	FiberSaveGuestContext(&context.cpu_context);
+	FiberSetThreadContext(&context);
+	FiberSwitchToTargetGuest(fiber);
+	return OK;
+#else
 	// Register on the host stack; switching fibers only reads the native TLS slot.
 	FiberThreadContext context {};
 	FiberSetThreadContext(&context);
@@ -2667,6 +2925,7 @@ int32_t KYTY_SYSV_ABI FiberRun(FiberObject* fiber, uint64_t arg_on_run, uint64_t
 	}
 
 	return return_code;
+#endif
 }
 
 int32_t KYTY_SYSV_ABI FiberSwitch(FiberObject* fiber, uint64_t arg_on_run,
@@ -2690,6 +2949,14 @@ int32_t KYTY_SYSV_ABI FiberSwitch(FiberObject* fiber, uint64_t arg_on_run,
 	fiber->arg_on_run    = arg_on_run;
 	fiber->arg_on_return = 0;
 
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	FiberSaveGuestContext(&caller->saved_context);
+	caller->wait_arg_out        = arg_on_return;
+	FiberSetContextValid(caller, true);
+	context->pending_idle_fiber = caller;
+	FiberSwitchToTargetGuest(fiber);
+	return OK;
+#else
 	if (FiberSaveContext(&caller->saved_context) == 0) {
 		FiberSetContextValid(caller, true);
 		context->pending_idle_fiber = caller;
@@ -2706,6 +2973,7 @@ int32_t KYTY_SYSV_ABI FiberSwitch(FiberObject* fiber, uint64_t arg_on_run,
 	}
 
 	return OK;
+#endif
 }
 
 int32_t KYTY_SYSV_ABI FiberGetSelf(FiberObject** fiber) {
@@ -2732,6 +3000,27 @@ int32_t KYTY_SYSV_ABI FiberReturnToThread(uint64_t arg_on_return, uint64_t* arg_
 	auto* fiber          = context->current_fiber;
 	fiber->arg_on_return = arg_on_return;
 
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	FiberSaveGuestContext(&fiber->saved_context);
+	fiber->wait_arg_out         = arg_on_run;
+	FiberSetContextValid(fiber, true);
+	context->returned_fiber     = fiber;
+	context->pending_idle_fiber = fiber;
+
+	const auto return_value   = fiber->arg_on_return;
+	auto*      thread_arg_out = context->arg_on_return_ptr;
+	const auto thread_ctx     = context->cpu_context;
+
+	FiberCompleteSwitch(nullptr);
+	FiberSetThreadContext(nullptr);
+
+	if (thread_arg_out != nullptr) {
+		*thread_arg_out = return_value;
+	}
+
+	FiberRestoreGuestContext(&thread_ctx, static_cast<uint64_t>(OK));
+	return OK;
+#else
 	if (FiberSaveContext(&fiber->saved_context) == 0) {
 		FiberSetContextValid(fiber, true);
 		context->returned_fiber = fiber;
@@ -2745,6 +3034,7 @@ int32_t KYTY_SYSV_ABI FiberReturnToThread(uint64_t arg_on_return, uint64_t* arg_
 	}
 
 	return OK;
+#endif
 }
 
 int32_t KYTY_SYSV_ABI FiberGetInfo(FiberObject* fiber, FiberInfo* fiber_info) {
@@ -3360,6 +3650,17 @@ static void AddLibkernelUnityFunc(Loader::SymbolDatabase* s, const char* nid, ui
 }
 
 LIB_DEFINE(InitLibKernel_1) {
+	std::memset(LibKernel::g_exception_handlers, 0, sizeof(LibKernel::g_exception_handlers));
+	LibKernel::g_get_thread_atexit_count_func = nullptr;
+	LibKernel::g_thread_atexit_report_func    = nullptr;
+	LibKernel::g_gpo_state_bits.store(0, std::memory_order_relaxed);
+	Coredump::g_coredump_handler         = 0;
+	Coredump::g_coredump_handler_context = 0;
+	for (auto& state : g_kernel_aio_state) {
+		state.store(0, std::memory_order_relaxed);
+	}
+	g_kernel_aio_next_id.store(1, std::memory_order_relaxed);
+
 	LIB_FUNC("04AjkP0jO9U", Posix::UmtxOp);
 	InitLibKernel_1_FS(s);
 	InitLibKernel_1_Mem(s);
@@ -3417,6 +3718,9 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("iKJMWrAumPE", LibKernel::getargc);
 	LIB_FUNC("NNtFaKJbPt0", LibKernel::close);
 	LIB_FUNC("OMDRKKAZ8I4", LibKernel::KernelDebugRaiseException);
+	LIB_FUNC("9JYNqN6jAKI", LibKernel::KernelDebugOutText);
+	LIB_FUNC("NN01qLRhiqU", Posix::rename);
+	LIB_FUNC("BPE9s9vQQXo", Posix::mmap);
 	LIB_FUNC("Ou3iL1abvng", LibKernel::stack_chk_fail);
 	LIB_FUNC("p5EcQeEeJAE", LibKernel::KernelRtldSetApplicationHeapAPI);
 	LIB_FUNC("pB-yGZ2nQ9o", LibKernel::KernelSetThreadAtexitCount);

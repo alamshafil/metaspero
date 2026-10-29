@@ -1,11 +1,14 @@
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/network.h"
+#include "libs/systemService.h"
 #include "loader/symbolDatabase.h"
+#include "loader/systemContent.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -2091,10 +2094,16 @@ struct NpGameIntentInfo {
 static_assert(sizeof(NpGameIntentData) == 16392);
 static_assert(sizeof(NpGameIntentInfo) == 16704);
 
+static bool g_intent_pending = false;
+
 static int KYTY_SYSV_ABI NpGameIntentInitialize(const void* init_param) {
 	PRINT_NAME();
 
 	LOGF("\t init_param = 0x%016" PRIx64 "\n", reinterpret_cast<uint64_t>(init_param));
+
+	// On cold boot, games normally do not have a pending game intent unless explicitly launched
+	// from an OS activity card. Defaulting to false avoids injecting unwanted launchActivity intents.
+	g_intent_pending = false;
 
 	return 0;
 }
@@ -2102,6 +2111,7 @@ static int KYTY_SYSV_ABI NpGameIntentInitialize(const void* init_param) {
 static int KYTY_SYSV_ABI NpGameIntentTerminate() {
 	PRINT_NAME();
 
+	g_intent_pending = false;
 	return 0;
 }
 
@@ -2114,11 +2124,24 @@ static int KYTY_SYSV_ABI NpGameIntentReceiveIntent(NpGameIntentInfo* intent_info
 		return NP_GAME_INTENT_ERROR_INVALID_ARGUMENT;
 	}
 
-	intent_info->user_id = NP_GAME_INTENT_USER_ID_INVALID;
-	std::memset(intent_info->intent_type, 0, sizeof(intent_info->intent_type));
+	if (!g_intent_pending) {
+		intent_info->user_id = NP_GAME_INTENT_USER_ID_INVALID;
+		std::memset(intent_info->intent_type, 0, sizeof(intent_info->intent_type));
+		std::memset(&intent_info->intent_data, 0, sizeof(intent_info->intent_data));
+		return NP_GAME_INTENT_ERROR_INTENT_NOT_FOUND;
+	}
+
+	g_intent_pending     = false;
+	intent_info->user_id = Config::GetUserId();
+	std::strncpy(intent_info->intent_type, "launchActivity", sizeof(intent_info->intent_type) - 1);
+	intent_info->intent_type[sizeof(intent_info->intent_type) - 1] = '\0';
 	std::memset(&intent_info->intent_data, 0, sizeof(intent_info->intent_data));
 
-	return NP_GAME_INTENT_ERROR_INTENT_NOT_FOUND;
+	std::printf("[NpGameIntent] Delivered intent '%s' (user_id=%d)\n", intent_info->intent_type,
+	            intent_info->user_id);
+	std::fflush(stdout);
+
+	return 0;
 }
 
 static int KYTY_SYSV_ABI NpGameIntentGetPropertyValueString(const NpGameIntentData* intent_data,
@@ -2135,6 +2158,17 @@ static int KYTY_SYSV_ABI NpGameIntentGetPropertyValueString(const NpGameIntentDa
 
 	if (intent_data == nullptr || key == nullptr || value_buf == nullptr || buf_size == 0) {
 		return NP_GAME_INTENT_ERROR_INVALID_ARGUMENT;
+	}
+
+	if (std::strcmp(key, "activityId") == 0 || std::strcmp(key, "primaryActor") == 0) {
+		std::string title_id;
+		Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id);
+		const char* default_activity = (title_id == "PPSA15552") ? "MainStory" : "default";
+		std::strncpy(value_buf, default_activity, buf_size - 1);
+		value_buf[buf_size - 1] = '\0';
+		std::printf("[NpGameIntent] Property '%s' -> '%s'\n", key, value_buf);
+		std::fflush(stdout);
+		return 0;
 	}
 
 	value_buf[0] = '\0';

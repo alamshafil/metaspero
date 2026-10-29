@@ -434,6 +434,9 @@ static size_t _etoa(out_fct_type out, std::vector<char>* buffer, size_t idx, siz
 
 template <typename Char>
 static size_t _strnlen_s(const Char* str, size_t maxsize) {
+	if (str == nullptr) {
+		return 0;
+	}
 	size_t size = 0;
 	while (size < maxsize && str[size] != 0) {
 		++size;
@@ -444,6 +447,10 @@ static size_t _strnlen_s(const Char* str, size_t maxsize) {
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 static int kyty_printf_internal(bool sn, char* sn_s, size_t sn_n, const char* format,
                                 VaList* va_list) {
+	if (format == nullptr) {
+		return 0;
+	}
+
 	std::vector<char> buffer;
 
 	uint32_t flags     = 0;
@@ -703,6 +710,9 @@ static int kyty_printf_internal(bool sn, char* sn_s, size_t sn_n, const char* fo
 			case 's': {
 				const size_t limit = (flags & FLAGS_PRECISION) != 0u ? precision : maxlen;
 				const char* p = VaArg_ptr<const char>(va_list);
+				if (p == nullptr) {
+					p = "(null)";
+				}
 				std::string converted;
 				if ((flags & FLAGS_LONG) != 0u) {
 					// The guest ABI uses a 16-bit code unit for wchar_t.

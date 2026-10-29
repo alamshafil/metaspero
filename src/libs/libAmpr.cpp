@@ -2420,6 +2420,11 @@ static int KYTY_SYSV_ABI AmmWaitCommandBufferCompletion(uint32_t submission_id) 
 } // namespace Ampr
 
 LIB_DEFINE(InitAmpr_1) {
+	{
+		std::scoped_lock lock(AprShared::g_mutex);
+		AprShared::g_next_submission_id = 1;
+		AprShared::g_submissions.clear();
+	}
 	LIB_FUNC("8aI7R7WaOlc", Ampr::CommandBufferConstructor);
 	LIB_FUNC("a8uLzYY--tM", Ampr::AprCommandBufferConstructor);
 	LIB_FUNC("Qs1xtplKo0U", Ampr::AprCommandBufferDestructor);

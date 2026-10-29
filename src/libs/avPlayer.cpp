@@ -2,9 +2,18 @@
 #include "common/file.h"
 #include "common/logging/log.h"
 #include "kernel/fileSystem.h"
+#include "kernel/memory.h"
 #include "kernel/pthread.h"
 #include "libs/audio.h"
 #include "libs/libs.h"
+#include "loader/runtimeLinker.h"
+
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+#include "loader/fex/fexGuestEngine.h"
+#include "loader/fex/fexHleBridge.h"
+#endif
+
+#include <thread>
 
 #include <algorithm>
 #include <atomic>
@@ -122,7 +131,16 @@ struct AvPlayerEventReplacement {
 static void emit_event(AvPlayerEventReplacement event, int32_t id, void* data = nullptr) {
 	if (event.event_callback != nullptr) {
 		LOGF("\t event_id = %d\n", id);
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+		Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
+		    reinterpret_cast<uint64_t>(event.event_callback),
+		    reinterpret_cast<uint64_t>(event.object_pointer),
+		    static_cast<uint64_t>(id),
+		    0,
+		    reinterpret_cast<uint64_t>(data));
+#else
 		event.event_callback(event.object_pointer, id, 0, data);
+#endif
 	}
 }
 
@@ -467,9 +485,21 @@ public:
 	GuestBuffer() = default;
 	GuestBuffer(AvPlayerMemAllocator mem, uint32_t align, uint32_t size, bool texture)
 	    : m_mem(mem), m_size(size), m_texture(texture) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+		auto fn = texture ? mem.allocate_texture : mem.allocate;
+		if (fn != nullptr) {
+			uint64_t ptr = Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
+			    reinterpret_cast<uint64_t>(fn),
+			    reinterpret_cast<uint64_t>(mem.object_pointer),
+			    align,
+			    size);
+			m_data = reinterpret_cast<uint8_t*>(ptr);
+		}
+#else
 		m_data =
 		    static_cast<uint8_t*>(texture ? mem.allocate_texture(mem.object_pointer, align, size)
 		                                  : mem.allocate(mem.object_pointer, align, size));
+#endif
 	}
 	~GuestBuffer() { Reset(); }
 	GuestBuffer(const GuestBuffer&)            = delete;
@@ -497,11 +527,21 @@ private:
 	}
 	void Reset() {
 		if (m_data != nullptr) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+			auto fn = m_texture ? m_mem.deallocate_texture : m_mem.deallocate;
+			if (fn != nullptr) {
+				Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
+				    reinterpret_cast<uint64_t>(fn),
+				    reinterpret_cast<uint64_t>(m_mem.object_pointer),
+				    reinterpret_cast<uint64_t>(m_data));
+			}
+#else
 			if (m_texture) {
 				m_mem.deallocate_texture(m_mem.object_pointer, m_data);
 			} else {
 				m_mem.deallocate(m_mem.object_pointer, m_data);
 			}
+#endif
 			m_data = nullptr;
 		}
 	}
@@ -583,17 +623,40 @@ public:
 			avio_context_free(&ctx);
 		}
 		if (opened) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+			Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
+			    reinterpret_cast<uint64_t>(file.close),
+			    reinterpret_cast<uint64_t>(file.object_pointer));
+#else
 			file.close(file.object_pointer);
+#endif
 		}
 	}
 	bool Init(const std::string& path) {
 		if (file.open != nullptr) {
-			if (file.close == nullptr || file.read_offset == nullptr || file.size == nullptr ||
-			    file.open(file.object_pointer, path.c_str()) < 0) {
+			if (file.close == nullptr || file.read_offset == nullptr || file.size == nullptr) {
+				return false;
+			}
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+			int rc = static_cast<int>(Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
+			    reinterpret_cast<uint64_t>(file.open),
+			    reinterpret_cast<uint64_t>(file.object_pointer),
+			    reinterpret_cast<uint64_t>(path.c_str())));
+#else
+			int rc = file.open(file.object_pointer, path.c_str());
+#endif
+			if (rc < 0) {
+				LOGF_COLOR(Log::Color::Red, "\t file.open failed: rc = %d, path = %s\n", rc, path.c_str());
 				return false;
 			}
 			opened = true;
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+			size   = Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
+			    reinterpret_cast<uint64_t>(file.size),
+			    reinterpret_cast<uint64_t>(file.object_pointer));
+#else
 			size   = file.size(file.object_pointer);
+#endif
 		} else {
 			if (!local_file.Open(LibKernel::FileSystem::GetRealFilename(path),
 			                     Common::File::Mode::Read)) {
@@ -626,8 +689,17 @@ private:
 		len      = static_cast<int>(std::min<uint64_t>(len, s->size - s->pos));
 		int read = 0;
 		if (s->opened) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+			read = static_cast<int>(Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
+			    reinterpret_cast<uint64_t>(s->file.read_offset),
+			    reinterpret_cast<uint64_t>(s->file.object_pointer),
+			    reinterpret_cast<uint64_t>(buf),
+			    s->pos,
+			    static_cast<uint64_t>(len)));
+#else
 			read = s->file.read_offset(s->file.object_pointer, buf, s->pos,
 			                           static_cast<uint32_t>(len));
+#endif
 		} else {
 			uint32_t bytes = 0;
 			s->local_file.Read(buf, static_cast<uint32_t>(len), &bytes);
@@ -642,6 +714,13 @@ private:
 	static int64_t Seek(void* opaque, int64_t offset, int whence) {
 		auto* s = static_cast<FileStreamer*>(opaque);
 		if ((whence & AVSEEK_SIZE) != 0) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+			if (s->opened && s->file.size != nullptr) {
+				s->size = Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
+				    reinterpret_cast<uint64_t>(s->file.size),
+				    reinterpret_cast<uint64_t>(s->file.object_pointer));
+			}
+#endif
 			return static_cast<int64_t>(s->size);
 		}
 		whence &= ~AVSEEK_FORCE;

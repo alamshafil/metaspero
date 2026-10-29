@@ -296,10 +296,14 @@ uint64_t QueueUsbAudio(Stream* stream, uint32_t frames) {
 } // namespace
 
 Stream* Open(uint32_t freq, bool speaker) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	return nullptr;
+#else
 	if (freq == 0 || !SDL_InitSubSystem(SDL_INIT_AUDIO)) {
 		return nullptr;
 	}
 	return new Stream {.freq = freq, .speaker = speaker};
+#endif
 }
 
 void Close(Stream* stream) {

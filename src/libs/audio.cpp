@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/threads.h"
 #include "kernel/pthread.h"
@@ -10,6 +11,7 @@
 #include "libs/dualSenseHaptics.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
+#include "libs/ngs2.h"
 
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -219,6 +221,7 @@ void Initialize() {
 }
 
 void Shutdown() {
+	Ngs2::Shutdown();
 	delete g_audio;
 	g_audio = nullptr;
 }
@@ -263,6 +266,10 @@ SDL_AudioFormat Audio::SdlFormat(Format format) {
 bool Audio::OpenSdlDevice(PortOut* port) {
 	EXIT_IF(port == nullptr);
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	port->stream = nullptr;
+	return true;
+#else
 	if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
 		LOGF("AudioOut: SDL audio init failed: %s\n", SDL_GetError());
 		return false;
@@ -289,6 +296,7 @@ bool Audio::OpenSdlDevice(PortOut* port) {
 	LOGF("AudioOut: opened SDL stream (%d Hz, %d ch, format 0x%04x)\n", desired.freq,
 	     desired.channels, static_cast<unsigned>(desired.format));
 	return true;
+#endif
 }
 
 void Audio::CloseSdlDevice(PortOut* port) {
@@ -394,6 +402,9 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking, float 
 		const auto wait_start      = LibKernel::KernelGetProcessTime();
 		auto       queued          = SDL_GetAudioStreamQueued(port->stream);
 		while (queued > static_cast<int>(min_queued_size)) {
+			if (Common::HostException::IsEmulationShuttingDown()) {
+				break;
+			}
 			if (LibKernel::KernelGetProcessTime() - wait_start > 200000) {
 				SDL_ClearAudioStream(port->stream);
 				port->queue_primed = false;
@@ -451,7 +462,7 @@ Audio::Id Audio::AudioOutOpen(int type, uint32_t samples_num, uint32_t freq, For
 				case Format::Signed16bit8ChStd:
 				case Format::Float8ChStd: port.channels_num = 8; break;
 				case Format::Float12Ch: port.channels_num = 12; break;
-				default: EXIT("unknown format");
+				default: port.channels_num = 2; break;
 			}
 
 			for (int i = 0; i < port.channels_num; i++) {
@@ -608,7 +619,7 @@ uint32_t Audio::AudioOutOutputs(OutputParam* params, uint32_t num, bool blocking
 			port.queue_primed = false;
 		}
 	}
-	if (deadline > now) {
+	if (deadline > now && !Common::HostException::IsEmulationShuttingDown()) {
 		Common::Thread::SleepMicro(deadline - now);
 	}
 
@@ -630,6 +641,9 @@ static bool RecordingDevicePresent(SDL_AudioDeviceID device) {
 }
 
 void Audio::OpenSdlDevice(PortIn* port, Format format) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	return;
+#else
 	const auto& name = Config::GetAudioInputDevice();
 	if (name.empty()) {
 		return;
@@ -666,6 +680,7 @@ void Audio::OpenSdlDevice(PortIn* port, Format format) {
 	}
 	port->device = device;
 	LOGF("AudioIn: opened '%s' (%u Hz, %d ch)\n", name.c_str(), port->freq, desired.channels);
+#endif
 }
 
 void Audio::CloseSdlDevice(PortIn* port) {
@@ -860,7 +875,9 @@ int KYTY_SYSV_ABI AudioOutOpen(int user_id, int type, int index, uint32_t len, u
 	if (freq == 0) {
 		return AUDIO_OUT_ERROR_INVALID_SAMPLE_FREQ;
 	}
-	EXIT_NOT_IMPLEMENTED(index != 0);
+	if (index != 0) {
+		LOGF("\t warning: index %d != 0\n", index);
+	}
 
 	Audio::Format format       = Audio::Format::Unknown;
 	const auto    format_param = param & AUDIO_OUT_PARAM_FORMAT_MASK;
@@ -874,14 +891,18 @@ int KYTY_SYSV_ABI AudioOutOpen(int user_id, int type, int index, uint32_t len, u
 		case 5: format = Audio::Format::Float8Ch; break;
 		case 6: format = Audio::Format::Signed16bit8ChStd; break;
 		case 7: format = Audio::Format::Float8ChStd; break;
-		default:;
+		default: format = Audio::Format::FloatStereo; break;
 	}
 
 	LOGF("\t param   = %u (format=%u, %s)\n", param, format_param, magic_enum::enum_name(format));
 
-	EXIT_NOT_IMPLEMENTED(format == Audio::Format::Unknown);
+	if (format == Audio::Format::Unknown) {
+		format = Audio::Format::FloatStereo;
+	}
 
-	EXIT_IF(g_audio == nullptr);
+	if (g_audio == nullptr) {
+		return AUDIO_OUT_ERROR_PORT_FULL;
+	}
 
 	auto id = g_audio->AudioOutOpen(type, len, freq, format);
 

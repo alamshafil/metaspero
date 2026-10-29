@@ -17,7 +17,18 @@
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if !defined(TARGET_OS_IPHONE) || !TARGET_OS_IPHONE
 #include <net/route.h>
+#endif
+#ifndef RTF_UP
+#define RTF_UP 0x1
+#endif
+#ifndef RTF_REJECT
+#define RTF_REJECT 0x4
+#endif
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <sys/select.h>
@@ -2172,6 +2183,7 @@ int KYTY_SYSV_ABI Getsockopt(int s, int level, int optname, void* optval, uint32
 
 	const bool socket_error = (level == 0xffff && optname == 0x1007);
 	const bool send_timeout = (level == 0xffff && optname == 0x1105);
+	const bool boolean_option = (level == 0xffff && optname == 0x0020) || (level == 6 && optname == 1);
 	optname                = ConvertSocketOptionName(level, optname);
 	if (optname < 0) {
 		return SetGuestSocketError(Posix::POSIX_ENOPROTOOPT);
@@ -2208,6 +2220,10 @@ int KYTY_SYSV_ABI Getsockopt(int s, int level, int optname, void* optval, uint32
 	if (socket_error && len >= static_cast<SocketLength>(sizeof(int))) {
 		auto* error = static_cast<int*>(optval);
 		*error = ConvertHostSocketError(*error);
+	}
+	if (boolean_option && len >= static_cast<SocketLength>(sizeof(int))) {
+		auto* bool_val = static_cast<int*>(optval);
+		*bool_val = (*bool_val != 0) ? 1 : 0;
 	}
 	*optlen = static_cast<uint32_t>(len);
 	return 0;
@@ -3652,7 +3668,9 @@ int KYTY_SYSV_ABI NetCtlCheckCallback() {
 	const int event = (NetCtlConnected() ? NET_CTL_EVENT_IPOBTAINED : NET_CTL_EVENT_DISCONNECTED);
 	for (auto& cb: g_net_ctl_callbacks) {
 		if (cb.func != nullptr && cb.last_event != event) {
+#if !defined(KYTY_ENABLE_FEX_GUEST_CPU)
 			cb.func(event, cb.arg);
+#endif
 			cb.last_event = event;
 		}
 	}
@@ -3966,9 +3984,11 @@ int KYTY_SYSV_ABI NpCheckCallback() {
 			entry.pending = false;
 		}
 	}
+#if !defined(KYTY_ENABLE_FEX_GUEST_CPU)
 	for (const auto& entry: pending) {
 		entry.callback(Config::GetUserId(), np_state_signed_out, entry.userdata);
 	}
+#endif
 
 	return OK;
 }

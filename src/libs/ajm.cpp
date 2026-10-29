@@ -641,15 +641,13 @@ int KYTY_SYSV_ABI AjmModuleUnregister(uint32_t context, uint32_t codec) {
 	return OK;
 }
 
-int KYTY_SYSV_ABI AjmInstanceCreate(uint32_t context, uint32_t codec, uint64_t flags,
-                                    uint32_t* instance) {
+int KYTY_SYSV_ABI AjmInstanceCreate(uint32_t context, uint32_t codec, uint64_t flags) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(instance == nullptr);
 	const auto supported = AjmLogCodecSupport(codec);
 
-	const auto slot = (g_ajm_next_instance.fetch_add(1, std::memory_order_relaxed) & 0x3fffu);
-	*instance       = (codec << 14u) | slot;
+	const auto slot     = (g_ajm_next_instance.fetch_add(1, std::memory_order_relaxed) & 0x3fffu);
+	const auto instance = (codec << 14u) | slot;
 
 	auto state    = AjmInstanceState {};
 	state.context = context;
@@ -659,19 +657,19 @@ int KYTY_SYSV_ABI AjmInstanceCreate(uint32_t context, uint32_t codec, uint64_t f
 
 	{
 		std::scoped_lock lock(g_ajm_instances_mutex);
-		g_ajm_instances[*instance] = std::move(state);
+		g_ajm_instances[instance] = std::move(state);
 	}
 
 	LOGF("\t context  = %" PRIu32 "\n"
 	     "\t codec    = %" PRIu32 "\n"
 	     "\t flags    = 0x%016" PRIx64 "\n"
 	     "\t instance = 0x%08" PRIx32 "\n",
-	     context, codec, flags, *instance);
+	     context, codec, flags, instance);
 	if (!supported) {
 		LOGF("\t unsupported codec instance created without decoder\n");
 	}
 
-	return OK;
+	return static_cast<int>(instance);
 }
 
 int KYTY_SYSV_ABI AjmInstanceDestroy(uint32_t context, uint32_t instance) {

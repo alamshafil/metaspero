@@ -12,9 +12,11 @@
 #include "libs/systemService.h"
 #include "loader/symbolDatabase.h"
 
+#include <chrono>
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <thread>
 
 namespace Libs {
 
@@ -63,11 +65,13 @@ constexpr int                  PARAM_ID_LANG_PS5            = 400; // PPSA01325
 [[maybe_unused]] constexpr int PARAM_ENTER_BUTTON_ASSIGN_CROSS  = 1;
 
 struct SystemServiceStatus {
-	int32_t event_num                  = 0;
-	bool    is_system_ui_overlaid      = false;
-	bool    is_in_background_execution = false;
-	bool    is_vr_play_area_overlaid   = false;
-	uint8_t reserved[127]              = {};
+	int32_t event_num                     = 0;
+	bool    is_system_ui_overlaid         = false;
+	bool    is_in_background_execution    = false;
+	bool    is_cpu_mode7_cpu_normal       = true;
+	bool    is_game_live_streaming_on_air = false;
+	bool    is_out_of_vr_play_area        = false;
+	uint8_t reserved[125]                 = {};
 };
 
 struct SystemServiceEvent {
@@ -81,6 +85,14 @@ static std::deque<int32_t> g_events;
 void NotifyEntitlementUpdate() {
 	std::scoped_lock lock(g_event_mutex);
 	g_events.push_back(0x10000003); // SCE_SYSTEM_SERVICE_EVENT_ENTITLEMENT_UPDATE
+}
+
+void PostLaunchActivityEvent() {
+	std::scoped_lock lock(g_event_mutex);
+	g_events.push_back(0x10000017); // SCE_SYSTEM_SERVICE_EVENT_GAME_INTENT (launchActivity)
+	g_events.push_back(0x10000000); // SCE_SYSTEM_SERVICE_EVENT_ON_RESUME
+	std::printf("[SystemService] Queued launch activity events (0x10000017, 0x10000000)\n");
+	std::fflush(stdout);
 }
 
 struct SystemServiceDisplaySafeAreaInfo {
@@ -177,6 +189,8 @@ static int KYTY_SYSV_ABI SystemServiceReceiveEvent(SystemServiceEvent* event) {
 	}
 	event->event_type = g_events.front();
 	g_events.pop_front();
+	std::printf("[SystemService] Delivered event 0x%08x to guest\n", static_cast<uint32_t>(event->event_type));
+	std::fflush(stdout);
 	LOGF("\t SystemService event = 0x%08x\n", static_cast<uint32_t>(event->event_type));
 	return OK;
 }
@@ -188,13 +202,23 @@ static int KYTY_SYSV_ABI SystemServiceGetStatus(SystemServiceStatus* status) {
 		return SYSTEM_SERVICE_ERROR_PARAMETER;
 	}
 
-	const auto dialog                  = Dialog::SystemDialog::GetVisualState();
-	*status                            = SystemServiceStatus();
-	status->is_system_ui_overlaid      = dialog.active;
-	status->is_in_background_execution = dialog.background;
+	const auto dialog                     = Dialog::SystemDialog::GetVisualState();
+	*status                               = SystemServiceStatus();
+	status->is_system_ui_overlaid         = dialog.active;
+	status->is_in_background_execution    = dialog.background;
+	status->is_cpu_mode7_cpu_normal       = true;
+	status->is_game_live_streaming_on_air = false;
+	status->is_out_of_vr_play_area        = false;
 	{
 		std::scoped_lock lock(g_event_mutex);
 		status->event_num = static_cast<int32_t>(g_events.size());
+	}
+
+	// Throttle high-frequency spin loops when no events are pending
+	// to allow worker threads time to execute and prevent CPU starvation on iOS
+	static thread_local uint64_t poll_count = 0;
+	if (status->event_num == 0 && (++poll_count % 200) == 0) {
+		std::this_thread::sleep_for(std::chrono::microseconds(250));
 	}
 
 	return OK;

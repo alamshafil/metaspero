@@ -455,7 +455,16 @@ int KYTY_SYSV_ABI ImeUpdate(EventHandler handler) {
 			SyncGuestText(item.work, item.input, item.max_length, item.queued.text);
 			item.queued.event.param.text.str = item.work;
 		}
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+		static std::atomic<int> s_ime_cb_logged{0};
+		if (s_ime_cb_logged.fetch_add(1) < 3) {
+			std::printf("[Ime] Skipped direct guest callback invocation on host (handler=0x%016llx, event_id=%u)\n",
+			            (unsigned long long)handler, item.queued.event.id);
+			std::fflush(stdout);
+		}
+#else
 		handler(item.arg, &item.queued.event);
+#endif
 	}
 	return OK;
 }

@@ -478,6 +478,10 @@ void GameController::CheckActive() {
 	m_active_id     = new_active_id;
 	m_connected     = new_connected;
 	m_state         = {};
+	std::fill_n(m_state.axes, 4, 128);
+	std::fill_n(m_state.axes + 4, 2, 0);
+	m_state.orientation  = {0.0f, 0.0f, 0.0f, 1.0f};
+	m_state.accel        = {0.0f, 1.0f, 0.0f};
 	m_gyro_time     = 0;
 	m_up_reference_valid = false;
 	m_states_num    = 0;
@@ -509,6 +513,10 @@ void GameController::Button(int id, uint32_t button, bool down) {
 		m_state.time = LibKernel::KernelGetProcessTime();
 
 		m_state.buttons = down ? m_state.buttons | button : m_state.buttons & ~button;
+
+		std::printf("[PadInput] Button %s: 0x%08x (all=0x%08x, active_id=%d)\n",
+		            down ? "DOWN" : "UP", button, m_state.buttons, m_active_id);
+		std::fflush(stdout);
 
 		AddState();
 	}
@@ -1003,6 +1011,9 @@ int PadCheckHandle(int handle) {
 
 int KYTY_SYSV_ABI PadInit() {
 	PRINT_NAME();
+#if defined(__APPLE__)
+	Connect(HOST_INPUT_CONTROLLER_ID);
+#endif
 	return g_controller->InitPort();
 }
 
@@ -1131,6 +1142,14 @@ int KYTY_SYSV_ABI PadReadState(int handle, PadData* data) {
 	g_controller->ReadState(&state, &connected, &connected_count);
 
 	pad_fill_data(data, state, connected, connected_count);
+
+	static uint32_t last_logged_buttons = 0;
+	if (data->buttons != last_logged_buttons) {
+		std::printf("[PadReadState] Buttons: 0x%08x -> 0x%08x (handle=%d, conn=%d)\n",
+		            last_logged_buttons, data->buttons, handle, (int)data->connected);
+		std::fflush(stdout);
+		last_logged_buttons = data->buttons;
+	}
 
 	return OK;
 }

@@ -4,6 +4,7 @@
 namespace Libs::SystemService {
 
 void NotifyEntitlementUpdate();
+void PostLaunchActivityEvent();
 
 } // namespace Libs::SystemService
 

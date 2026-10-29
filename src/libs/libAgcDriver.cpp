@@ -1,4 +1,5 @@
 #include "common/abi.h"
+#include "graphics/shader/shader.h"
 #include "libs/agc.h"
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
@@ -12,7 +13,7 @@ LIB_VERSION("Graphics5", 1, "Graphics5", 1, 1);
 namespace Gen5 = Graphics::Gen5;
 
 LIB_DEFINE(InitAgcDriver_1) {
-	PRINT_NAME_ENABLE(true);
+	PRINT_NAME_ENABLE(false);
 
 	LIB_FUNC("23LRUSvYu1M", Gen5::AgcInit);
 	LIB_FUNC("2JtWUUiYBXs", Gen5::AgcGetRegisterDefaults2);
@@ -174,7 +175,7 @@ LIB_VERSION("Graphics5Driver", 1, "Graphics5Driver", 1, 1);
 namespace Gen5Driver = Graphics::Gen5Driver;
 
 LIB_DEFINE(InitAgcDriver_1) {
-	PRINT_NAME_ENABLE(true);
+	PRINT_NAME_ENABLE(false);
 
 	LIB_FUNC("UglJIZjGssM", Gen5Driver::AgcDriverSubmitDcb);
 	LIB_FUNC("AhGvpITrf4M", Gen5Driver::AgcDriverSubmitDcb);

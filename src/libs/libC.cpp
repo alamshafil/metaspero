@@ -13,6 +13,18 @@
 #include "loader/runtimeLinker.h"
 #include "loader/symbolDatabase.h"
 
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+#include "kernel/memory.h"
+#include "loader/fex/fexGuestEngine.h"
+#include "loader/fex/fexHleBridge.h"
+#endif
+
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#include "common/hostException.h"
+#include <SDL3/SDL.h>
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -71,7 +83,19 @@ const char** GetArgv() {
 static KYTY_SYSV_ABI void exit(int code) {
 	PRINT_NAME();
 
+	LOGF("Guest called LibC::exit(%d)\n", code);
+#if defined(__APPLE__)
+	std::printf("[LibC] Guest requested exit(code=%d). Gracefully notifying shutdown...\n", code);
+	std::fflush(stdout);
+	Common::HostException::SetEmulationShuttingDown(true);
+	SDL_Event quit_ev;
+	std::memset(&quit_ev, 0, sizeof(quit_ev));
+	quit_ev.type = SDL_EVENT_QUIT;
+	SDL_PushEvent(&quit_ev);
+	pthread_exit(reinterpret_cast<void*>(static_cast<intptr_t>(code)));
+#else
 	::exit(code);
+#endif
 }
 
 static void PrintAbortStringCandidate(const char* name, uint64_t addr) {
@@ -304,7 +328,12 @@ static KYTY_SYSV_ABI int libc_printf(VA_ARGS) {
 static KYTY_SYSV_ABI int puts(const char* s) {
 	PRINT_NAME();
 
-	return GetGuestPrintfStdFunc()("%s\n", s);
+	if (s == nullptr) {
+		return -1;
+	}
+	std::printf("[Game stdout] %s\n", s);
+	std::fflush(stdout);
+	return 0;
 }
 
 static KYTY_SYSV_ABI int setenv(const char* name, const char* value, int overwrite) {
@@ -323,6 +352,34 @@ static KYTY_SYSV_ABI int setenv(const char* name, const char* value, int overwri
 
 	// Guest environment changes must not leak into emulator host libraries.
 	return 0;
+}
+
+static KYTY_SYSV_ABI const char* getenv(const char* name) {
+	PRINT_NAME();
+
+	LOGF("\t name = %s\n", (name != nullptr ? name : "<null>"));
+
+	if (name == nullptr) {
+		return nullptr;
+	}
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	// Tuning for .NET CoreCLR / NativeAOT running on iOS hardware MMU limits:
+	if (std::strcmp(name, "DOTNET_GCHeapHardLimit") == 0 ||
+	    std::strcmp(name, "GCHeapHardLimit") == 0 ||
+	    std::strcmp(name, "DOTNET_GCHeapHardLimitSOH") == 0 ||
+	    std::strcmp(name, "GCHeapHardLimitSOH") == 0) {
+		std::printf("[LibC] getenv(%s) -> 0x20000000 (512 MB hard limit for iOS)\n", name);
+		std::fflush(stdout);
+		return "0x20000000";
+	}
+	if (std::strcmp(name, "DOTNET_gcServer") == 0 ||
+	    std::strcmp(name, "gcServer") == 0) {
+		return "0";
+	}
+#endif
+
+	return nullptr;
 }
 
 static KYTY_SYSV_ABI int64_t libc_time(int64_t* timer) {
@@ -503,7 +560,44 @@ static KYTY_SYSV_ABI int std_execute_once(int* flag, execute_once_func_t func, v
 	}
 
 	void* callback_context = nullptr;
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	constexpr uint64_t stack_size = 0x40000;
+	uint64_t stack_base = LibKernel::Memory::AllocateGuestStackMemory(
+	    0, stack_size, Common::VirtualMemory::Mode::ReadWrite, "execute_once_stack");
+	int result = 0;
+	if (stack_base != 0) {
+		uint64_t stack_top = (stack_base + stack_size - 0x80) & ~0xFull;
+		stack_top -= 8;
+		*reinterpret_cast<uint64_t*>(stack_top) = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
+
+		uint64_t fs_base = Loader::RuntimeLinker::GetMainTlsBase();
+
+		uint64_t guest_ctx_addr = stack_base + 0x10;
+		*reinterpret_cast<uint64_t*>(guest_ctx_addr) = 0;
+
+		std::printf("[LibC] std_execute_once: executing guest callback at 0x%016llx via FEX...\n",
+		            (unsigned long long)reinterpret_cast<uint64_t>(func));
+		std::fflush(stdout);
+
+		auto* thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
+		    reinterpret_cast<uint64_t>(func),
+		    stack_top,
+		    0,
+		    reinterpret_cast<uint64_t>(arg),
+		    guest_ctx_addr,
+		    fs_base);
+		if (thread != nullptr) {
+			result = Loader::Fex::FexGuestEngine::Instance().Run(thread);
+			Loader::Fex::FexGuestEngine::Instance().DestroyThread(thread);
+		}
+		callback_context = reinterpret_cast<void*>(*reinterpret_cast<uint64_t*>(guest_ctx_addr));
+		LibKernel::Memory::FreeGuestMemory(stack_base, stack_size);
+	}
+#elif defined(__x86_64__) || defined(_M_X64)
 	int   result           = func(nullptr, arg, &callback_context);
+#else
+	int   result           = 0;
+#endif
 
 	{
 		std::lock_guard lock(g_execute_once_mutex);
@@ -540,7 +634,11 @@ void KYTY_SYSV_ABI cxa_finalize(void* d) {
 			auto* func        = c.destructor_func;
 			auto* object      = c.destructor_object;
 			c.destructor_func = nullptr;
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+			Libs::LibKernel::PthreadCallGuestDestructor(reinterpret_cast<void (*)(void*)>(func), object);
+#else
 			func(object);
+#endif
 		}
 	}
 }
@@ -595,7 +693,7 @@ void RunThreadAtexitDestructors() {
 		g_thread_atexit_destructors.pop_back();
 
 		if (destructor.destructor != nullptr) {
-			destructor.destructor(destructor.object);
+			Libs::LibKernel::PthreadCallGuestDestructor(destructor.destructor, destructor.object);
 		}
 	}
 }
@@ -798,6 +896,7 @@ LIB_DEFINE(InitLibcInternal_1) {
 	LIB_FUNC("DiGVep5yB5w", LibC::std_execute_once);
 
 	LIB_FUNC("al3JzFI9MQ0", LibcInternal::LibcHeapErrorReportForGame);
+	LIB_FUNC("kiZSXIWd9vg", LibcInternal::strcpy);
 }
 
 } // namespace LibcInternal
@@ -805,6 +904,11 @@ LIB_DEFINE(InitLibcInternal_1) {
 namespace LibC {
 
 LIB_DEFINE(InitLibC_1) {
+	auto* ctx = Common::Singleton<CContext>::Instance();
+	ctx->cxa.clear();
+	ctx->atexit.clear();
+	LibC::g_need_flag = 1;
+
 	LibcInternal::InitLibcInternal_1(s);
 
 	LIB_OBJECT("P330P3dFF68", &LibC::g_need_flag);

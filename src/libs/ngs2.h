@@ -76,6 +76,8 @@ int KYTY_SYSV_ABI Ngs2GeomApply(const Ngs2GeomListenerWork* listener,
                                 const Ngs2GeomSourceParam* source, Ngs2GeomAttribute* out_attrib,
                                 uint32_t flags);
 
+void Shutdown();
+
 } // namespace Ngs2
 
 } // namespace Libs::Audio

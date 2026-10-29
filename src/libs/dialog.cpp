@@ -227,7 +227,7 @@ int KYTY_SYSV_ABI LoginDialogUpdateStatus() {
 int KYTY_SYSV_ABI LoginDialogGetStatus() {
 	PRINT_NAME();
 
-	return g_login_status;
+	return LoginDialogUpdateStatus();
 }
 
 int KYTY_SYSV_ABI LoginDialogGetResult(void* result) {
@@ -276,6 +276,7 @@ constexpr int SIGNIN_STATUS_NONE          = 0;
 constexpr int SIGNIN_STATUS_INITIALIZED   = 1;
 constexpr int SIGNIN_STATUS_RUNNING       = 2;
 constexpr int SIGNIN_STATUS_FINISHED      = 3;
+constexpr int SIGNIN_RESULT_OK            = 0;
 constexpr int SIGNIN_RESULT_USER_CANCELED = 1;
 
 constexpr int SIGNIN_ERROR_NOT_INITIALIZED     = static_cast<int>(0x81350001u);
@@ -353,14 +354,16 @@ int KYTY_SYSV_ABI SigninDialogClose() {
 
 int KYTY_SYSV_ABI SigninDialogUpdateStatus() {
 	PRINT_NAME();
-	std::scoped_lock lock(g_dialog_mutex);
+	std::unique_lock lock(g_dialog_mutex);
+	if (g_signin.status == SIGNIN_STATUS_RUNNING) {
+		SetDialogStatus(g_signin, SIGNIN_STATUS_FINISHED, lock);
+	}
 	return g_signin.status;
 }
 
 int KYTY_SYSV_ABI SigninDialogGetStatus() {
 	PRINT_NAME();
-	std::scoped_lock lock(g_dialog_mutex);
-	return g_signin.status;
+	return SigninDialogUpdateStatus();
 }
 
 int KYTY_SYSV_ABI SigninDialogGetResult(void* result) {
@@ -376,7 +379,7 @@ int KYTY_SYSV_ABI SigninDialogGetResult(void* result) {
 		return SIGNIN_ERROR_PARAM_INVALID;
 	}
 	auto* r        = static_cast<SigninDialogResult*>(result);
-	r->result      = SIGNIN_RESULT_USER_CANCELED;
+	r->result      = SIGNIN_RESULT_OK;
 	r->reserved[0] = 0;
 	r->reserved[1] = 0;
 	r->reserved[2] = 0;
@@ -455,6 +458,8 @@ int KYTY_SYSV_ABI SaveDataDialogInitialize() {
 	return OK;
 }
 
+int KYTY_SYSV_ABI SaveDataDialogUpdateStatus();
+
 int KYTY_SYSV_ABI SaveDataDialogGetStatus() {
 	PRINT_NAME();
 
@@ -484,9 +489,14 @@ int KYTY_SYSV_ABI SaveDataDialogGetResult(void* result) {
 		r->result    = SAVE_RESULT_OK;
 		r->button_id = SAVE_BUTTON_ID_OK;
 		r->user_data = g_save_user_data;
-		if (r->dir_name != nullptr && g_save_dir_name[0] != '\0') {
-			std::snprintf(static_cast<SaveDataDirName*>(r->dir_name)->data,
-			              sizeof(SaveDataDirName::data), "%s", g_save_dir_name);
+		if (r->dir_name != nullptr) {
+			if (g_save_dir_name[0] != '\0') {
+				std::snprintf(static_cast<SaveDataDirName*>(r->dir_name)->data,
+				              sizeof(SaveDataDirName::data), "%s", g_save_dir_name);
+			} else {
+				std::snprintf(static_cast<SaveDataDirName*>(r->dir_name)->data,
+				              sizeof(SaveDataDirName::data), "savedata");
+			}
 		}
 	}
 
@@ -814,15 +824,17 @@ int KYTY_SYSV_ABI ErrorDialogTerminate() {
 int KYTY_SYSV_ABI ErrorDialogUpdateStatus() {
 	PRINT_NAME();
 
-	std::scoped_lock lock(g_dialog_mutex);
+	std::unique_lock lock(g_dialog_mutex);
+	if (g_error.status == STATUS_RUNNING) {
+		SetDialogStatus(g_error, STATUS_FINISHED, lock);
+	}
 	return g_error.status;
 }
 
 int KYTY_SYSV_ABI ErrorDialogGetStatus() {
 	PRINT_NAME();
 
-	std::scoped_lock lock(g_dialog_mutex);
-	return g_error.status;
+	return ErrorDialogUpdateStatus();
 }
 
 } // namespace ErrorDialog

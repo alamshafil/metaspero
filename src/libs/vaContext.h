@@ -1,8 +1,11 @@
 #ifndef EMULATOR_INCLUDE_EMULATOR_LIBS_VACONTEXT_H_
 #define EMULATOR_INCLUDE_EMULATOR_LIBS_VACONTEXT_H_
 
-#include <cstddef>
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <xmmintrin.h>
+#else
+typedef float __m128 __attribute__((__vector_size__(16), __aligned__(16)));
+#endif
 
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define VA_ARGS                                                                                    \
@@ -30,7 +33,18 @@
 	(ctx).va_list.reg_save_area     = &(ctx).reg_save_area;                                        \
 	(ctx).va_list.gp_offset         = offsetof(VaRegSave, gp);                                     \
 	(ctx).va_list.fp_offset         = offsetof(VaRegSave, fp);                                     \
-	(ctx).va_list.overflow_arg_area = &overflow_arg_area;
+	(ctx).va_list.overflow_arg_area =                                                              \
+	    (sizeof(void*) == 8 && (defined_fex_or_arm64()))                                           \
+	        ? reinterpret_cast<void*>(overflow_arg_area)                                           \
+	        : static_cast<void*>(&overflow_arg_area);
+
+constexpr bool defined_fex_or_arm64() noexcept {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU) || defined(__aarch64__) || defined(_M_ARM64)
+	return true;
+#else
+	return false;
+#endif
+}
 
 namespace Libs {
 

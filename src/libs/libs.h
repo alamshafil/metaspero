@@ -46,7 +46,19 @@
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define LIB_OBJECT(n, f) LIB_ADD(n, f, Loader::SymbolType::Object)
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define LIB_FUNC(n, f) LIB_ADD(n, f, Loader::SymbolType::Func)
+#define LIB_FUNC(n, f)                                                                             \
+	{                                                                                              \
+		Loader::SymbolResolve sr {};                                                               \
+		sr.name                 = n;                                                               \
+		sr.library              = g_library;                                                       \
+		sr.library_version      = g_library_version;                                               \
+		sr.module               = g_module;                                                        \
+		sr.module_version_major = g_module_version_major;                                          \
+		sr.module_version_minor = g_module_version_minor;                                          \
+		sr.type                 = Loader::SymbolType::Func;                                        \
+		const char* dbg_name    = "" #f;                                                           \
+		s->AddFunction(sr, f, dbg_name);                                                           \
+	}
 
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define PRINT_NAME()                                                                               \

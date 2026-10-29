@@ -1,11 +1,13 @@
 #include "libs/ngs2.h"
 
 #include "common/assert.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/threads.h"
 #include "libs/ajm/atrac9_decoder.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
+#include "kernel/memory.h"
 
 #include <algorithm>
 #include <array>
@@ -1026,7 +1028,16 @@ int KYTY_SYSV_ABI Ngs2SystemCreateWithAllocator(const Ngs2SystemOption*    optio
 	buf.host_buffer_size = sizeof(Ngs2Internal);
 	buf.user_data        = allocator->user_data;
 
+#if defined(__APPLE__) || defined(__aarch64__)
+	// On ARM64 (FEX guest translation), allocator->alloc_handler is a guest x86-64 code address.
+	// Calling it directly as an ARM64 C function pointer causes an instruction fetch Bus Error.
+	// Since Ngs2Internal is an internal Kyty host state object, allocating it directly from host heap
+	// satisfies the buffer requirement safely and cleanly.
+	buf.host_buffer = std::calloc(1, buf.host_buffer_size);
+	int result = (buf.host_buffer != nullptr) ? OK : LibKernel::KERNEL_ERROR_ENOMEM;
+#else
 	int result = allocator->alloc_handler(&buf);
+#endif
 
 	EXIT_NOT_IMPLEMENTED(result != OK);
 	EXIT_NOT_IMPLEMENTED(buf.host_buffer == nullptr);
@@ -1294,7 +1305,12 @@ int KYTY_SYSV_ABI Ngs2RackCreateWithAllocator(uintptr_t system_handle, uint32_t 
 
 	EXIT_NOT_IMPLEMENTED(buf.host_buffer_size == 0);
 
+#if defined(__APPLE__) || defined(__aarch64__)
+	buf.host_buffer = std::calloc(1, buf.host_buffer_size);
+	int result = (buf.host_buffer != nullptr) ? OK : LibKernel::KERNEL_ERROR_ENOMEM;
+#else
 	int result = allocator->alloc_handler(&buf);
+#endif
 
 	EXIT_NOT_IMPLEMENTED(result != OK);
 	EXIT_NOT_IMPLEMENTED(buf.host_buffer == nullptr);
@@ -1373,9 +1389,16 @@ int KYTY_SYSV_ABI Ngs2RackDestroy(uintptr_t rack_handle, Ngs2ContextBufferInfo* 
 		std::destroy_at(rack);
 	}
 
+#if defined(__APPLE__) || defined(__aarch64__)
+	if (allocator.free_handler != nullptr && context_buffer.host_buffer != nullptr) {
+		std::free(context_buffer.host_buffer);
+		context_buffer.host_buffer = nullptr;
+	}
+#else
 	if (allocator.free_handler != nullptr) {
 		return allocator.free_handler(&context_buffer);
 	}
+#endif
 	if (buffer_info != nullptr) {
 		*buffer_info = context_buffer;
 	}
@@ -1455,8 +1478,36 @@ static void Ngs2FinishBlock(Ngs2VoiceInternal& voice) {
 		voice.blocks.pop_front();
 	}
 	if (voice.callback != 0 && (voice.callback_flags & info.flag) != 0) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+		if (!LibKernel::Memory::IsInitialized()) {
+			reinterpret_cast<void KYTY_SYSV_ABI (*)(const Ngs2VoiceCallbackInfo*)>(voice.callback)(
+			    &info);
+		} else {
+			static std::atomic<int> s_callback_log_count{0};
+			if (s_callback_log_count.fetch_add(1) < 5) {
+				std::printf("[Ngs2] Handled guest voice callback (voice=0x%016llx, callback=0x%016llx, data=0x%016llx, flag=0x%x)\n",
+				            (unsigned long long)&voice, (unsigned long long)voice.callback,
+				            (unsigned long long)info.data, info.flag);
+				std::fflush(stdout);
+			}
+			if ((info.flag & 1) != 0 && info.data != 0) {
+				auto* rbx = reinterpret_cast<uint8_t*>(info.data);
+				auto* counter_ptr = reinterpret_cast<std::atomic<uint32_t>*>(rbx + 4);
+				counter_ptr->fetch_add(1, std::memory_order_relaxed);
+				if (info.user != 0 && *reinterpret_cast<const uint8_t*>(info.user + 0x48) != 0) {
+					uintptr_t v_handle = *reinterpret_cast<const uint64_t*>(rbx + 0x28);
+					alignas(16) uint8_t state_buf[64] = {};
+					if (Ngs2VoiceGetState(v_handle, reinterpret_cast<Ngs2VoiceState*>(state_buf), 0x30) == OK) {
+						*reinterpret_cast<uint64_t*>(rbx + 8) =
+						    *reinterpret_cast<const uint64_t*>(state_buf + 0x10);
+					}
+				}
+			}
+		}
+#else
 		reinterpret_cast<void KYTY_SYSV_ABI (*)(const Ngs2VoiceCallbackInfo*)>(voice.callback)(
 		    &info);
+#endif
 	}
 }
 
@@ -1771,6 +1822,9 @@ static void Ngs2RenderVoice(Ngs2VoiceInternal& voice, const std::vector<Ngs2Voic
 
 int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBufferInfo* buffer_info,
                                    uint32_t num_buffer_info) {
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		return OK;
+	}
 	EXIT_NOT_IMPLEMENTED(buffer_info == nullptr || system_handle == 0 || num_buffer_info == 0);
 	auto* ngs = reinterpret_cast<Ngs2Internal*>(system_handle);
 	Common::LockGuard lock(ngs->mutex);
@@ -2595,6 +2649,57 @@ int KYTY_SYSV_ABI Ngs2VoiceGetStateFlags(uintptr_t voice_handle, uint32_t* state
 	*state_flags = Ngs2GetStateFlags(voice);
 
 	return OK;
+}
+
+void Shutdown() {
+	Common::LockGuard racks_lock(g_racks_mutex);
+	auto* rack = g_racks_list;
+	while (rack != nullptr) {
+		auto* next_rack = rack->next;
+		auto* voices = reinterpret_cast<Ngs2VoiceInternal*>(rack + 1);
+		for (uint32_t i = 0; i < rack->option.common.max_voices; ++i) {
+			for (size_t m = 0; m < voices[i].modules.size(); ++m) {
+				const auto& fx = rack->fx[m];
+				if (fx.cleanup != nullptr) {
+					auto& module = voices[i].modules[m];
+					Ngs2UserFxContext context {rack->common[m].data(),
+					                           module.param.data(),
+					                           module.work.data(),
+					                           fx.user_data,
+					                           rack->option.common.max_voices,
+					                           i};
+					fx.cleanup(&context);
+				}
+			}
+			std::destroy_at(voices + i);
+		}
+		auto context_buffer = rack->buffer_info;
+		auto allocator = rack->allocator;
+		std::destroy_at(rack);
+#if defined(__APPLE__) || defined(__aarch64__)
+		if (allocator.free_handler != nullptr && context_buffer.host_buffer != nullptr) {
+			std::free(context_buffer.host_buffer);
+		}
+#endif
+		rack = next_rack;
+	}
+	g_racks_list = nullptr;
+
+	auto* ngs = g_ngs_list;
+	while (ngs != nullptr) {
+		auto* next_ngs = ngs->next;
+		auto context_buffer = ngs->buffer_info;
+		auto allocator = ngs->allocator;
+		std::destroy_at(ngs);
+#if defined(__APPLE__) || defined(__aarch64__)
+		if (allocator.free_handler != nullptr && context_buffer.host_buffer != nullptr) {
+			std::free(context_buffer.host_buffer);
+		}
+#endif
+		ngs = next_ngs;
+	}
+	g_ngs_list = nullptr;
+	g_next_ngs_uid.store(1, std::memory_order_relaxed);
 }
 
 } // namespace Ngs2

@@ -37,7 +37,11 @@ struct AudioOut2PortParam;
 struct AudioOut2Attribute;
 struct AudioOut2PortState;
 struct AudioOut2SystemState;
-struct AudioOut2Position;
+struct AudioOut2Position {
+	float x;
+	float y;
+	float z;
+};
 struct AudioOut2SpeakerInfo;
 struct AudioOut2SystemDebugStateParam;
 struct AudioOut2MasteringParamsHeader;
@@ -133,8 +137,7 @@ int KYTY_SYSV_ABI AjmInitialize(int64_t reserved, uint32_t* context);
 int KYTY_SYSV_ABI AjmModuleRegister(uint32_t context, uint32_t codec, int64_t reserved);
 int KYTY_SYSV_ABI AjmModuleUnregister(uint32_t context, uint32_t codec);
 int KYTY_SYSV_ABI AjmFinalize(uint32_t context);
-int KYTY_SYSV_ABI AjmInstanceCreate(uint32_t context, uint32_t codec, uint64_t flags,
-                                    uint32_t* instance);
+int KYTY_SYSV_ABI AjmInstanceCreate(uint32_t context, uint32_t codec, uint64_t flags);
 int KYTY_SYSV_ABI AjmInstanceDestroy(uint32_t context, uint32_t instance);
 int KYTY_SYSV_ABI AjmMemoryRegister(uint32_t context, void* ptr, size_t pages);
 int KYTY_SYSV_ABI AjmMemoryUnregister(uint32_t context, void* ptr);

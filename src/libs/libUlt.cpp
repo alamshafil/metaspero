@@ -5,6 +5,10 @@
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
 
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+#include "loader/fex/fexGuestEngine.h"
+#endif
+
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -204,14 +208,21 @@ static int KYTY_SYSV_ABI UltUlthreadRuntimeCreate(void* runtime, const char* nam
 
 static KYTY_SYSV_ABI void* UltUlthreadRun(void* arg) {
 	auto* state = static_cast<UltUlthreadState*>(arg);
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	uint64_t ret = Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
+	    reinterpret_cast<uint64_t>(state->entry), state->arg);
+	return reinterpret_cast<void*>(static_cast<intptr_t>(ret));
+#else
 	return reinterpret_cast<void*>(static_cast<intptr_t>(state->entry(state->arg)));
+#endif
 }
 
 static int KYTY_SYSV_ABI UltUlthreadCreate(void* ulthread, const char* name, UltUlthreadEntry entry,
                                            uint64_t arg, void* context, uint64_t size_context,
                                            void* runtime, const void* opt_param,
-                                           uint32_t build_version) {
+                                           uint64_t build_version_raw) {
 	PRINT_NAME();
+	const auto build_version = static_cast<uint32_t>(build_version_raw);
 
 	LOGF("\t ulthread      = 0x%016" PRIx64 "\n"
 	     "\t name          = 0x%016" PRIx64 "\n"
@@ -349,8 +360,9 @@ static int KYTY_SYSV_ABI UltQueueDataResourcePoolCreate(void* pool, const char* 
                                                         uint32_t num_queue_object,
                                                         void*    waiting_queue_resource_pool,
                                                         void* work_area, const void* opt_param,
-                                                        uint32_t build_version) {
+                                                        uint64_t build_version_raw) {
 	PRINT_NAME();
+	const auto build_version = static_cast<uint32_t>(build_version_raw);
 
 	if (pool == nullptr) {
 		return ULT_ERROR_NULL;
@@ -708,6 +720,7 @@ static int KYTY_SYSV_ABI UltSemaphoreDestroy(void* semaphore) {
 }
 
 LIB_DEFINE(InitUlt_1) {
+	UltFinalize();
 	LIB_FUNC("hZIg1EWGsHM", UltInitialize);
 	LIB_FUNC("d-kSG2fLrvI", UltFinalize);
 	LIB_FUNC("V2u3WLrwh64", UltUlthreadRuntimeOptParamInitialize);
