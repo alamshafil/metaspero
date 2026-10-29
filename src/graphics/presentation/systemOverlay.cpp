@@ -500,7 +500,9 @@ void HideSplashScreen() {
 }
 
 void InitializeSystemOverlayInput(SDL_Window* window) {
+#if !defined(__APPLE__)
 	EXIT_IF(window == nullptr);
+#endif
 	const Uint32 type = SDL_RegisterEvents(1);
 	EXIT_IF(type == static_cast<Uint32>(-1));
 	g_input_window = window;
@@ -577,10 +579,12 @@ bool ProcessSystemOverlayInput(const SDL_Event& event) {
 		g_input_controller      = update.capture_controller;
 		g_input_keyboard        = update.capture_keyboard;
 		g_input_multiline       = update.multiline;
-		if (update.text_input) {
-			SDL_StartTextInput(g_input_window);
-		} else if (SDL_TextInputActive(g_input_window)) {
-			SDL_StopTextInput(g_input_window);
+		if (g_input_window != nullptr) {
+			if (update.text_input) {
+				SDL_StartTextInput(g_input_window);
+			} else if (SDL_TextInputActive(g_input_window)) {
+				SDL_StopTextInput(g_input_window);
+			}
 		}
 		return true;
 	}
@@ -738,6 +742,9 @@ struct SystemOverlay::Impl {
 	}
 
 	void PlayTrophySound() {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		return;
+#else
 		if (!trophy_sound_attempted) {
 			trophy_sound_attempted   = true;
 			trophy_sound_initialized = SDL_InitSubSystem(SDL_INIT_AUDIO);
@@ -773,6 +780,7 @@ struct SystemOverlay::Impl {
 		     !SDL_ResumeAudioStreamDevice(trophy_sound_stream))) {
 			LOGF("[Trophy] could not play sound: %s\n", SDL_GetError());
 		}
+#endif
 	}
 
 	std::unique_ptr<ImTextureData> LoadTrophyIcon(std::span<const std::byte> encoded) {

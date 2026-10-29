@@ -365,6 +365,12 @@ private:
 } // namespace
 
 void CompileSrtWalker(ResourcePlan& program) {
+#if defined(__arm64__) || defined(__aarch64__)
+	// On ARM64 hosts, x86-64 machine code emitted by Xbyak cannot be executed directly on the host CPU.
+	// Leaving srt_code null causes SrtWalker::RefreshFlatBuffer to use the built-in native C++ evaluator.
+	(void)program;
+	return;
+#endif
 	if (!program.resource_tracking_complete || !program.srt_plan_complete ||
 	    program.capture_specialization_reads || !program.control_flow.empty() ||
 	    program.srt_reads.empty()) return;

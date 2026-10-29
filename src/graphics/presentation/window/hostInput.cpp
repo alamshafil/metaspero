@@ -2,6 +2,11 @@
 
 #include <SDL3/SDL.h>
 
+#if defined(__APPLE__)
+#include <dispatch/dispatch.h>
+#include <pthread.h>
+#endif
+
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
@@ -474,7 +479,38 @@ bool HostInputWaitEvent(SDL_Event* event, int max_wait_ms) {
 		timeout = timeout < 0 ? cursor_timeout : std::min(timeout, cursor_timeout);
 	}
 	timeout              = timeout < 0 ? max_wait_ms : std::min(timeout, max_wait_ms);
+#if defined(__APPLE__)
+	bool has_event = false;
+	const auto start_ticks = SDL_GetTicks();
+	const int effective_timeout = std::max(0, timeout);
+	while (true) {
+#if TARGET_OS_IPHONE
+		if (!pthread_main_np()) {
+			dispatch_sync(dispatch_get_main_queue(), ^{
+				SDL_PumpEvents();
+			});
+		} else {
+			SDL_PumpEvents();
+		}
+#else
+		SDL_UpdateJoysticks();
+#endif
+		if (SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) > 0) {
+			has_event = true;
+			break;
+		}
+		if (effective_timeout == 0) {
+			break;
+		}
+		const auto current_ticks = SDL_GetTicks();
+		if (current_ticks - start_ticks >= static_cast<uint64_t>(effective_timeout)) {
+			break;
+		}
+		SDL_Delay(5);
+	}
+#else
 	const bool has_event = SDL_WaitEventTimeout(event, timeout);
+#endif
 
 	if (Config::HideCursorEnabled()) {
 		const auto now_ms = SDL_GetTicks();
@@ -488,7 +524,7 @@ bool HostInputWaitEvent(SDL_Event* event, int max_wait_ms) {
 		}
 	}
 
-	if (has_event && event->type == SDL_EVENT_WINDOW_FOCUS_LOST &&
+	if (has_event && event->type == SDL_EVENT_WINDOW_FOCUS_LOST && g_mouse_window != nullptr &&
 	    event->window.windowID == SDL_GetWindowID(g_mouse_window)) {
 		g_mouse.next_poll = 0;
 		CenterMouseStick();

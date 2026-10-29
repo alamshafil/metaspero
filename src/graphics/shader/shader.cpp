@@ -50,9 +50,13 @@ static std::unique_ptr<std::unordered_map<uint64_t, ShaderMapEntry>> g_shader_ma
 static std::mutex                                                      g_shader_map_mutex;
 
 void ShaderInit() {
-	EXIT_IF(g_shader_map != nullptr);
-
+	std::scoped_lock lock(g_shader_map_mutex);
 	g_shader_map = std::make_unique<std::unordered_map<uint64_t, ShaderMapEntry>>();
+}
+
+void ShaderShutdown() {
+	std::scoped_lock lock(g_shader_map_mutex);
+	g_shader_map.reset();
 }
 
 void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {

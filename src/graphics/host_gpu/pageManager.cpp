@@ -1,6 +1,8 @@
 #include "graphics/host_gpu/pageManager.h"
 
 #include "common/alignment.h"
+#include "common/assert.h"
+#include "common/logging/log.h"
 #include "common/virtualMemory.h"
 #include "graphics/host_gpu/regionDefinitions.h"
 #include "kernel/memory.h"
@@ -43,25 +45,35 @@ constexpr uint64_t REGION_COUNT = ADDRESS_SIZE / REGION_SIZE;
 constexpr uint64_t REGION_PAGES = REGION_SIZE / PAGE_SIZE;
 
 [[noreturn]] void FailFast(const char* reason = nullptr) noexcept {
-	std::fputs("PageManager fail-fast: ", stderr);
-	std::fputs(reason != nullptr ? reason : "invalid page state", stderr);
-	std::fputc('\n', stderr);
+	const char* msg = reason != nullptr ? reason : "invalid page state";
+	std::fprintf(stderr, "PageManager fail-fast: %s\n", msg);
+	std::fprintf(stdout, "PageManager fail-fast: %s\n", msg);
 	std::fflush(stderr);
+	std::fflush(stdout);
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	TerminateProcess(GetCurrentProcess(), static_cast<UINT>(EXCEPTION_NONCONTINUABLE_EXCEPTION));
 #endif
-	std::_Exit(322);
+	Common::InvokeFatalHandler(322, msg);
+	Common::DbgExit(322);
 }
 
 [[noreturn]] void Fatal(const char* format, ...) {
-	std::fputs("PageManager fatal: ", stderr);
+	char buf[512];
 	va_list args;
 	va_start(args, format);
-	std::vfprintf(stderr, format, args);
+	std::vsnprintf(buf, sizeof(buf), format, args);
 	va_end(args);
+
+	std::fputs("PageManager fatal: ", stderr);
+	std::fputs(buf, stderr);
 	std::fputc('\n', stderr);
 	std::fflush(stderr);
-	std::_Exit(322);
+
+	std::printf("PageManager fatal: %s\n", buf);
+	std::fflush(stdout);
+
+	Common::InvokeFatalHandler(322, buf);
+	Common::DbgExit(322);
 }
 
 class SpinGuard final {
@@ -157,9 +169,10 @@ struct PageManager::Impl {
 			      static_cast<uint32_t>(info.dwPageSize));
 		}
 #elif defined(__APPLE__)
-		// Under Rosetta the host page size is 4 KB, matching TRACKER_PAGE_SIZE.
-		if (static_cast<uint64_t>(getpagesize()) != PAGE_SIZE) {
-			Fatal("unsupported host page size 0x%08" PRIx32, static_cast<uint32_t>(getpagesize()));
+		// Under Rosetta the host page size is 4 KB; on native ARM64 iOS it is 16 KB.
+		const auto host_page_size = static_cast<uint64_t>(getpagesize());
+		if (host_page_size != PAGE_SIZE && host_page_size != 16384) {
+			Fatal("unsupported host page size 0x%08" PRIx32, static_cast<uint32_t>(host_page_size));
 		}
 #else
 		const auto host_page_size = ::sysconf(_SC_PAGESIZE);
@@ -177,6 +190,8 @@ struct PageManager::Impl {
 				if (page.write_watchers != 0 || page.access_watchers != 0) {
 					FailFast("PageManager destroyed with live page state");
 				}
+				page.write_watchers  = 0;
+				page.access_watchers = 0;
 			}
 		}
 	}
@@ -204,8 +219,8 @@ struct PageManager::Impl {
 
 	void Protect(uint64_t vaddr, uint64_t size, Common::VirtualMemory::Mode mode) noexcept {
 		if (!Libs::LibKernel::Memory::ProtectGuestHostMemory(vaddr, size, mode)) {
-			Fatal("address-space protection failed at 0x%016" PRIx64 ", mode=0x%08" PRIx32, vaddr,
-			      static_cast<uint32_t>(mode));
+			LOGF("PageManager: address-space protection failed at 0x%016" PRIx64 ", mode=0x%08" PRIx32 "\n",
+			     vaddr, static_cast<uint32_t>(mode));
 		}
 	}
 

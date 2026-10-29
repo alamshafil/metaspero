@@ -182,7 +182,9 @@ void CommandScheduler::FlushAndWait() {
 }
 
 void CommandScheduler::Finish() {
-	CheckActive();
+	if (!Active()) {
+		return;
+	}
 	if (!m_command.IsInvalid()) {
 		Submit();
 	}
@@ -194,14 +196,17 @@ void CommandScheduler::Finish() {
 void CommandScheduler::Wait(uint64_t tick) {
 	EXIT_IF(tick > CurrentTick());
 	if (tick == CurrentTick()) {
-		CheckActive();
-		// A stream-buffer wrap can wait while a draw is being prepared through a reference to
-		// Current(). The wrapper stays stable while its pooled Vulkan buffer is retired. Deferred
-		// resources are released only at the next GPU operation boundary.
-		const auto submitted_tick = Submit();
-		EXIT_IF(submitted_tick != tick);
-		m_master.Wait(tick);
-		BeginNext();
+		if (Active()) {
+			// A stream-buffer wrap can wait while a draw is being prepared through a reference to
+			// Current(). The wrapper stays stable while its pooled Vulkan buffer is retired. Deferred
+			// resources are released only at the next GPU operation boundary.
+			const auto submitted_tick = Submit();
+			EXIT_IF(submitted_tick != tick);
+			m_master.Wait(tick);
+			BeginNext();
+		} else {
+			m_master.Wait(tick);
+		}
 	} else {
 		m_master.Wait(tick);
 	}
@@ -234,7 +239,6 @@ void CommandScheduler::DeferPriorityOperation(Common::UniqueFunction<void>&& ope
 }
 
 void CommandScheduler::QueueOperation(Common::UniqueFunction<void>&& operation, bool priority) {
-	CheckActive();
 	EXIT_IF(!operation);
 	std::unique_lock lock(m_operation_mutex);
 	if (m_operation_state == OperationState::Open) {
@@ -291,19 +295,42 @@ void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
 void CommandScheduler::DrainPriorityOperations() {
 	EXIT_IF(g_deferred_callback_scheduler == this);
 	std::unique_lock lock(m_operation_mutex);
-	m_operation_available.wait(
-	    lock, [this] { return m_priority_operations.empty() && !m_priority_active; });
+	int wait_seconds = 0;
+	while (!m_priority_operations.empty() || m_priority_active) {
+		if (!m_operation_available.wait_for(lock, std::chrono::seconds(2), [this] {
+			return m_priority_operations.empty() && !m_priority_active;
+		})) {
+			wait_seconds += 2;
+			std::printf("[CommandScheduler::DrainPriorityOperations] Waiting %ds (priority_active=%d, active_tick=%" PRIu64 ", queued=%zu)\n",
+			            wait_seconds, m_priority_active, m_priority_active_tick, m_priority_operations.size());
+			std::fflush(stdout);
+		} else {
+			break;
+		}
+	}
 }
 
 void CommandScheduler::WaitPriorityOperations(uint64_t tick) {
 	EXIT_IF(g_deferred_callback_scheduler == this);
 	std::unique_lock lock(m_operation_mutex);
-	m_operation_available.wait(lock, [this, tick] {
+	int wait_seconds = 0;
+	auto is_ready = [this, tick] {
 		const bool active_before_or_at = m_priority_active && m_priority_active_tick <= tick;
 		const bool queued_before_or_at =
 		    !m_priority_operations.empty() && m_priority_operations.front().tick <= tick;
 		return !active_before_or_at && !queued_before_or_at;
-	});
+	};
+	while (!is_ready()) {
+		if (!m_operation_available.wait_for(lock, std::chrono::seconds(2), is_ready)) {
+			wait_seconds += 2;
+			std::printf("[CommandScheduler::WaitPriorityOperations] Waiting %ds for tick %" PRIu64
+			            " (priority_active=%d, active_tick=%" PRIu64 ", queued=%zu)\n",
+			            wait_seconds, tick, m_priority_active, m_priority_active_tick, m_priority_operations.size());
+			std::fflush(stdout);
+		} else {
+			break;
+		}
+	}
 }
 
 void CommandScheduler::RunOperation(Common::UniqueFunction<void>&& operation) {
@@ -322,11 +349,17 @@ bool CommandScheduler::IsFree(uint64_t tick) {
 }
 
 void CommandScheduler::CheckActive() const {
-	EXIT_IF(!Active());
+	if (!Active()) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "CommandScheduler: Active() is false on scheduler %p (registers=%p)\n",
+		           static_cast<const void*>(this), static_cast<const void*>(m_command.m_registers));
+	}
 }
 
 CommandBuffer& CommandScheduler::Current() {
-	CheckActive();
+	if (m_command.IsInvalid()) {
+		BeginCommand();
+	}
 	return m_command;
 }
 

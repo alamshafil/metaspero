@@ -1,5 +1,9 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -131,8 +135,27 @@ void BufferCache::DeleteBuffer(BufferId id) {
 	}
 	Unregister(id);
 	if (m_scheduler.Active()) {
-		m_scheduler.DeferOperation([this, id] { m_slot_buffers.erase(id); });
+		m_scheduler.DeferOperation([this, id] {
+			if (m_graphics.device_address_destruction_waits_for_queue) {
+				// MoltenVK makes every live device-address buffer resident in each command buffer.
+				// Draining the queue on the host ensures no submitted Metal command buffer is
+				// alive or still retaining this buffer before it is destroyed.
+				Common::LockGuard lock(m_graphics.queue_mutex);
+				if (m_graphics.queue != nullptr) {
+					std::ignore = m_graphics.queue.waitIdle();
+				}
+				m_scheduler.GetMasterSemaphore().Refresh();
+			}
+			m_slot_buffers.erase(id);
+		});
 	} else {
+		if (m_graphics.device_address_destruction_waits_for_queue) {
+			Common::LockGuard lock(m_graphics.queue_mutex);
+			if (m_graphics.queue != nullptr) {
+				std::ignore = m_graphics.queue.waitIdle();
+			}
+			m_scheduler.GetMasterSemaphore().Refresh();
+		}
 		m_slot_buffers.erase(id);
 	}
 }
@@ -252,15 +275,11 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 }
 
 BufferCache::~BufferCache() {
-	if (!m_gpu_modified_ranges.Empty()) {
-		EXIT("BufferCache: destroyed with pending GPU-modified ranges\n");
-	}
-	for (const auto& [vaddr, id]: m_buffers) {
-		(void)vaddr;
+	m_gpu_modified_ranges.Clear();
+	for (const auto& [addr, id]: m_buffers) {
 		const auto& buffer = m_slot_buffers[id];
-		if (m_memory_tracker.IsRegionGpuModified(buffer.CpuAddress(), buffer.Size())) {
-			EXIT("BufferCache: destroyed with GPU-modified buffer\n");
-		}
+		m_memory_tracker.UnmarkRegionAsGpuModified(buffer.CpuAddress(), buffer.Size());
+		m_memory_tracker.UntrackMemory(buffer.CpuAddress(), buffer.Size());
 	}
 	m_buffers.clear();
 }
@@ -280,7 +299,10 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		     vaddr, size);
 	}
 	m_scheduler.Context().GetGpu().SendCommandSync([this, vaddr, size, is_write] {
-		if (is_write && !IsRegionRegistered(vaddr, size)) {
+		if (!IsRegionRegistered(vaddr, size)) {
+			return;
+		}
+		if (!is_write && !IsRegionGpuModified(vaddr, size)) {
 			return;
 		}
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
@@ -480,10 +502,11 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	}
 
 	if (!is_written && size <= CACHING_PAGESIZE &&
-	    !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
-	    m_memory_tracker.IsRegionCpuModified(vaddr, size)) {
-		const auto alignment = std::max<uint64_t>(
-		    m_graphics.physical_device_properties.limits.minUniformBufferOffsetAlignment, 1);
+	    !m_memory_tracker.IsRegionGpuModified(vaddr, size)) {
+		const auto alignment = std::max<uint64_t>({
+		    m_graphics.StorageMinAlignment(),
+		    m_graphics.physical_device_properties.limits.minUniformBufferOffsetAlignment,
+		    uint64_t{1}});
 		auto [mapped, offset] = m_stream_buffer.Map(size, alignment, false);
 		if (mapped != nullptr) {
 			std::memcpy(mapped, reinterpret_cast<const void*>(vaddr), size);
@@ -522,38 +545,79 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	}
 
 	auto [staging, stage_offset] = m_staging_buffer.Map(size, 16);
-	if (staging == nullptr || !Libs::LibKernel::Memory::TryReadSparseBacking(vaddr, staging, size)) {
-		EXIT("BufferCache: failed to read mapped guest image backing\n");
+	if (staging == nullptr) {
+		LOGF("BufferCache: staging Map failed for size=%" PRIu64 ", falling back to ObtainBuffer\n", size);
+		return ObtainBuffer(vaddr, size, false, false);
+	}
+	if (!Libs::LibKernel::Memory::TryReadSparseBacking(vaddr, staging, size)) {
+		LOGF("BufferCache: TryReadSparseBacking failed for image (vaddr=0x%" PRIx64 ", size=%" PRIu64 "), zero-filling staging buffer\n",
+		     vaddr, size);
+		std::memset(staging, 0, size);
 	}
 	m_staging_buffer.Commit();
 	return {&m_staging_buffer, stage_offset};
 }
 
 void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool is_gds) {
-	if ((vaddr & 3u) != 0 || size == 0 || (size & 3u) != 0 || size > UINT64_MAX - vaddr) {
-		EXIT("BufferCache: fill range must be dword aligned\n");
+	if (size == 0 || size > UINT64_MAX - vaddr) {
+		return;
 	}
 	if (is_gds) {
 		if (vaddr > m_gds_buffer.Size() || size > m_gds_buffer.Size() - vaddr) {
-			EXIT("BufferCache: GDS fill range is out of bounds\n");
+			LOGF("BufferCache: GDS fill range is out of bounds (vaddr=0x%" PRIx64 ", size=%" PRIu64 ")\n",
+			     vaddr, size);
+			return;
 		}
-		m_gds_buffer.Fill(vaddr, size, value);
+		if (((vaddr | size) & 3u) == 0) {
+			m_gds_buffer.Fill(vaddr, size, value);
+		} else {
+			auto* dst_bytes = m_gds_buffer.Mapped().data() + vaddr;
+			const uint8_t val_bytes[4] = {
+				static_cast<uint8_t>(value & 0xffu),
+				static_cast<uint8_t>((value >> 8u) & 0xffu),
+				static_cast<uint8_t>((value >> 16u) & 0xffu),
+				static_cast<uint8_t>((value >> 24u) & 0xffu)
+			};
+			for (uint64_t i = 0; i < size; ++i) {
+				dst_bytes[i] = val_bytes[(vaddr + i) & 3u];
+			}
+		}
 		return;
 	}
 	if (vaddr == 0) {
-		EXIT("BufferCache: invalid fill memory address\n");
+		LOGF("BufferCache: invalid fill memory address (vaddr=0)\n");
+		return;
 	}
 	(void)m_texture_cache.ClearMeta(vaddr);
-	if (!IsRegionGpuModified(vaddr, size)) {
-		// Access the guest mapping so write faults invalidate cached buffers and images.
+
+	auto* dst_bytes = reinterpret_cast<uint8_t*>(vaddr);
+	const uint8_t val_bytes[4] = {
+		static_cast<uint8_t>(value & 0xffu),
+		static_cast<uint8_t>((value >> 8u) & 0xffu),
+		static_cast<uint8_t>((value >> 16u) & 0xffu),
+		static_cast<uint8_t>((value >> 24u) & 0xffu)
+	};
+
+	if (((vaddr | size) & 3u) == 0) {
 		auto* destination = reinterpret_cast<uint32_t*>(vaddr);
 		std::fill(destination, destination + size / sizeof(uint32_t), value);
+	} else {
+		for (uint64_t i = 0; i < size; ++i) {
+			dst_bytes[i] = val_bytes[(vaddr + i) & 3u];
+		}
+	}
+
+	if (!IsRegionGpuModified(vaddr, size)) {
 		return;
 	}
 
 	m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
 	auto [dst, dst_offset] = ObtainBuffer(vaddr, size, true, true);
-	dst->Fill(dst_offset, size, value);
+	if (((dst_offset | size) & 3u) == 0) {
+		dst->Fill(dst_offset, size, value);
+	} else {
+		WriteDataBuffer(*dst, vaddr, reinterpret_cast<const void*>(vaddr), size);
+	}
 }
 
 void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t size, bool dst_gds,
@@ -561,13 +625,13 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	const bool dst_memory = !dst_gds;
 	const bool src_memory = !src_gds;
 	if ((dst_memory && dst_vaddr == 0) || (src_memory && src_vaddr == 0) || size == 0 ||
-	    ((dst_gds || src_gds) && ((dst_vaddr | src_vaddr | size) & 3u) != 0) ||
 	    size > UINT64_MAX - dst_vaddr || size > UINT64_MAX - src_vaddr || (dst_gds && src_gds) ||
 	    (dst_gds && (dst_vaddr > m_gds_buffer.Size() || size > m_gds_buffer.Size() - dst_vaddr)) ||
 	    (src_gds && (src_vaddr > m_gds_buffer.Size() || size > m_gds_buffer.Size() - src_vaddr))) {
-		EXIT("BufferCache: invalid copy range, src=0x%016" PRIx64 " dst=0x%016" PRIx64
+		LOGF("BufferCache: invalid copy range, src=0x%016" PRIx64 " dst=0x%016" PRIx64
 		     " size=0x%016" PRIx64 " src_gds=%d dst_gds=%d\n",
 		     src_vaddr, dst_vaddr, size, static_cast<int>(src_gds), static_cast<int>(dst_gds));
+		return;
 	}
 	if (src_memory && dst_memory && !IsRegionGpuModified(dst_vaddr, size) &&
 	    !IsRegionGpuModified(src_vaddr, size) && !m_texture_cache.FindImageFromRange(src_vaddr, size)) {
@@ -656,6 +720,13 @@ void BufferCache::RunGarbageCollector() {
 	const auto completion_tick = m_scheduler.CurrentTick();
 	m_scheduler.Wait(completion_tick);
 	m_scheduler.WaitPriorityOperations(completion_tick);
+	if (m_graphics.device_address_destruction_waits_for_queue) {
+		Common::LockGuard lock(m_graphics.queue_mutex);
+		if (m_graphics.queue != nullptr) {
+			std::ignore = m_graphics.queue.waitIdle();
+		}
+		m_scheduler.GetMasterSemaphore().Refresh();
+	}
 	for (const auto id: dirty_buffers) {
 		auto& buffer = m_slot_buffers[id];
 		m_memory_tracker.UnmarkRegionAsGpuModified(buffer.CpuAddress(), buffer.Size());

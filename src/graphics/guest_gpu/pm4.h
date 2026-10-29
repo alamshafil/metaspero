@@ -20,6 +20,9 @@ class File;
 namespace Libs::Graphics::Pm4 {
 
 constexpr uint32_t PacketSizeDw(uint32_t header) {
+	if (header == 0 || header == 0x80000000u) {
+		return 1u;
+	}
 	return (header & 0x3fffff00u) == 0x3fff1000u ? 1u : KYTY_PM4_LEN(header);
 }
 

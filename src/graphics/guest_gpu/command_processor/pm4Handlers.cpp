@@ -2280,7 +2280,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 		}
 	};
 
-	if (data_sel == 0 || interrupt_selector == 4) {
+	if (data_sel == 0) {
 		if (eop_event_type != 0x28 || gcr_cntl != 0) {
 			cp.EmitGlobalBarrier();
 		}
@@ -2315,7 +2315,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 		cp.WriteAtEndOfPipe32(cache_policy, event_write_dest, eop_event_type, cache_action,
 		                      event_index, event_source, dst_gpu_addr, static_cast<uint32_t>(value),
 		                      interrupt_selector, interrupt_context_id);
-		if (interrupt_selector == 0x01 || interrupt_selector == 0x02) {
+		if (interrupt_selector == 0x01 || interrupt_selector == 0x02 || interrupt_selector == 0x04) {
 			cp.BufferFlush();
 		}
 
@@ -2334,7 +2334,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 		cp.WriteAtEndOfPipe32(cache_policy, event_write_dest, eop_event_type, cache_action,
 		                      event_index, event_source, dst_gpu_addr, static_cast<uint32_t>(value),
 		                      interrupt_selector, interrupt_context_id);
-		if (interrupt_selector == 0x01) {
+		if (interrupt_selector == 0x01 || interrupt_selector == 0x02 || interrupt_selector == 0x04) {
 			cp.BufferFlush();
 		}
 
@@ -2359,6 +2359,9 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 
 	cp.WriteAtEndOfPipe64(cache_policy, event_write_dest, eop_event_type, cache_action, event_index,
 	                      data_sel, dst_gpu_addr, value, interrupt_selector, interrupt_context_id);
+	if (interrupt_selector == 0x01 || interrupt_selector == 0x02 || interrupt_selector == 0x04) {
+		cp.BufferFlush();
+	}
 
 	return 7;
 }

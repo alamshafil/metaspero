@@ -1,6 +1,15 @@
 #include "graphics/presentation/window.h"
 
+#define SDL_MAIN_HANDLED 1
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
+#include <SDL3/SDL_vulkan.h>
+
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#include <dispatch/dispatch.h>
+#include <pthread.h>
+#endif
 
 #include "common/assert.h"
 #include "common/common.h"
@@ -38,7 +47,22 @@
 
 // IWYU pragma: no_include <intrin.h>
 
-#define KYTY_DBG_INPUT
+#if defined(__APPLE__)
+typedef void (*KytyWindowCreatedCallback_t)(void* window);
+typedef void (*KytyWindowDestroyedCallback_t)();
+static KytyWindowCreatedCallback_t g_window_created_cb = nullptr;
+static KytyWindowDestroyedCallback_t g_window_destroyed_cb = nullptr;
+
+// CAMetalLayer of the host (SwiftUI) view, or null when the core should create its own SDL window.
+extern "C" __attribute__((weak)) void* KytyGetHostMetalLayer(void) {
+	return nullptr;
+}
+
+extern "C" void KytySetWindowCallbacks(KytyWindowCreatedCallback_t created_cb, KytyWindowDestroyedCallback_t destroyed_cb) {
+	g_window_created_cb = created_cb;
+	g_window_destroyed_cb = destroyed_cb;
+}
+#endif
 
 namespace Libs::Graphics {
 
@@ -439,7 +463,8 @@ void WindowContext::ProcessWindowEvent(const SDL_WindowEvent& event) {
 			LOGF("Window %" PRIu32 " lost keyboard focus\n", window_event.windowID);
 			break;
 		case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-			LOGF("Window %" PRIu32 " closed\n", window_event.windowID);
+			LOGF("Window %" PRIu32 " close requested\n", window_event.windowID);
+			GameEventQuit(loop);
 			break;
 		default:
 			LOGF("Window %" PRIu32 " got unknown event %" PRIu32 "\n", window_event.windowID,
@@ -776,17 +801,16 @@ static void WindowCreate(WindowContext& context) {
 	int width  = static_cast<int>(context.graphic_ctx.screen_width);
 	int height = static_cast<int>(context.graphic_ctx.screen_height);
 
+#if !defined(__APPLE__)
+	SDL_SetMainReady();
+#endif
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 	// RenderDoc can hide Wayland Vulkan surface support; prefer X11 for captures.
 	if (Config::RenderDocEnabled()) {
 		SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "x11,wayland");
 	}
 #endif
-	if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-		EXIT("%s\n", SDL_GetError());
-	}
-
-	LOGF("WindowCreate(): width = %d, height = %d\n", width, height);
 
 	uint32_t window_flags = WindowContext::InitialWindowFlags(Config::FullscreenEnabled());
 #if defined(__APPLE__)
@@ -798,10 +822,20 @@ static void WindowCreate(WindowContext& context) {
 			const std::string base_path_str = base_path;
 			std::string moltenvk_path = base_path_str + "libMoltenVK.dylib";
 			if (!Common::File::IsFileExisting(moltenvk_path)) {
+				moltenvk_path = base_path_str + "Frameworks/MoltenVK.framework/MoltenVK";
+			}
+			if (!Common::File::IsFileExisting(moltenvk_path)) {
+				moltenvk_path = base_path_str + "Frameworks/libMoltenVK.dylib";
+			}
+			if (!Common::File::IsFileExisting(moltenvk_path)) {
 				moltenvk_path = base_path_str + "../Frameworks/libMoltenVK.dylib";
 			}
-			if (Common::File::IsFileExisting(moltenvk_path) &&
-			    SDL_setenv_unsafe("SDL_VULKAN_LIBRARY", moltenvk_path.c_str(), 0) == 0) {
+			if (!Common::File::IsFileExisting(moltenvk_path)) {
+				moltenvk_path = base_path_str + "../Frameworks/MoltenVK.framework/MoltenVK";
+			}
+			if (Common::File::IsFileExisting(moltenvk_path)) {
+				SDL_setenv_unsafe("SDL_VULKAN_LIBRARY", moltenvk_path.c_str(), 0);
+				SDL_SetHint(SDL_HINT_VULKAN_LIBRARY, moltenvk_path.c_str());
 				LOGF("Vulkan loader: %s\n", moltenvk_path.c_str());
 			}
 		}
@@ -814,16 +848,76 @@ static void WindowCreate(WindowContext& context) {
 		window_flags |= static_cast<uint32_t>(SDL_WINDOW_BORDERLESS);
 	}
 #endif
-	context.window = SDL_CreateWindow(KYTY_SDL_WINDOW_CAPTION, width, height, window_flags);
 
+#if defined(__APPLE__)
+	auto init_and_create_fn = [&]() {
+		SDL_SetMainReady();
+#if TARGET_OS_IPHONE
+		SDL_SetiOSEventPump(false);
+#endif
+		SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+		SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
+		if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+			EXIT("%s\n", SDL_GetError());
+		}
+		LOGF("WindowCreate(): width = %d, height = %d\n", width, height);
+		if (void* host_layer = KytyGetHostMetalLayer(); host_layer != nullptr) {
+			// Host-owned surface: no SDL window. Gamepads/audio still use SDL. Resize events are
+			// pushed by the host as SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED.
+			if (!SDL_Vulkan_LoadLibrary(nullptr)) {
+				EXIT("%s\n", SDL_GetError());
+			}
+			context.host_layer = host_layer;
+			LOGF("WindowCreate(): using host Metal layer = %p\n", host_layer);
+			if (g_window_created_cb != nullptr) {
+				g_window_created_cb(nullptr);
+			}
+			return;
+		}
+		context.window = SDL_CreateWindow(KYTY_SDL_WINDOW_CAPTION, width, height, window_flags);
+		if (context.window == nullptr) {
+			EXIT("%s\n", SDL_GetError());
+		}
+		SDL_PropertiesID props = SDL_GetWindowProperties(context.window);
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		void* window_ptr = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
+#elif defined(__APPLE__)
+		void* window_ptr = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
+#else
+		void* window_ptr = nullptr;
+#endif
+		LOGF("WindowCreate(): SDL Window = %p\n", window_ptr);
+		SDL_SetWindowPosition(context.window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+		if (g_window_created_cb != nullptr) {
+			g_window_created_cb(window_ptr);
+		}
+	};
+
+	if (!pthread_main_np()) {
+		dispatch_sync(dispatch_get_main_queue(), ^{
+			init_and_create_fn();
+		});
+	} else {
+		init_and_create_fn();
+	}
+#else
+	SDL_SetMainReady();
+	if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+		EXIT("%s\n", SDL_GetError());
+	}
+	LOGF("WindowCreate(): width = %d, height = %d\n", width, height);
+	context.window = SDL_CreateWindow(KYTY_SDL_WINDOW_CAPTION, width, height, window_flags);
 	if (context.window == nullptr) {
 		EXIT("%s\n", SDL_GetError());
 	}
-
 	SDL_SetWindowPosition(context.window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+#endif
+
 	HostInputInit(context.window);
 	InitializeSystemOverlayInput(context.window);
+#if !defined(__APPLE__)
 	context.UpdateIcon();
+#endif
 }
 
 uint32_t WindowContext::InitialWindowFlags(bool fullscreen) noexcept {
@@ -863,7 +957,20 @@ void WindowShutdown() {
 	if (g_window != nullptr) {
 		HostInputShutdown();
 		Controller::EmergencyShutdown();
+#if defined(__APPLE__)
+		if (g_window_destroyed_cb != nullptr) {
+			g_window_destroyed_cb();
+		}
+		if (pthread_main_np() == 0) {
+			dispatch_sync(dispatch_get_main_queue(), ^{
+				g_window.reset();
+			});
+		} else {
+			g_window.reset();
+		}
+#else
 		g_window.reset();
+#endif
 	}
 }
 
@@ -944,13 +1051,16 @@ void WindowContext::UpdateIcon() {
 }
 
 void WindowContext::UpdateTitle(uint64_t frame_num, double current_fps) {
-	static char title[128];
-	static char title_id[12];
-	static char app_ver[12];
-	static bool has_title = Loader::SystemContentParamSfoGetString("TITLE", title, sizeof(title));
-	static bool has_title_id =
+	if (window == nullptr) {
+		return; // host-owned surface: nobody to show a title
+	}
+	char title[128] {};
+	char title_id[12] {};
+	char app_ver[12] {};
+	bool has_title = Loader::SystemContentParamSfoGetString("TITLE", title, sizeof(title));
+	bool has_title_id =
 	    Loader::SystemContentParamSfoGetString("TITLE_ID", title_id, sizeof(title_id));
-	static bool has_app_ver =
+	bool has_app_ver =
 	    Loader::SystemContentParamSfoGetString("APP_VER", app_ver, sizeof(app_ver));
 	static const std::string processor_name = Common::GetSystemInfo().ProcessorName;
 
@@ -969,6 +1079,16 @@ void WindowContext::UpdateTitle(uint64_t frame_num, double current_fps) {
 	    (has_title_id ? ", " : ""), (has_app_ver ? app_ver : ""), (has_app_ver ? " " : ""),
 	    device_name, processor_name, frame_num, current_fps);
 
+#if defined(__APPLE__)
+	if (!pthread_main_np()) {
+		std::string title_str = text;
+		SDL_Window* win = window;
+		dispatch_async(dispatch_get_main_queue(), ^{
+			SDL_SetWindowTitle(win, title_str.c_str());
+		});
+		return;
+	}
+#endif
 	SDL_SetWindowTitle(window, text.c_str());
 }
 

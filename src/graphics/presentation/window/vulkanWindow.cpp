@@ -23,6 +23,11 @@
 #include "libs/controller.h"
 #include "loader/systemContent.h"
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#include <dispatch/dispatch.h>
+#include <pthread.h>
+#endif
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -669,6 +674,32 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	return device;
 }
 
+// Creates the presentation surface: from the host's CAMetalLayer (Apple),
+// otherwise through SDL.
+static bool CreateWindowSurface(WindowContext& ctx, VkInstance instance, VkSurfaceKHR* out) {
+#if defined(__APPLE__)
+	if (ctx.host_layer != nullptr) {
+		// Equivalent of VkMetalSurfaceCreateInfoEXT (VK_EXT_metal_surface).
+		struct MetalSurfaceCreateInfo {
+			VkStructureType sType;
+			const void*     pNext;
+			VkFlags         flags;
+			const void*     pLayer;
+		};
+		using CreateFn = VkResult (*)(VkInstance, const MetalSurfaceCreateInfo*, const VkAllocationCallbacks*, VkSurfaceKHR*);
+		auto get_proc  = reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+		auto create    = reinterpret_cast<CreateFn>(get_proc(instance, "vkCreateMetalSurfaceEXT"));
+		if (create == nullptr) {
+			LOGF("vkCreateMetalSurfaceEXT is not available\n");
+			return false;
+		}
+		MetalSurfaceCreateInfo info {static_cast<VkStructureType>(1000217000), nullptr, 0, ctx.host_layer};
+		return create(instance, &info, nullptr, out) == VK_SUCCESS;
+	}
+#endif
+	return SDL_Vulkan_CreateSurface(ctx.window, instance, nullptr, out);
+}
+
 static void VulkanGetExtensions(VulkanExtensions& r) {
 	uint32_t required_extensions_count = 0;
 
@@ -847,7 +878,7 @@ static void VulkanCheckInstanceVersion() {
 }
 
 void WindowContext::CreateVulkan() {
-	EXIT_IF(window == nullptr);
+	EXIT_IF(window == nullptr && host_layer == nullptr);
 	EXIT_IF(graphic_ctx.instance != nullptr);
 	EXIT_IF(graphic_ctx.physical_device != nullptr);
 	EXIT_IF(graphic_ctx.device != nullptr);
@@ -947,10 +978,21 @@ void WindowContext::CreateVulkan() {
 		}
 	}
 
-	vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
-	if (!SDL_Vulkan_CreateSurface(window, static_cast<vk::Instance::CType>(graphic_ctx.instance),
-	                              nullptr, &native_surface)) {
-		EXIT("Could not create a Vulkan surface");
+	__block vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
+	__block bool surface_ok = false;
+#if defined(__APPLE__)
+	if (!pthread_main_np()) {
+		dispatch_sync(dispatch_get_main_queue(), ^{
+			surface_ok = CreateWindowSurface(*this, static_cast<vk::Instance::CType>(graphic_ctx.instance), &native_surface);
+		});
+	} else {
+		surface_ok = CreateWindowSurface(*this, static_cast<vk::Instance::CType>(graphic_ctx.instance), &native_surface);
+	}
+#else
+	surface_ok = CreateWindowSurface(*this, static_cast<vk::Instance::CType>(graphic_ctx.instance), &native_surface);
+#endif
+	if (!surface_ok || native_surface == VK_NULL_HANDLE) {
+		EXIT("Could not create a Vulkan surface: %s\n", SDL_GetError());
 	}
 	surface = native_surface;
 
@@ -1061,14 +1103,25 @@ void WindowContext::RefreshSurfaceCapabilities() {
 }
 
 void WindowContext::RecreateSurface() {
-	EXIT_IF(window == nullptr || graphic_ctx.instance == nullptr);
+	EXIT_IF((window == nullptr && host_layer == nullptr) || graphic_ctx.instance == nullptr);
 	if (surface != nullptr) {
 		graphic_ctx.instance.destroySurfaceKHR(surface, nullptr);
 		surface = nullptr;
 	}
-	vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
-	if (!SDL_Vulkan_CreateSurface(window, static_cast<vk::Instance::CType>(graphic_ctx.instance),
-	                              nullptr, &native_surface)) {
+	__block vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
+	__block bool surface_ok = false;
+#if defined(__APPLE__)
+	if (!pthread_main_np()) {
+		dispatch_sync(dispatch_get_main_queue(), ^{
+			surface_ok = CreateWindowSurface(*this, static_cast<vk::Instance::CType>(graphic_ctx.instance), &native_surface);
+		});
+	} else {
+		surface_ok = CreateWindowSurface(*this, static_cast<vk::Instance::CType>(graphic_ctx.instance), &native_surface);
+	}
+#else
+	surface_ok = CreateWindowSurface(*this, static_cast<vk::Instance::CType>(graphic_ctx.instance), &native_surface);
+#endif
+	if (!surface_ok || native_surface == VK_NULL_HANDLE) {
 		EXIT("Could not recreate the Vulkan surface: %s\n", SDL_GetError());
 	}
 	surface = native_surface;

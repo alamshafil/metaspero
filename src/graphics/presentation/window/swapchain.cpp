@@ -23,6 +23,12 @@
 #include <vector>
 #include <vulkan/vk_platform.h>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#include <dispatch/dispatch.h>
+#include <pthread.h>
+#endif
+
 // IWYU pragma: no_include <intrin.h>
 
 namespace Libs::Graphics {
@@ -469,8 +475,20 @@ void Swapchain::Create() {
 		create_info.presentMode = vk::PresentModeKHR::eFifo;
 	}
 	create_info.clipped = VK_TRUE;
+#if defined(__APPLE__)
+	__block vk::Result create_res = vk::Result::eSuccess;
+	if (!pthread_main_np()) {
+		dispatch_sync(dispatch_get_main_queue(), ^{
+			create_res = graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle);
+		});
+	} else {
+		create_res = graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle);
+	}
+	RequireVulkanSuccess(create_res, "vkCreateSwapchainKHR");
+#else
 	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
 	                     "vkCreateSwapchainKHR");
+#endif
 	EXIT_IF(m_handle == nullptr);
 	LOGF("Vulkan presentation: %s\n", m_hdr_active ? "HDR10 (PQ)" : "SDR");
 
@@ -1049,7 +1067,11 @@ void Presenter::Impl::Present() {
 		}
 
 		presented_overlay_revision.store(overlay_visual.revision, std::memory_order_release);
-		window.loop.presented_frames.fetch_add(1, std::memory_order_relaxed);
+		uint64_t prev_frames = window.loop.presented_frames.fetch_add(1, std::memory_order_relaxed);
+		if (prev_frames < 5 || (prev_frames % 60) == 0) {
+			std::printf("[Presenter] Presented frame #%llu to swapchain\n", (unsigned long long)(prev_frames + 1));
+			std::fflush(stdout);
+		}
 		return;
 	}
 	LOGF("Vulkan presentation retry exhausted; dropping frame\n");

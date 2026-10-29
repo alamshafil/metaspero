@@ -64,10 +64,14 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 	if (access == PageFaultAccess::Write) {
 		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
 		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
+		return true;
 	} else {
-		m_buffer_cache.ReadMemory(fault_vaddr, fault_size);
+		if (m_buffer_cache.IsRegionGpuModified(fault_vaddr, fault_size)) {
+			m_buffer_cache.ReadMemory(fault_vaddr, fault_size);
+			return true;
+		}
+		return false;
 	}
-	return true;
 }
 
 bool RenderContext::InvalidateMemory(uint64_t vaddr, uint64_t size) {

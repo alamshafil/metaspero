@@ -52,6 +52,8 @@ struct WindowContext {
 
 	GraphicContext                 graphic_ctx;
 	SDL_Window*                    window        = nullptr;
+	// Apple only: CAMetalLayer owned by the host (SwiftUI) view. When set, no SDL window exists.
+	void*                          host_layer    = nullptr;
 	vk::SurfaceKHR                 surface       = nullptr;
 	SurfaceCapabilities            surface_capabilities;
 	std::unique_ptr<RenderContext> render_context;

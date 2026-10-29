@@ -312,8 +312,9 @@ struct ShaderMappedData {
 	uint32_t        scratch_size_dwords = 0;
 };
 
-void ShaderInit();
-void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data);
+void     ShaderInit();
+void     ShaderShutdown();
+void     ShaderMapUserData(uint64_t addr, const ShaderMappedData& data);
 uint32_t ShaderPixelExportTarget(uint32_t shader_mask, uint32_t export_index);
 
 void     ShaderDbgDumpInputInfo(const ShaderVertexInputInfo& info);

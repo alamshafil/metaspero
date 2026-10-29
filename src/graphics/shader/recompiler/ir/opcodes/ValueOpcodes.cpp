@@ -58,6 +58,9 @@ Type TypeOf(ValueOpcode opcode) {
 }
 
 size_t NumArgsOf(ValueOpcode opcode) {
+	if (static_cast<size_t>(opcode) >= static_cast<size_t>(ValueOpcode::Count)) {
+		return std::numeric_limits<size_t>::max();
+	}
 	return MetaTable[static_cast<size_t>(opcode)].num_args;
 }
 

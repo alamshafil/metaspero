@@ -85,11 +85,22 @@ namespace {
 		}
 		return usage;
 	}
+	const auto create_flags = ImageCreateFlags(graphics, info);
 	if (HasFormatFeature(properties, vk::FormatFeatureFlagBits::eColorAttachment)) {
-		usage |= vk::ImageUsageFlagBits::eColorAttachment;
+		const auto color_usage = usage | vk::ImageUsageFlagBits::eColorAttachment;
+		if (graphics.GetImageFormatProperties(info.pixel_format, HostImageType(info.type),
+		                                      vk::ImageTiling::eOptimal, color_usage,
+		                                      create_flags, nullptr) == vk::Result::eSuccess) {
+			usage = color_usage;
+		}
 	}
 	if (info.samples == 1) {
-		usage |= vk::ImageUsageFlagBits::eStorage;
+		const auto storage_usage = usage | vk::ImageUsageFlagBits::eStorage;
+		if (graphics.GetImageFormatProperties(info.pixel_format, HostImageType(info.type),
+		                                      vk::ImageTiling::eOptimal, storage_usage,
+		                                      create_flags, nullptr) == vk::Result::eSuccess) {
+			usage = storage_usage;
+		}
 	}
 	return usage;
 }
@@ -710,9 +721,35 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	create.samples       = vulkan_sample_count(info.samples);
 
 	vk::ImageFormatProperties properties {};
-	if (graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
-	                                      create.usage, create.flags,
-	                                      &properties) != vk::Result::eSuccess ||
+	auto format_res = graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
+	                                                    create.usage, create.flags,
+	                                                    &properties);
+	if (format_res != vk::Result::eSuccess ||
+	    !static_cast<bool>(properties.sampleCounts & create.samples)) {
+		// Attempt to degrade optional usage and creation flags if host GPU format rejects them
+		if (create.usage & vk::ImageUsageFlagBits::eStorage) {
+			create.usage &= ~vk::ImageUsageFlagBits::eStorage;
+			format_res = graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
+			                                               create.usage, create.flags, &properties);
+		}
+		if (format_res != vk::Result::eSuccess && (create.usage & vk::ImageUsageFlagBits::eColorAttachment)) {
+			create.usage &= ~vk::ImageUsageFlagBits::eColorAttachment;
+			format_res = graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
+			                                               create.usage, create.flags, &properties);
+		}
+		if (format_res != vk::Result::eSuccess && (create.flags & vk::ImageCreateFlagBits::eExtendedUsage)) {
+			create.flags &= ~vk::ImageCreateFlagBits::eExtendedUsage;
+			format_res = graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
+			                                               create.usage, create.flags, &properties);
+		}
+		if (format_res != vk::Result::eSuccess && (create.flags & vk::ImageCreateFlagBits::eMutableFormat)) {
+			create.flags &= ~vk::ImageCreateFlagBits::eMutableFormat;
+			format_res = graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
+			                                               create.usage, create.flags, &properties);
+		}
+	}
+
+	if (format_res != vk::Result::eSuccess ||
 	    !static_cast<bool>(properties.sampleCounts & create.samples)) {
 		EXIT("image format does not support required usage: format=%d type=%d usage=0x%x "
 		     "flags=0x%x samples=%u\n",

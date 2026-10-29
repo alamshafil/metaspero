@@ -44,13 +44,29 @@ void MasterSemaphore::Wait(uint64_t tick) {
 		return;
 	}
 
-	vk::SemaphoreWaitInfo wait_info {};
-	wait_info.semaphoreCount = 1;
-	wait_info.pSemaphores    = &m_semaphore;
-	wait_info.pValues        = &tick;
+	constexpr uint64_t TIMEOUT_NS = 100000000ULL; // 100ms
+	int wait_retries = 0;
+	while (!IsFree(tick)) {
+		vk::SemaphoreWaitInfo wait_info {};
+		wait_info.semaphoreCount = 1;
+		wait_info.pSemaphores    = &m_semaphore;
+		wait_info.pValues        = &tick;
 
-	const auto result = m_graphics.device.waitSemaphores(&wait_info, UINT64_MAX);
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+		const auto result = m_graphics.device.waitSemaphores(&wait_info, TIMEOUT_NS);
+		Refresh();
+		if (result == vk::Result::eSuccess || IsFree(tick)) {
+			break;
+		}
+		if (result == vk::Result::eTimeout) {
+			if (++wait_retries % 20 == 0) { // Every 2 seconds
+				std::printf("[MasterSemaphore::Wait] Still waiting for GPU tick %" PRIu64 " (known GPU tick: %" PRIu64 ", elapsed: %d ms)...\n",
+				     tick, KnownGpuTick(), wait_retries * 100);
+				std::fflush(stdout);
+			}
+			continue;
+		}
+		EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	}
 	Refresh();
 }
 

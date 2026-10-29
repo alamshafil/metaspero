@@ -216,6 +216,7 @@ public:
 	bool Flip(uint32_t micros);
 	void GetFlipStatus(VideoOutConfig& cfg, VideoOutFlipStatus& out);
 	void Wait(VideoOutConfig& cfg, int index);
+	void DumpState();
 
 private:
 	enum class RequestState { Reserved, Recording, Ready, Presenting };
@@ -871,6 +872,14 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 
 		VblankBegin();
 		bool presented = m_flip_queue.Flip(0);
+		static uint32_t s_not_presented_count = 0;
+		if (presented) {
+			s_not_presented_count = 0;
+		} else {
+			if (++s_not_presented_count % 300 == 0) {
+				m_flip_queue.DumpState();
+			}
+		}
 		if (!presented && m_presenter.NeedsSystemOverlayRefresh()) {
 			if (m_presenter.PresentLastFrame()) {
 				presented = true;
@@ -1264,6 +1273,11 @@ bool FlipQueue::Flip(uint32_t micros) {
 		r.cfg->flip_status.flipPendingNum--;
 		r.cfg->flip_status.gcQueueNum -= r.source == FlipRequestSource::GpuEop;
 		TriggerVideoOutEvents(*r.cfg, VideoOutEventKind::Flip, reinterpret_cast<void*>(r.flip_arg));
+		if (r.cfg->flip_status.count <= 5 || (r.cfg->flip_status.count % 60) == 0) {
+			std::printf("[VideoOut] Flip Completed #%" PRIu64 " (index=%d, flip_arg=0x%llx)\n",
+			            r.cfg->flip_status.count, r.index, (unsigned long long)r.flip_arg);
+			std::fflush(stdout);
+		}
 		it = m_requests.erase(it);
 	}
 	m_processing = false;
@@ -1281,6 +1295,18 @@ bool FlipQueue::Flip(uint32_t micros) {
 		}
 	}
 	return due;
+}
+
+void FlipQueue::DumpState() {
+	Common::LockGuard lock(m_mutex);
+	std::printf("[FlipQueue Status] m_requests=%zu, m_cpu_requests=%zu, m_cancelled=%zu, m_processing=%d\n",
+	            m_requests.size(), m_cpu_requests.size(), m_cancelled_requests.size(), (int)m_processing);
+	if (!m_requests.empty()) {
+		const auto& r = m_requests.front();
+		std::printf("  Head request: id=%" PRIu64 ", state=%d, group=%" PRIu64 ", index=%d, flip_arg=%" PRId64 "\n",
+		            r.id, (int)r.state, r.group, r.index, r.flip_arg);
+	}
+	std::fflush(stdout);
 }
 
 void FlipQueue::GetFlipStatus(VideoOutConfig& cfg, VideoOutFlipStatus& out) {
@@ -1303,6 +1329,9 @@ KYTY_SYSV_ABI void VideoOutAddBufferAttributeOption(VideoOutBufferAttribute2* at
 
 KYTY_SYSV_ABI int VideoOutOpen(int user_id, int bus_type, int index, const void* param) {
 	PRINT_NAME();
+
+	std::printf("[VideoOut] VideoOutOpen (user_id=%d, bus_type=%d, index=%d)\n", user_id, bus_type, index);
+	std::fflush(stdout);
 
 	EXIT_NOT_IMPLEMENTED(user_id != 255 && user_id != 0);
 	LOGF("\t param = 0x%016" PRIx64 "\n", reinterpret_cast<uint64_t>(param));
@@ -1577,6 +1606,13 @@ KYTY_SYSV_ABI int VideoOutUnregisterBuffers(int handle, int set_index) {
 KYTY_SYSV_ABI int VideoOutSubmitFlip(int handle, int index, int flip_mode, int64_t flip_arg) {
 	PRINT_NAME();
 
+	static std::atomic<uint32_t> s_cpu_flips{0};
+	uint32_t f = ++s_cpu_flips;
+	if (f <= 5 || (f % 300) == 0) {
+		std::printf("[VideoOut] CPU Flip #%u (handle=%d, index=%d)\n", f, handle, index);
+		std::fflush(stdout);
+	}
+
 	uint64_t  request_id = 0;
 	const int result     = ReserveFlipRequest(DriverState(), handle, index, flip_mode, flip_arg,
 	                                          FlipRequestSource::Cpu, request_id);
@@ -1594,6 +1630,13 @@ KYTY_SYSV_ABI int VideoOutSubmitFlip(int handle, int index, int flip_mode, int64
 int VideoOutDriver::SubmitFlipFromGpu(Graphics::CommandBuffer& buffer, int handle, int index,
                                       int flip_mode, int64_t flip_arg, uint64_t& request_id) {
 	EXIT_IF(buffer.IsInvalid());
+
+	static std::atomic<uint32_t> s_gpu_flips{0};
+	uint32_t gf = ++s_gpu_flips;
+	if (gf <= 5 || (gf % 60) == 0) {
+		std::printf("[VideoOut] GPU Flip #%u (handle=%d, index=%d)\n", gf, handle, index);
+		std::fflush(stdout);
+	}
 
 	const int result = ReserveFlipRequest(*m_impl, handle, index, flip_mode, flip_arg,
 	                                      FlipRequestSource::GpuEop, request_id);
@@ -1644,6 +1687,14 @@ KYTY_SYSV_ABI int VideoOutGetFlipStatus(int handle, VideoOutFlipStatus* status) 
 	}
 
 	DriverState().GetFlipQueue().GetFlipStatus(*ctx, *status);
+
+	static std::atomic<uint32_t> s_get_status_count{0};
+	uint32_t gsc = ++s_get_status_count;
+	if (gsc <= 5 || (gsc % 120) == 0) {
+		std::printf("[VideoOut] GetFlipStatus #%u: count=%" PRIu64 ", flipArg=0x%llx, pending=%d\n",
+		            gsc, status->count, (unsigned long long)status->flipArg, status->flipPendingNum);
+		std::fflush(stdout);
+	}
 
 	LOGF("\t count = %" PRIu64 "\n"
 	     "\t processTime = %" PRIu64 "\n"

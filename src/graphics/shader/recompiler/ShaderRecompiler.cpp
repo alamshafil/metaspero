@@ -721,7 +721,10 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	if (options.dump_ir) {
 		decoded_dump = Decoder::ProgramToString(decoded);
 		if (options.early_dump) {
-			LOGF("%s decoded RDNA2 (early):\n%s", GetDumpLabel(options), decoded_dump.c_str());
+			std::printf("\n=== [ShaderDump] %s hash=0x%016llx decoded RDNA2 ===\n%s\n",
+			            StageName(options.stage), (unsigned long long)options.shader_hash,
+			            decoded_dump.c_str());
+			std::fflush(stdout);
 		}
 	}
 
@@ -879,7 +882,10 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	if (options.dump_ir) {
 		ir_dump = MakeIrDump(translated.cfg_dump, ir);
 		if (options.early_dump) {
-			LOGF("%s native IR (early):\n%s", GetDumpLabel(options), ir_dump.c_str());
+			std::printf("\n=== [ShaderDump] %s hash=0x%016llx native IR ===\n%s\n",
+			            StageName(ir.stage), (unsigned long long)ir.shader_hash,
+			            ir_dump.c_str());
+			std::fflush(stdout);
 		}
 	}
 

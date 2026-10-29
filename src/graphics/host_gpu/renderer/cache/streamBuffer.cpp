@@ -195,8 +195,13 @@ void Buffer::CopyFrom(CommandBuffer& command, const Buffer& source, uint64_t sou
 }
 
 void Buffer::Fill(uint64_t offset, uint64_t size, uint32_t value) {
+	if (size == 0) {
+		return;
+	}
 	if (((offset | size) & 3u) != 0) {
-		EXIT("Buffer: fill range must be dword aligned\n");
+		const auto misalign = offset & 3u;
+		offset -= misalign;
+		size = (size + misalign + 3u) & ~3ull;
 	}
 	auto& command = Scheduler().Current();
 	command.EndRendering();

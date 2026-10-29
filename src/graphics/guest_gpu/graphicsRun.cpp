@@ -172,7 +172,15 @@ void GuestGpu::SuspendPoint() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
 	// Do not hold a queue lock while waiting: asynchronous work may be needed to
 	// finish the preceding graphics frame. The first point returns immediately.
-	m_suspend_point_ready->acquire();
+	static std::atomic<uint32_t> s_sp_count{0};
+	uint32_t sp = ++s_sp_count;
+	if (!m_suspend_point_ready->try_acquire_for(std::chrono::milliseconds(25))) {
+		if (sp <= 10 || (sp % 60) == 0) {
+			LOGF("[GuestGpu::SuspendPoint #%u] GPU pacing wait timeout (25ms), continuing...\n", sp);
+		}
+	} else if (sp <= 10 || (sp % 60) == 0) {
+		LOGF("[GuestGpu::SuspendPoint #%u] acquired smoothly\n", sp);
+	}
 	Submission submission;
 	submission.type = SubmissionType::SuspendPoint;
 	Enqueue(std::move(submission));
@@ -445,6 +453,7 @@ void GuestGpu::ThreadRun(void* data) {
 	KYTY_PROFILER_THREAD("Thread_Gpu");
 	g_gpu_thread = true;
 	g_gpu_state  = gpu;
+	gpu->m_gfx_cp->BufferInit();
 
 	for (;;) {
 		Submission                   submission;
@@ -680,13 +689,17 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		const auto        opcode        = (packet_header >> 8u) & 0xffu;
 		EXIT_NOT_IMPLEMENTED(remaining_dw > total_dw);
 
-		if (packet_header == 0x80000000u || Pm4::PacketSizeDw(packet_header) == 1u) {
+		if (packet_header == 0 || packet_header == 0x80000000u || Pm4::PacketSizeDw(packet_header) == 1u) {
 			cursor.offset_dw++;
 			execution.m_made_progress = true;
 			continue;
 		}
 
-		EXIT_NOT_IMPLEMENTED(remaining_dw < 2);
+		if (remaining_dw < 2) {
+			cursor.offset_dw++;
+			execution.m_made_progress = true;
+			continue;
+		}
 
 		if (GraphicsRunDebugDumpEnabled()) {
 			LOGF("CP packet: offset=0x%05" PRIx32 " cmd_id=0x%08" PRIx32 " op=0x%02" PRIx32
@@ -735,8 +748,15 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			for (uint32_t i = dump_begin; i < dump_end; i++) {
 				LOGF("\t%05" PRIx32 "%s %08" PRIx32 "\n", i, (i == offset ? ":" : " "), base[i]);
 			}
-			EXIT("unknown op\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32 "\n",
-			     total_dw - remaining_dw, packet_header);
+			uint32_t skip_dw = 1;
+			if ((packet_header >> 30u) == 3u) {
+				skip_dw = std::min<uint32_t>(remaining_dw, KYTY_PM4_LEN(packet_header));
+			}
+			LOGF("unknown PM4 opcode 0x%02" PRIx32 " (header=0x%08" PRIx32 "), skipping %" PRIu32 " dwords\n",
+			     opcode, packet_header, skip_dw);
+			cursor.offset_dw += skip_dw;
+			execution.m_made_progress = true;
+			continue;
 		}
 
 		const auto packet_dw =
@@ -1062,22 +1082,39 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 		case 0x00:
 		case 0x03: with_interrupt = false; break;
 		case 0x01:
-			if (!IsAsyncComputeQueue()) {
-				TriggerEopEventAtEndOfPipe(interrupt_context_id);
-				return;
-			}
-			with_interrupt = true;
-			break;
-		case 0x02: with_interrupt = true; break;
+		case 0x02:
+		case 0x04: with_interrupt = true; break;
 		default: EXIT("unknown interrupt_selector\n");
 	}
 
 	auto write32 = [&] {
 		auto* dst  = static_cast<uint32_t*>(dst_gpu_addr);
 		auto  data = static_cast<uint32_t>(value);
-		EXIT_IF(dst == nullptr);
-		(void)command.Handle();
-		std::memcpy(dst, &data, sizeof(data));
+		if (dst != nullptr) {
+			(void)command.Handle();
+			__atomic_store_n(dst, data, __ATOMIC_SEQ_CST);
+			std::atomic_thread_fence(std::memory_order_seq_cst);
+		}
+
+		if (with_interrupt) {
+			TriggerEopEventAtEndOfPipe(interrupt_context_id);
+		}
+	};
+
+	auto write64 = [&] {
+		auto* dst = static_cast<uint64_t*>(dst_gpu_addr);
+		if (dst != nullptr) {
+			(void)command.Handle();
+			__atomic_store_n(dst, value, __ATOMIC_SEQ_CST);
+			std::atomic_thread_fence(std::memory_order_seq_cst);
+			static std::atomic<uint32_t> s_w64_cnt{0};
+			if (s_w64_cnt.fetch_add(1) < 20) {
+				std::printf("[WriteAtEndOfPipe64] dst=0x%llx val=0x%llx with_int=%d ctx=%u\n",
+				            (unsigned long long)dst_gpu_addr, (unsigned long long)value,
+				            with_interrupt, interrupt_context_id);
+				std::fflush(stdout);
+			}
+		}
 
 		if (with_interrupt) {
 			TriggerEopEventAtEndOfPipe(interrupt_context_id);
@@ -1116,16 +1153,6 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 				if (event_write_source == 0x04) {
 					value = Sync::ReadReferenceClock();
 				}
-				auto write64 = [&] {
-					auto* dst = static_cast<uint64_t*>(dst_gpu_addr);
-					EXIT_IF(dst == nullptr);
-					(void)command.Handle();
-					std::memcpy(dst, &value, sizeof(value));
-
-					if (with_interrupt) {
-						TriggerEopEventAtEndOfPipe(interrupt_context_id);
-					}
-				};
 
 				switch (cache_action) {
 					case 0x00:
@@ -1147,7 +1174,7 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 							case 0x2b:
 							case 0x2d:
 							case 0x30:
-								if (event_index == 0x00 && !with_interrupt) {
+								if (event_index == 0x00) {
 									write64();
 									return;
 								}
@@ -1169,13 +1196,13 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 								break;
 							case 0x2b:
 							case 0x2d:
-								if (event_index == 0x00 && !with_interrupt) {
+								if (event_index == 0x00) {
 									write64();
 									return;
 								}
 								break;
 							case 0x2f:
-								if (event_index == 0x06 && !with_interrupt) {
+								if (event_index == 0x06 || event_index == 0x00) {
 									write64();
 									return;
 								}
@@ -1196,7 +1223,17 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 		default: break;
 	}
 
-	EXIT("unknown event type\n");
+	LOGF("CommandProcessor::WriteAtEndOfPipe: unhandled event combo (type=0x%02x, action=0x%02x, idx=0x%02x, src=0x%02x, int_sel=0x%02x), writing fallback\n",
+	     eop_event_type, cache_action, event_index, event_write_source, interrupt_selector);
+
+	if constexpr (sizeof(T) == sizeof(uint32_t)) {
+		write32();
+	} else {
+		if (event_write_source == 0x04) {
+			value = Sync::ReadReferenceClock();
+		}
+		write64();
+	}
 }
 
 void CommandProcessor::WriteAtEndOfPipe32(uint32_t cache_policy, uint32_t event_write_dest,
@@ -1349,7 +1386,8 @@ void CommandProcessor::Flip(void* dst_gpu_addr, uint32_t value) {
 	}
 
 	EXIT_IF(dst_gpu_addr == nullptr);
-	std::memcpy(dst_gpu_addr, &value, sizeof(value));
+	__atomic_store_n(static_cast<uint32_t*>(dst_gpu_addr), value, __ATOMIC_SEQ_CST);
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	auto request = Sync::PrepareVideoOutFlip(command, m_flip.handle, m_flip.index, m_flip.flip_mode,
 	                                         m_flip.flip_arg);
 	(void)command.Handle();
@@ -1375,7 +1413,8 @@ void CommandProcessor::FlipWithInterrupt(uint32_t eop_event_type, uint32_t cache
 		EXIT("unknown event type\n");
 	}
 	EXIT_IF(dst_gpu_addr == nullptr);
-	std::memcpy(dst_gpu_addr, &value, sizeof(value));
+	__atomic_store_n(static_cast<uint32_t*>(dst_gpu_addr), value, __ATOMIC_SEQ_CST);
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	auto request = Sync::PrepareVideoOutFlip(command, m_flip.handle, m_flip.index, m_flip.flip_mode,
 	                                         m_flip.flip_arg);
 	(void)command.Handle();

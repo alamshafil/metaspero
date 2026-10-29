@@ -596,6 +596,17 @@ static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
 			output_mask |= 1u << slot;
 		}
 	}
+	if (output_mask == 0) {
+		for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; slot++) {
+			const auto& rt   = ctx.GetRenderTarget(slot);
+			const auto  mask = render_target_mask_slot(ctx.GetRenderTargetMask(), slot);
+			const auto& bc   = ctx.GetBlendControl(slot);
+			if (rt.base.addr != 0 && mask != 0 &&
+			    (bc.enable || (sh_regs.m_cbShaderMask & (0xfu << (slot * 4u))) != 0)) {
+				output_mask |= 1u << slot;
+			}
+		}
+	}
 	return output_mask;
 }
 
@@ -912,7 +923,9 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		LogDrawPhase(draw.Name(), "ResolveRenderColorTarget");
 	}
 	for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; slot++) {
-		if ((mrt_mask & (1u << slot)) != 0) {
+		const bool bind_slot = ((mrt_mask & (1u << slot)) != 0) ||
+		                       ((color_output_mask & (1u << slot)) != 0);
+		if (bind_slot) {
 			ResolveRenderColorTarget(buffer, state.color_info[state.color_count],
 			                         render_target_slice_offset, slot);
 			if (state.color_info[state.color_count].image_id) {
@@ -1205,6 +1218,170 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
 	}
+
+	static std::atomic<uint32_t> s_draw_in_frame{0};
+	static int s_last_frame = -1;
+	const int frame_num = buffer.GetContext().GetGpu().GetFrameNum();
+	if (frame_num != s_last_frame) {
+		s_last_frame = frame_num;
+		s_draw_in_frame.store(0);
+	}
+	uint32_t d_idx = s_draw_in_frame.fetch_add(1);
+
+	bool should_log = false;
+	if (Config::GetShaderLogDirection() != Config::LogDirection::Silent) {
+		if (frame_num >= 470 && frame_num <= 520 && d_idx < 18) {
+			should_log = true;
+		} else if (frame_num % 120 == 0 && d_idx < 18) {
+			should_log = true;
+		}
+	}
+
+	if (should_log) {
+		const auto& ctx = buffer.GetRegisters();
+		const auto& rt0 = ctx.GetRenderTarget(0);
+		const auto& bc0 = ctx.GetBlendControl(0);
+		const auto& vp0 = ctx.GetScreenViewport().viewports[0];
+		const auto extent = (state.color_count > 0 && state.color_info[0].image_id)
+		                        ? state.color_info[0].Extent()
+		                        : vk::Extent2D{1920, 1080};
+		const auto sc0 = calc_final_scissor(ctx.GetScreenViewport(), ctx.GetScanModeControl(), extent, 0);
+
+		uint32_t tw = extent.width, th = extent.height;
+		uint64_t taddr = 0;
+		uint32_t tfmt = 0;
+		bool has_dcc = false, has_cmask = false, blend_bypass = false;
+		if (state.color_count > 0 && state.color_info[0].image_id) {
+			taddr = state.color_info[0].desc.info.data.address;
+			tfmt = static_cast<uint32_t>(state.color_info[0].desc.view_info.format);
+			has_dcc = state.color_info[0].desc.info.metadata.kind == ImageMetadataKind::Dcc;
+			has_cmask = state.color_info[0].desc.info.metadata.kind == ImageMetadataKind::Cmask;
+			blend_bypass = rt0.info.blend_bypass;
+		}
+
+		uint64_t ps_hash = 0;
+		uint32_t num_images = 0;
+		if (state.ps_active && state.ps_input_info.stage.program != nullptr) {
+			ps_hash = state.ps_input_info.stage.program->shader_hash;
+			num_images = static_cast<uint32_t>(state.ps_input_info.stage.program->info.images.size());
+		}
+		uint64_t vs_hash = 0;
+		if (state.vertex_info[0].stage.program != nullptr) {
+			vs_hash = state.vertex_info[0].stage.program->shader_hash;
+		}
+
+		std::printf("[GpuDraw] F#%d D#%u %s: tgt=%ux%u fmt=%u addr=0x%010llx (dcc=%d cmask=%d bpass=%d) | prim=%u idx=%u inst=%u | blend(en=%d bypass=%d src=%u dst=%u asrc=%u adst=%u comb=%u acomb=%u sep=%d) mask=0x%08x | ps=0x%016llx vs=0x%016llx tex=%u | vp=(%.1f,%.1f %.1fx%.1f) sc=(%d,%d-%d,%d)\n",
+		            (int)frame_num,
+		            (unsigned int)d_idx,
+		            draw.Name(),
+		            (unsigned int)tw,
+		            (unsigned int)th,
+		            (unsigned int)tfmt,
+		            (unsigned long long)taddr,
+		            has_dcc ? 1 : 0,
+		            has_cmask ? 1 : 0,
+		            blend_bypass ? 1 : 0,
+		            (unsigned int)static_cast<uint32_t>(ucfg.GetPrimType()),
+		            (unsigned int)draw.index_count,
+		            (unsigned int)draw.instance_count,
+		            bc0.enable ? 1 : 0,
+		            blend_bypass ? 1 : 0,
+		            (unsigned int)bc0.color_srcblend,
+		            (unsigned int)bc0.color_destblend,
+		            (unsigned int)bc0.alpha_srcblend,
+		            (unsigned int)bc0.alpha_destblend,
+		            (unsigned int)bc0.color_comb_fcn,
+		            (unsigned int)bc0.alpha_comb_fcn,
+		            bc0.separate_alpha_blend ? 1 : 0,
+		            (unsigned int)ctx.GetRenderTargetMask(),
+		            (unsigned long long)ps_hash,
+		            (unsigned long long)vs_hash,
+		            (unsigned int)num_images,
+		            (double)(vp0.xoffset - vp0.xscale),
+		            (double)(vp0.yoffset - vp0.yscale),
+		            (double)(vp0.xscale * 2.0f),
+		            (double)(vp0.yscale * 2.0f),
+		            (int)sc0.left,
+		            (int)sc0.top,
+		            (int)sc0.right,
+		            (int)sc0.bottom);
+
+		if (state.ps_active) {
+			const auto& ps_sgpr = buffer.GetShaders().GetPs().ps_user_sgpr;
+			const uint32_t ps_sgpr_count = buffer.GetShaders().GetPs().ps_regs.rsrc2.user_sgpr;
+			if (ps_sgpr_count > 0) {
+				std::printf("  [GpuDraw-PS-SGPR] cnt=%u: [0]=0x%08x [1]=0x%08x [2]=0x%08x [3]=0x%08x\n",
+				            ps_sgpr_count,
+				            ps_sgpr.value[0], ps_sgpr.value[1], ps_sgpr.value[2], ps_sgpr.value[3]);
+			}
+			if (state.ps_input_info.stage.resources != nullptr) {
+				const auto& srt = state.ps_input_info.stage.resources->flattened_srt;
+				if (!srt.empty()) {
+					std::printf("  [GpuDraw-PS-SRT] cnt=%zu:", srt.size());
+					for (size_t si = 0; si < std::min(srt.size(), (size_t)8); si++) {
+						std::printf(" [%zu]=0x%08x(%.2f)", si, srt[si], std::bit_cast<float>(srt[si]));
+					}
+					std::printf("\n");
+				}
+			}
+		}
+
+		if (state.vertex_info[0].buffers_num > 0) {
+			const auto& vb0 = state.vertex_info[0].buffers[0];
+			std::printf("  [GpuDraw-VB0] addr=0x%010llx stride=%u recs=%u",
+			            (unsigned long long)vb0.addr, vb0.stride, vb0.num_records);
+			if (vb0.addr != 0 && vb0.num_records >= 2 && vb0.stride >= 8) {
+				const auto* p0 = reinterpret_cast<const float*>(vb0.addr);
+				const auto* p1 = reinterpret_cast<const float*>(vb0.addr + vb0.stride);
+				std::printf(" v0=(%.1f,%.1f) v1=(%.1f,%.1f)", p0[0], p0[1], p1[0], p1[1]);
+			}
+			std::printf("\n");
+		}
+
+		if (draw.IsIndexed() && index_source.address != 0) {
+			std::printf("  [GpuDraw-IB] addr=0x%010llx elem_sz=%u:",
+			            (unsigned long long)index_source.address, index_source.guest_element_size);
+			if (index_source.guest_element_size == 2) {
+				const auto* ib = reinterpret_cast<const uint16_t*>(index_source.address);
+				for (uint32_t ii = 0; ii < std::min(draw.index_count, 6u); ii++) {
+					std::printf(" %u", (unsigned int)ib[ii]);
+				}
+			} else if (index_source.guest_element_size == 4) {
+				const auto* ib = reinterpret_cast<const uint32_t*>(index_source.address);
+				for (uint32_t ii = 0; ii < std::min(draw.index_count, 6u); ii++) {
+					std::printf(" %u", (unsigned int)ib[ii]);
+				}
+			}
+			std::printf("\n");
+		}
+
+		if (bindings.pixel.has_value()) {
+			for (uint32_t ti = 0; ti < bindings.pixel->images.size(); ti++) {
+				const auto& img = bindings.pixel->images[ti];
+				std::printf("  [GpuDraw-Tex] #%u: %ux%u fmt=%u addr=0x%010llx\n",
+				            (unsigned int)ti,
+				            (unsigned int)img.desc.info.extent.width,
+				            (unsigned int)img.desc.info.extent.height,
+				            (unsigned int)static_cast<uint32_t>(img.desc.view_info.format),
+				            (unsigned long long)img.desc.info.data.address);
+			}
+			for (uint32_t bi = 0; bi < bindings.pixel->buffer_sources.size(); bi++) {
+				const auto& src = bindings.pixel->buffer_sources[bi];
+				const auto& buf = (bi < bindings.pixel->buffers.size()) ? bindings.pixel->buffers[bi] : vk::DescriptorBufferInfo{};
+				std::printf("  [GpuDraw-PS-Buf] #%u: guest=0x%010llx sz=%llu (id=%u) -> vkBuf=%p off=0x%llx range=0x%llx\n",
+				            bi, (unsigned long long)src.address, (unsigned long long)src.size, (unsigned int)src.id.index,
+				            (void*)(VkBuffer)buf.buffer, (unsigned long long)buf.offset, (unsigned long long)buf.range);
+				if (src.address != 0 && src.size >= 16) {
+					const auto* f = reinterpret_cast<const float*>(src.address);
+					const auto* u = reinterpret_cast<const uint32_t*>(src.address);
+					std::printf("    [GuestMem] floats: (%.3f, %.3f, %.3f, %.3f) hex: (0x%08x, 0x%08x, 0x%08x, 0x%08x)\n",
+					            f[0], f[1], f[2], f[3], u[0], u[1], u[2], u[3]);
+				}
+			}
+		}
+		std::fflush(stdout);
+	}
+
 	m_context.GetCommandScheduler().BeginRendering(rendering);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	if (!draw.IsIndexed()) {
