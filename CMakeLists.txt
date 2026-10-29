@@ -10,6 +10,16 @@ if(NOT KYTY_GENERATOR_IS_MULTI_CONFIG AND NOT CMAKE_BUILD_TYPE)
 	set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/cmake/ios_min_version.txt" KYTY_IOS_MIN_VERSION LIMIT_COUNT 1)
+	set(CMAKE_OSX_DEPLOYMENT_TARGET "${KYTY_IOS_MIN_VERSION}" CACHE STRING "Minimum iOS version" FORCE)
+	# Suppress automatic Xcode schemes for all internal 3rd-party libraries so only KytyPS5 gets a scheme.
+	set(CMAKE_XCODE_GENERATE_SCHEME OFF)
+endif()
+
+# Organize targets into folders in IDEs (Xcode / Visual Studio)
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
 project(Kyty)
 
 find_program(SCCACHE_PROGRAM sccache)
@@ -52,8 +62,14 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 include("${KYTY_SOURCE_DIR}/utils.cmake")
 include(CTest)
+if(IOS)
+	# The test executables are host-only.
+	set(BUILD_TESTING OFF CACHE BOOL "Build the testing tree" FORCE)
+endif()
 
 option(KYTY_ENABLE_CLANG_TIDY "Run clang-tidy checks during builds" OFF)
+option(KYTY_ENABLE_FEX_GUEST_CPU "Build native ARM64 FEXCore guest CPU backend" OFF)
+set(FEXCORE_ROOT "${KYTY_THIRD_PARTY_DIR}/fex" CACHE PATH "Path to FEXCore SDK directory")
 
 set(KYTY_BUILD_ORIGIN "Source" CACHE STRING "Build provenance shown in diagnostics")
 set_property(CACHE KYTY_BUILD_ORIGIN PROPERTY STRINGS Source Official Fork)
@@ -147,7 +163,11 @@ if (KYTY_LINKER STREQUAL LD AND NOT LINUX)
 	set(KYTY_LD_OPTIONS "-Wl,--image-base=0x100000000000")
 endif()
 
-project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 0.3.0)
+if(IOS)
+	project(Kyty VERSION 0.3.0)
+else()
+	project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 0.3.0)
+endif()
 
 include_directories(
 	${KYTY_THIRD_PARTY_DIR}/gtest/include
@@ -194,9 +214,17 @@ if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12.0.0)
 	)
 endif()
 
-option(KYTY_BUILD_LAUNCHER "Build Qt launcher" ON)
+if(IOS)
+	option(KYTY_BUILD_LAUNCHER "Build Qt launcher" OFF)
+else()
+	option(KYTY_BUILD_LAUNCHER "Build Qt launcher" ON)
+endif()
 
 config_compiler_and_linker()
+
+if(KYTY_ENABLE_FEX_GUEST_CPU)
+	add_compile_definitions(KYTY_ENABLE_FEX_GUEST_CPU=1 ARCHITECTURE_arm64=1)
+endif()
 
 add_subdirectory("${KYTY_THIRD_PARTY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/3rdparty")
 add_subdirectory("${KYTY_SOURCE_DIR}/common" "${CMAKE_CURRENT_BINARY_DIR}/common")
@@ -247,6 +275,8 @@ file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
 	"${KYTY_SOURCE_DIR}/kernel/*.h"
 	"${KYTY_SOURCE_DIR}/loader/*.cpp"
 	"${KYTY_SOURCE_DIR}/loader/*.h"
+	"${KYTY_SOURCE_DIR}/loader/fex/*.cpp"
+	"${KYTY_SOURCE_DIR}/loader/fex/*.h"
 )
 
 find_program(KYTY_GLSLANG_VALIDATOR NAMES glslangValidator glslang REQUIRED)
@@ -326,6 +356,11 @@ add_gpu_blit_shader(gpu_video_out_overlay gpu_video_out_overlay.frag)
 add_gpu_blit_shader(gpu_imgui_hdr gpu_video_out_overlay.frag -DIMGUI_HDR=1)
 list(APPEND kyty_emulator_src ${gpu_blit_shader_headers})
 
+# One target owns the generated shader headers so every consumer can depend on it. The Xcode generator
+# ("new build system") rejects a generated file attached to several targets without a common dependency.
+add_custom_target(kyty_generated_shader_headers DEPENDS
+	${fault_buffer_shader_header} ${gpu_tiler_shader_headers} ${gpu_blit_shader_headers})
+
 list(APPEND kyty_emulator_src
 	"${KYTY_SOURCE_DIR}/emulator.h"
 	"${KYTY_SOURCE_DIR}/emulator.cpp"
@@ -344,6 +379,10 @@ if(LINUX)
 	list(APPEND kyty_emulator_link_libraries m ${CMAKE_DL_LIBS} Threads::Threads)
 endif()
 
+if(APPLE AND NOT IOS)
+	include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MoltenVKMacOS.cmake")
+endif()
+
 set(inc_headers
 	${KYTY_SOURCE_DIR}
 	${KYTY_THIRD_PARTY_DIR}/VulkanMemoryAllocator/include
@@ -355,6 +394,34 @@ set(inc_headers
 	${KYTY_THIRD_PARTY_DIR}/renderdoc
 	${KYTY_THIRD_PARTY_DIR}/stb
 )
+
+if(KYTY_ENABLE_FEX_GUEST_CPU)
+	add_compile_definitions(KYTY_ENABLE_FEX_GUEST_CPU=1 ARCHITECTURE_arm64=1)
+	if(TARGET FEXCore)
+		list(APPEND kyty_emulator_link_libraries FEXCore)
+		message(STATUS "FEXCore guest CPU library enabled (in-tree target)")
+	elseif(IOS AND EXISTS "${FEXCORE_ROOT}/lib/libFEXCore_device.a")
+		set(FEXCORE_LIBRARY "${FEXCORE_ROOT}/lib/libFEXCore_device.a")
+		list(APPEND kyty_emulator_link_libraries "${FEXCORE_LIBRARY}")
+		list(APPEND inc_headers
+			"${FEXCORE_ROOT}/include"
+			"${FEXCORE_ROOT}/include/FEXCore"
+			"${FEXCORE_ROOT}/include/FEXHeaderUtils"
+		)
+		message(STATUS "FEXCore guest CPU library found (device): ${FEXCORE_LIBRARY}")
+	elseif(EXISTS "${FEXCORE_ROOT}/lib/libFEXCore.a")
+		set(FEXCORE_LIBRARY "${FEXCORE_ROOT}/lib/libFEXCore.a")
+		list(APPEND kyty_emulator_link_libraries "${FEXCORE_LIBRARY}")
+		list(APPEND inc_headers
+			"${FEXCORE_ROOT}/include"
+			"${FEXCORE_ROOT}/include/FEXCore"
+			"${FEXCORE_ROOT}/include/FEXHeaderUtils"
+		)
+		message(STATUS "FEXCore guest CPU library found: ${FEXCORE_LIBRARY}")
+	else()
+		message(STATUS "FEXCore guest CPU library not found, stub mode active")
+	endif()
+endif()
 
 if (KYTY_CLANG_CL)
 	list(APPEND kyty_emulator_link_libraries winpthread)
@@ -368,7 +435,13 @@ list(APPEND check_headers
 )
 
 function(add_kyty_full_emulator_test target source)
-	add_executable(${target} EXCLUDE_FROM_ALL ${source} ${kyty_emulator_src})
+	set(emulator_sources ${kyty_emulator_src})
+	if(ARGC EQUAL 4)
+		list(REMOVE_ITEM emulator_sources "${ARGV2}")
+		list(APPEND emulator_sources "${ARGV3}")
+	endif()
+	add_executable(${target} EXCLUDE_FROM_ALL ${source} ${emulator_sources})
+	add_dependencies(${target} kyty_generated_shader_headers)
 	target_link_libraries(${target} ${kyty_emulator_link_libraries})
 	target_include_directories(${target} PRIVATE ${inc_headers})
 	if (WIN32)
@@ -393,7 +466,9 @@ function(configure_macos_guest_address_space target)
 	endif()
 endfunction()
 
-add_kyty_full_emulator_test(shader_cfg_tests "${KYTY_TESTS_DIR}/shaderCfgTests.cpp")
+if(BUILD_TESTING AND NOT IOS)
+	add_kyty_full_emulator_test(shader_cfg_tests "${KYTY_TESTS_DIR}/shaderCfgTests.cpp")
+endif()
 
 add_executable(scalar_provenance_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/ScalarProvenanceTests.cpp"
@@ -629,6 +704,12 @@ if(BUILD_TESTING)
 	add_test(NAME resource_tracking COMMAND $<TARGET_FILE:resource_tracking_tests>)
 	add_test(NAME event_queue_lifetime COMMAND $<TARGET_FILE:event_queue_lifetime_tests>)
 	add_test(NAME kernel_file_system COMMAND $<TARGET_FILE:kernel_file_system_tests>)
+	if(APPLE AND NOT IOS AND KYTY_MOLTENVK_DYLIB)
+		get_filename_component(_kyty_mvk_dir "${KYTY_MOLTENVK_DYLIB}" DIRECTORY)
+		set_tests_properties(kernel_file_system PROPERTIES ENVIRONMENT
+			"DYLD_LIBRARY_PATH=${_kyty_mvk_dir};VK_ICD_FILENAMES=${_kyty_mvk_dir}/MoltenVK_icd.json"
+		)
+	endif()
 	add_test(NAME sync_on_address COMMAND $<TARGET_FILE:sync_on_address_tests>)
 	add_test(NAME audio_out2_port COMMAND $<TARGET_FILE:audio_out2_port_tests>)
 	add_test(NAME audio_out_timing COMMAND $<TARGET_FILE:audio_out_timing_tests>)
@@ -688,6 +769,22 @@ if(BUILD_TESTING)
 	add_test(NAME buffer_cache_ranges
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --buffer-cache-range-only)
 
+	if(APPLE AND NOT IOS AND KYTY_MOLTENVK_DYLIB)
+		get_filename_component(_kyty_mvk_dir "${KYTY_MOLTENVK_DYLIB}" DIRECTORY)
+		foreach(t IN ITEMS
+			shader_recompiler_compute shader_recompiler_helper_quad shader_recompiler_alignbyte
+			graphics_pipeline_rasterization graphics_draw_offsets
+			command_scheduler_timeline stream_buffer_ring gpu_command_lane pm4_context_state
+			gpu_tiler image_transfer_layout texture_cache_layered_image host_image_allocation
+			texture_cache_image_views texture_cache_storage_sampled texture_cache_depth_readback
+			compute_meta_clear_classification buffer_cache_dirty_gc color_render_target_1d
+			texture_cache_image_overlap texture_cache_htile_clear buffer_cache_ranges)
+			set_tests_properties(${t} PROPERTIES ENVIRONMENT
+				"DYLD_LIBRARY_PATH=${_kyty_mvk_dir};VK_ICD_FILENAMES=${_kyty_mvk_dir}/MoltenVK_icd.json"
+			)
+		endforeach()
+	endif()
+
 	add_custom_target(kyty_tests DEPENDS
 		ime_dialog_tests
 		shader_cfg_tests
@@ -738,7 +835,35 @@ if(APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
 	endif()
 endif()
 
-add_executable(kyty_emulator "${KYTY_SOURCE_DIR}/main.cpp" ${kyty_emulator_src})
+if(IOS OR KYTY_BUILD_SWIFTUI_APP)
+	# The emulator core is a library target so the SwiftUI app (frontend/ios) links it with all of its
+	# transitive dependencies instead of globbing object files and hand-listing static archives.
+	add_library(kyty_core STATIC ${kyty_emulator_src})
+	target_link_libraries(kyty_core ${kyty_emulator_link_libraries})
+	target_include_directories(kyty_core PUBLIC ${inc_headers})
+	add_executable(kyty_emulator "${KYTY_SOURCE_DIR}/main.cpp")
+	target_link_libraries(kyty_emulator kyty_core)
+else()
+	add_executable(kyty_emulator "${KYTY_SOURCE_DIR}/main.cpp" ${kyty_emulator_src})
+endif()
+add_dependencies(kyty_emulator kyty_generated_shader_headers)
+if(TARGET kyty_core)
+	add_dependencies(kyty_core kyty_generated_shader_headers)
+endif()
+
+# FEX JIT & HLE Bridge Test Suite for ARM64 macOS
+if(KYTY_ENABLE_FEX_GUEST_CPU AND TARGET kyty_core)
+	add_executable(fex_jit_bridge_tests EXCLUDE_FROM_ALL
+		"${KYTY_TESTS_DIR}/FexJitBridgeTests.cpp"
+	)
+	target_link_libraries(fex_jit_bridge_tests PRIVATE kyty_core fmt::fmt Zydis::Zydis)
+	target_include_directories(fex_jit_bridge_tests PRIVATE ${inc_headers})
+	if(BUILD_TESTING)
+		add_test(NAME fex_jit_bridge COMMAND $<TARGET_FILE:fex_jit_bridge_tests>)
+		set_tests_properties(fex_jit_bridge PROPERTIES TIMEOUT 60)
+		add_dependencies(kyty_tests fex_jit_bridge_tests)
+	endif()
+endif()
 configure_macos_guest_address_space(kyty_emulator)
 
 set(KYTY_TROPHY_UNLOCK_SOUND "${CMAKE_CURRENT_SOURCE_DIR}/assets/sounds/trophy-unlock.wav")
@@ -797,7 +922,7 @@ if(LINUX)
     )
 endif()
 
-if(APPLE)
+if(APPLE AND NOT IOS)
 	# The emulator writes x86-64 trampolines/PLT stubs into memory and executes them, and
 	# runs guest code under Rosetta. That requires the JIT / unsigned-executable-memory
 	# entitlements, so re-sign the binary after every link (an unsigned/relinked binary
@@ -807,6 +932,22 @@ if(APPLE)
 			--entitlements "${KYTY_SOURCE_DIR}/macos_jit.entitlements"
 			$<TARGET_FILE:kyty_emulator>
 		COMMENT "Codesign kyty_emulator with JIT entitlements (macOS)")
+elseif(IOS)
+	include("${CMAKE_CURRENT_LIST_DIR}/cmake/MoltenVKiOS.cmake")
+	set_target_properties(kyty_emulator PROPERTIES
+		MACOSX_BUNDLE TRUE
+		MACOSX_BUNDLE_INFO_PLIST "${KYTY_SOURCE_DIR}/ios_Info.plist.in"
+		XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "${KYTY_IOS_MIN_VERSION}"
+	)
+	target_compile_options(kyty_emulator PRIVATE "-miphoneos-version-min=${KYTY_IOS_MIN_VERSION}")
+	add_custom_command(TARGET kyty_emulator POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:kyty_emulator>/Frameworks"
+		COMMAND ${CMAKE_COMMAND} -E copy_directory "${KYTY_MOLTENVK_FRAMEWORK}" "$<TARGET_FILE_DIR:kyty_emulator>/Frameworks/MoltenVK.framework"
+		COMMAND codesign -s - --force "$<TARGET_FILE_DIR:kyty_emulator>/Frameworks/MoltenVK.framework/MoltenVK"
+		COMMAND codesign -s - --force
+			--entitlements "${KYTY_SOURCE_DIR}/ios_jit.entitlements"
+			$<TARGET_FILE:kyty_emulator>
+		COMMENT "Package MoltenVK framework and codesign kyty_emulator (iOS)")
 endif()
 
 install(TARGETS kyty_emulator DESTINATION .)
@@ -819,4 +960,16 @@ if(KYTY_BUILD_LAUNCHER)
 endif()
 if(KYTY_CLANG_CL)
 	install(FILES "${KYTY_THIRD_PARTY_DIR}/winpthread/bin/libwinpthread-1.dll" DESTINATION .)
+endif()
+
+if(IOS)
+	option(KYTY_BUILD_IOS_APP "Build the SwiftUI iOS app (frontend/ios) on top of kyty_core" ON)
+	if(KYTY_BUILD_IOS_APP)
+		add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/frontend/ios" "${CMAKE_CURRENT_BINARY_DIR}/frontend/ios")
+	endif()
+elseif(APPLE)
+	option(KYTY_BUILD_SWIFTUI_APP "Build the Native macOS SwiftUI app (frontend/ios) on top of kyty_core" OFF)
+	if(KYTY_BUILD_SWIFTUI_APP)
+		add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/frontend/ios" "${CMAKE_CURRENT_BINARY_DIR}/frontend/ios")
+	endif()
 endif()

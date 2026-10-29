@@ -1,0 +1,71 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "macos",
+      "displayName": "macOS (x86_64 guest via Rosetta, Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/_Build/macos",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_OSX_ARCHITECTURES": "x86_64",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    },
+    {
+      "name": "macos-swiftui",
+      "displayName": "macOS Native SwiftUI App (arm64 + FEX, Xcode)",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/_Build/xcode-mac",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "KYTY_ENABLE_FEX_GUEST_CPU": "ON",
+        "KYTY_BUILD_SWIFTUI_APP": "ON",
+        "KYTY_BUILD_LAUNCHER": "OFF",
+        "BUILD_TESTING": "OFF"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    },
+    {
+      "name": "macos-arm64-fex",
+      "displayName": "macOS Native (arm64 + FEX Core, Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/_Build/macos-arm64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "KYTY_ENABLE_FEX_GUEST_CPU": "ON",
+        "KYTY_BUILD_SWIFTUI_APP": "ON",
+        "KYTY_BUILD_LAUNCHER": "OFF",
+        "BUILD_TESTING": "ON"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    },
+    {
+      "name": "ios",
+      "displayName": "iOS device (arm64) + SwiftUI app, Xcode generator",
+      "description": "Minimum iOS version comes from cmake/ios_min_version.txt. Set KYTY_IOS_TEAM_ID for signing.",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/_Build/xcode",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_OSX_SYSROOT": "iphoneos",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "KYTY_ENABLE_FEX_GUEST_CPU": "ON",
+        "KYTY_BUILD_LAUNCHER": "OFF",
+        "BUILD_TESTING": "OFF"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "macos", "configurePreset": "macos", "targets": ["kyty_emulator"] },
+    { "name": "macos-swiftui", "configurePreset": "macos-swiftui", "configuration": "Debug", "targets": ["KytyPS5"] },
+    { "name": "macos-arm64-fex", "configurePreset": "macos-arm64-fex", "targets": ["KytyPS5"] },
+    { "name": "ios", "configurePreset": "ios", "configuration": "Release", "targets": ["KytyPS5"] },
+    { "name": "ios-debug", "configurePreset": "ios", "configuration": "Debug", "targets": ["KytyPS5"] }
+  ]
+}

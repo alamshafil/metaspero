@@ -1,4 +1,5 @@
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set_property(DIRECTORY PROPERTY FOLDER "3rdparty")
 
 add_subdirectory(cpuinfo)
 
@@ -48,7 +49,7 @@ FetchContent_Declare(
 )
 
 FetchContent_MakeAvailable(xbyak zydis)
-target_compile_definitions(xbyak INTERFACE XBYAK_NO_EXCEPTION)
+target_compile_definitions(xbyak INTERFACE XBYAK_NO_EXCEPTION XBYAK64 XBYAK64_GCC XBYAK_DONT_USE_MMAP_ALLOCATOR)
 
 # ZArchive provides random-access reads for compressed game dumps. Build only
 # the reader/writer library and its zstd dependency; the command-line tool is
@@ -176,7 +177,22 @@ if (NOT TARGET FFmpeg::ffmpeg)
 	else()
 		set(ARCHITECTURE x86_64)
 	endif()
+	if(IOS)
+		# ffmpeg-core has no iOS package. Build FFmpeg from source and hand it over as a prebuilt dir.
+		include(${CMAKE_CURRENT_LIST_DIR}/../cmake/FFmpegiOS.cmake)
+	endif()
 	add_subdirectory(ffmpeg-core)
+	if(IOS)
+		# ffmpeg-core links macOS-only frameworks (CoreServices, AudioUnit) for APPLE, use the iOS set.
+		set_property(TARGET ffmpeg PROPERTY INTERFACE_LINK_LIBRARIES "")
+		target_link_libraries(ffmpeg INTERFACE
+			"-framework CoreFoundation" "-framework AudioToolbox" "-framework CoreAudio"
+			"-framework CoreMedia" "-framework VideoToolbox" "-framework CoreVideo" "-framework Security"
+			"${FFMPEG_PREBUILT_DIR}/lib/libavformat.a" "${FFMPEG_PREBUILT_DIR}/lib/libavcodec.a"
+			"${FFMPEG_PREBUILT_DIR}/lib/libswscale.a" "${FFMPEG_PREBUILT_DIR}/lib/libavutil.a"
+			"${FFMPEG_PREBUILT_DIR}/lib/libavfilter.a" "${FFMPEG_PREBUILT_DIR}/lib/libswresample.a"
+			z iconv)
+	endif()
 	add_library(FFmpeg::ffmpeg ALIAS ffmpeg)
 endif()
 
@@ -211,3 +227,48 @@ endif()
 if (CLANG AND MSVC)
 add_subdirectory(winpthread)
 endif()
+
+if(KYTY_ENABLE_FEX_GUEST_CPU)
+	if(NOT CMAKE_SYSTEM_PROCESSOR AND CMAKE_OSX_ARCHITECTURES)
+		set(CMAKE_SYSTEM_PROCESSOR "${CMAKE_OSX_ARCHITECTURES}" CACHE STRING "" FORCE)
+	elseif(NOT CMAKE_SYSTEM_PROCESSOR AND (IOS OR APPLE))
+		set(CMAKE_SYSTEM_PROCESSOR "arm64" CACHE STRING "" FORCE)
+	endif()
+
+	set(BUILD_FEXCORE_ONLY ON CACHE BOOL "" FORCE)
+	set(BUILD_FEXCORE_SMOKE OFF CACHE BOOL "" FORCE)
+	set(TUNE_CPU "none" CACHE STRING "" FORCE)
+	set(TUNE_ARCH "generic" CACHE STRING "" FORCE)
+	set(ENABLE_FEX_ALLOCATOR OFF CACHE BOOL "" FORCE)
+	set(ENABLE_ASSERTIONS OFF CACHE BOOL "" FORCE)
+	set(ENABLE_OFFLINE_TELEMETRY OFF CACHE BOOL "" FORCE)
+	set(ENABLE_JEMALLOC_GLIBC_ALLOC OFF CACHE BOOL "" FORCE)
+	set(ENABLE_GDB_SYMBOLS OFF CACHE BOOL "" FORCE)
+	set(ENABLE_LTO OFF CACHE BOOL "" FORCE)
+	set(BUILD_THUNKS OFF CACHE BOOL "" FORCE)
+	set(BUILD_FEXCONFIG OFF CACHE BOOL "" FORCE)
+
+	list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/fexcore/Data/CMake")
+
+	add_subdirectory(fexcore EXCLUDE_FROM_ALL)
+
+	target_compile_options(FEXCore_Base PRIVATE -frtti)
+	target_compile_options(FEXCore_object PRIVATE -frtti)
+
+	target_link_libraries(FEXCore PUBLIC
+		FEXCore_Base
+		JemallocLibs
+		cephes_128bit
+		softfloat_3e
+	)
+	target_include_directories(FEXCore INTERFACE
+		"${CMAKE_CURRENT_SOURCE_DIR}/fexcore/FEXCore/include"
+		"${CMAKE_CURRENT_SOURCE_DIR}/fexcore/FEXHeaderUtils"
+		"${CMAKE_CURRENT_SOURCE_DIR}/fexcore/External/unordered_dense/include"
+		"${CMAKE_CURRENT_BINARY_DIR}/fexcore/include"
+	)
+	target_compile_definitions(FEXCore INTERFACE
+		META_NO_STD_FORWARD_DECLARATIONS
+	)
+endif()
+
