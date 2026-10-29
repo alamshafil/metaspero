@@ -10,7 +10,9 @@ namespace Config {
 static std::unique_ptr<ConfigOptions> g_config;
 
 void Initialize() {
-	EXIT_IF(g_config != nullptr);
+	if (g_config != nullptr) {
+		g_config.reset();
+	}
 
 	g_config = std::make_unique<ConfigOptions>();
 }

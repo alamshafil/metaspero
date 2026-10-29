@@ -9,6 +9,11 @@
 
 namespace Common {
 
+using FatalHandler = void (*)(int status, const char* message);
+void SetFatalHandler(FatalHandler handler);
+void InvokeFatalHandler(int status, const char* message);
+const char* GetLastFatalMessage();
+
 #ifdef __clang__
 int DbgExitHandler(char const* file, int line, std::string_view text)
     __attribute__((analyzer_noreturn));

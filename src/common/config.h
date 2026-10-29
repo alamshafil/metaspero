@@ -19,4 +19,11 @@
 
 #include "cmake_config.h"
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if defined(__arm64__) || defined(__aarch64__) || defined(KYTY_ENABLE_FEX_GUEST_CPU) || (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
+#define KYTY_ARM64_APPLE 1
+#endif
+#endif
+
 #endif /* KYTY_COMMON_CONFIG_H_ */

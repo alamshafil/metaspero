@@ -39,9 +39,21 @@ using Handler = bool (*)(const ExceptionInfo&);
 
 bool InstallHandler(Handler handler);
 
+using FexSignalHandler_t = bool (*)(int sig, void* si, void* uctx);
+void RegisterFexSignalHandler(FexSignalHandler_t handler);
+
+void SetEmulationShuttingDown(bool shutting_down);
+bool IsEmulationShuttingDown();
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 bool InitializeThreadSignalStack();
 #endif
+
+// Allocator selftest guard: protects VerifyExecutableCode against hardware execution faults
+void SetAllocatorSelftestRunning(bool running);
+bool IsAllocatorSelftestRunning();
+void* GetAllocatorSelftestJumpBuf();
+[[noreturn]] void JumpAllocatorSelftest();
 
 } // namespace Common::HostException
 

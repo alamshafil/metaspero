@@ -125,6 +125,8 @@ static void WriteImpl(std::string_view text, fmt::text_style style = {}) {
 		} else {
 			logger->log(spdlog::level::info, spdlog::string_view_t(text.data(), text.size()));
 		}
+	} else {
+		WriteStdout(text, style);
 	}
 }
 

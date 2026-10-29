@@ -14,8 +14,11 @@
 #include <unistd.h>
 
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if !TARGET_OS_IPHONE
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#endif
 #endif
 
 // IWYU pragma: no_include <asm/mman-common.h>
@@ -53,12 +56,25 @@ static int get_protection_flag(Mode mode) {
 		case Mode::Read: protect = PROT_READ; break;
 		case Mode::Write:
 		case Mode::ReadWrite: protect = PROT_READ | PROT_WRITE; break; // NOLINT
+#if defined(__APPLE__)
+		// On Apple Silicon (iOS), guest code is emulated via FEXCore JIT.
+		// The host CPU never branches into guest memory directly, execution happens in FEX JIT buffers.
+		// W^X (PROT_WRITE | PROT_EXEC) is forbidden by the Darwin kernel and returns EACCES.
+		// Map guest executable modes to readable/writable data protections.
+		case Mode::Execute:
+		case Mode::ExecuteRead: protect = PROT_READ; break;
+		case Mode::ExecuteWrite:
+		case Mode::ExecuteReadWrite:
+			protect = PROT_READ | PROT_WRITE;
+			break;
+#else
 		case Mode::Execute: protect = PROT_EXEC; break;
 		case Mode::ExecuteRead: protect = PROT_EXEC | PROT_READ; break; // NOLINT
 		case Mode::ExecuteWrite:
 		case Mode::ExecuteReadWrite:
 			protect = PROT_EXEC | PROT_WRITE | PROT_READ;
 			break; // NOLINT
+#endif
 		case Mode::NoAccess:
 		default: protect = PROT_NONE; break;
 	}
@@ -233,6 +249,12 @@ uint64_t AllocAligned(uint64_t address, uint64_t size, Mode mode, uint64_t align
 }
 
 #if defined(__APPLE__)
+#if TARGET_OS_IPHONE
+static bool is_mapped(void* ptr, size_t length) {
+	char vec = 0;
+	return (mincore(ptr, 1, &vec) == 0 || errno != ENOMEM);
+}
+#else
 // macOS has no /proc/self/maps; query the Mach VM map directly. mach_vm_region returns
 // the first mapped region at or above `region_addr`; if it begins before the end of the
 // requested range, the range overlaps an existing mapping.
@@ -252,6 +274,7 @@ static bool is_mapped(void* ptr, size_t length) {
 	}
 	return region_addr < (query_addr + length);
 }
+#endif
 #else
 static bool is_mapped(void* ptr, size_t length) {
 	FILE* file = fopen("/proc/self/maps", "r");
@@ -542,11 +565,32 @@ bool FreeRange(uint64_t address, uint64_t size) {
 }
 
 bool Protect(uint64_t address, uint64_t size, Mode mode) {
-	const auto addr       = static_cast<uintptr_t>(address);
+	if (size == 0) {
+		return true;
+	}
+	const auto addr = static_cast<uintptr_t>(address);
+#if defined(__APPLE__)
+	const auto page_size = static_cast<uintptr_t>(getpagesize());
+	const auto page_mask = page_size - 1;
+	const auto start     = addr & ~page_mask;
+	const auto end       = (addr + size + page_mask) & ~page_mask;
+	int prot = get_protection_flag(mode);
+	int ret = mprotect(reinterpret_cast<void*>(start), end - start, prot);
+	if (ret != 0 || (start <= 0x11e09016e && 0x11e09016e < end)) {
+		char msg[256];
+		int len = std::snprintf(msg, sizeof(msg),
+		    "[VM::Protect] addr=0x%016llx start=0x%016llx size=0x%llx mode=%d prot=0x%x ret=%d errno=%d (%s)\n",
+		    (unsigned long long)address, (unsigned long long)start, (unsigned long long)(end - start),
+		    static_cast<int>(mode), prot, ret, ret != 0 ? errno : 0, ret != 0 ? strerror(errno) : "OK");
+		write(STDERR_FILENO, msg, len);
+	}
+	return ret == 0;
+#else
 	const auto page_start = addr >> 12u;
 	const auto page_end   = (addr + size - 1) >> 12u;
 	return mprotect(reinterpret_cast<void*>(page_start << 12u), (page_end - page_start + 1) << 12u,
 	                get_protection_flag(mode)) == 0;
+#endif
 }
 
 bool FlushInstructionCache(uint64_t /*address*/, uint64_t /*size*/) {
