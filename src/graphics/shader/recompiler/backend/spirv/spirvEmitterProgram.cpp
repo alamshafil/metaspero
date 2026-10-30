@@ -480,12 +480,9 @@ uint32_t ValueEmitContext::Ballot(IR::Value predicate) {
 }
 
 uint32_t ValueEmitContext::FirstLane(uint32_t ballot) {
-	if (other_half == nullptr) {
-		const auto result = state.builder.AllocateId();
-		state.builder.AddFunction(spv::OpGroupNonUniformBallotFindLSB, TypeU32(state), result,
-		                          ConstantU32(state, spv::ScopeSubgroup), ballot);
-		return result;
-	}
+	// Use bitwise FindILsb instead of OpGroupNonUniformBallotFindLSB.
+	// Metal disallows subgroup size attributes in vertex shaders,
+	// which breaks SPIRV-Cross translation on MoltenVK.
 	const auto low        = state.builder.AllocateId();
 	const auto high       = state.builder.AllocateId();
 	const auto low_first  = state.builder.AllocateId();
