@@ -479,6 +479,14 @@ add_executable(push_descriptor_policy_tests EXCLUDE_FROM_ALL
 target_include_directories(push_descriptor_policy_tests PRIVATE ${inc_headers})
 target_link_libraries(push_descriptor_policy_tests Vulkan::Headers)
 
+if(APPLE)
+	add_executable(device_address_lifetime_gpu_tests EXCLUDE_FROM_ALL
+		"${KYTY_TESTS_DIR}/DeviceAddressLifetimeGpuTests.cpp"
+	)
+	target_include_directories(device_address_lifetime_gpu_tests PRIVATE ${inc_headers})
+	target_link_libraries(device_address_lifetime_gpu_tests Vulkan::Headers)
+endif()
+
 add_executable(scalar_provenance_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/ScalarProvenanceTests.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/gpu_format.cpp"

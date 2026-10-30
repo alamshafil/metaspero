@@ -88,6 +88,13 @@ template <typename T, typename Enumerator>
 	return max_push_descriptors > 0 && descriptor_count <= max_push_descriptors;
 }
 
+// MoltenVK makes active Metal command buffers hold references to live buffer objects.
+// Wait for queued work to finish before destroying device-address buffers on MoltenVK.
+[[nodiscard]] constexpr inline bool
+DeviceAddressBufferDestructionWaitsForQueue(vk::DriverId driver_id) {
+	return driver_id == vk::DriverId::eMoltenvk;
+}
+
 } // namespace Libs::Graphics
 
 #endif // EMULATOR_SRC_GRAPHICS_HOST_GPU_VULKANCOMMON_H_
