@@ -84,38 +84,19 @@ public:
 			CloseHandle(m_handle);
 			m_handle = nullptr;
 		}
-#elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
-#if defined(__APPLE__)
-		{
-			// Darwin POSIX shared memory (shm_open) has a kernel limit of < 4 GB.
-			// Only attempt shm_open if the requested backing size is below 3.5 GB.
-			if (m_size < 3584ULL * 1024ULL * 1024ULL) {
-				char shm_name[64];
-				snprintf(shm_name, sizeof(shm_name), "/kyty-dm-%d-%llx", static_cast<int>(getpid()),
-				         static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(this)));
-				m_fd = shm_open(shm_name, O_RDWR | O_CREAT | O_EXCL, 0600);
-				if (m_fd >= 0) {
-					shm_unlink(shm_name);
-					if (ftruncate(m_fd, static_cast<off_t>(m_size)) != 0) {
-						close(m_fd);
-						m_fd = -1;
-					}
-				}
-			}
-			if (m_fd < 0) {
-				char tmp_path[256];
-				snprintf(tmp_path, sizeof(tmp_path), "_TempData/kyty-dm-%d-%llx.tmp", static_cast<int>(getpid()),
-				         static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(this)));
-				Common::File::CreateDirectories("_TempData");
-				m_fd = open(tmp_path, O_RDWR | O_CREAT | O_EXCL, 0600);
-				if (m_fd >= 0) {
-					unlink(tmp_path);
-				}
-			}
+#elif defined(__APPLE__)
+		auto* backing = mmap(nullptr, m_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_SHARED, -1, 0);
+		if (backing == MAP_FAILED) {
+			std::fprintf(stderr, "[GuestBackingStore] anonymous shared memory allocation failed (size=%llu MB): %d\n",
+			             (unsigned long long)(m_size / (1024 * 1024)), errno);
+			LOGF_COLOR(Log::Color::Red, "\t direct-memory backing: anonymous shared memory failed: %d\n", errno);
+			return;
 		}
-#else
+		m_backing_base = static_cast<uint8_t*>(backing);
+		std::printf("[GuestBackingStore] Direct memory backing initialized in RAM via Mach VM remap (size=%llu MB)\n",
+		            (unsigned long long)(m_size / (1024 * 1024)));
+#elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 		m_fd = static_cast<int>(syscall(SYS_memfd_create, "KytyDirectMemory", 0));
-#endif
 		if (m_fd < 0) {
 			std::fprintf(stderr, "[GuestBackingStore] shared fd creation failed: %d\n", errno);
 			LOGF_COLOR(Log::Color::Red, "\t direct-memory backing: shared fd creation failed: %d\n",
@@ -130,11 +111,6 @@ public:
 			m_fd = -1;
 			return;
 		}
-#if defined(KYTY_ARM64_APPLE)
-		m_backing_base = nullptr;
-		std::printf("[GuestBackingStore] Direct memory backing initialized with fd=%d (size=%llu MB, pread/pwrite mode)\n",
-		            m_fd, (unsigned long long)(m_size / (1024 * 1024)));
-#else
 		auto* backing = mmap(nullptr, m_size, PROT_READ | PROT_WRITE, MAP_SHARED, m_fd, 0);
 		if (backing == MAP_FAILED) {
 			std::fprintf(stderr, "[GuestBackingStore] writable alias mmap failed (size=%llu MB): %d\n",
@@ -146,7 +122,6 @@ public:
 			return;
 		}
 		m_backing_base = static_cast<uint8_t*>(backing);
-#endif
 #endif
 	}
 
@@ -196,12 +171,10 @@ public:
 	[[nodiscard]] bool IsAvailable() const {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		return m_handle != nullptr && m_backing_base != nullptr;
+#elif defined(__APPLE__)
+		return m_backing_base != nullptr;
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
-#if defined(KYTY_ARM64_APPLE)
-		return m_fd >= 0;
-#else
 		return m_fd >= 0 && m_backing_base != nullptr;
-#endif
 #else
 		return false;
 #endif
@@ -753,6 +726,30 @@ private:
 			callback(vaddr, size);
 		}
 #endif
+#if defined(__APPLE__)
+		vm_address_t target = static_cast<vm_address_t>(vaddr);
+		vm_prot_t cur_prot = 0, max_prot = 0;
+		kern_return_t kr = vm_remap(
+		    mach_task_self(),
+		    &target,
+		    size,
+		    0,
+		    VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
+		    mach_task_self(),
+		    static_cast<vm_address_t>(reinterpret_cast<uintptr_t>(m_backing_base + backing_offset)),
+		    FALSE,
+		    &cur_prot,
+		    &max_prot,
+		    VM_INHERIT_NONE);
+		if (kr != KERN_SUCCESS) {
+			SetFailure(failure_reason, FailureReason::FixedMapViewFailed);
+			return nullptr;
+		}
+		if (mode != VirtualMemory::Mode::NoAccess) {
+			mprotect(reinterpret_cast<void*>(vaddr), size, GetProtect(mode));
+		}
+		return reinterpret_cast<void*>(vaddr);
+#else
 		void* ptr = mmap(reinterpret_cast<void*>(vaddr), size, GetProtect(mode),
 		                 MAP_SHARED | MAP_FIXED, m_fd, static_cast<off_t>(backing_offset));
 		if (ptr == MAP_FAILED) {
@@ -760,6 +757,7 @@ private:
 			return nullptr;
 		}
 		return ptr;
+#endif
 	}
 
 	// Replace the file view atomically instead of exposing an unmapped hole in the
