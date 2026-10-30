@@ -1375,22 +1375,40 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
         }
     };
 
-    // Byte-by-byte copy helpers ensuring 1-byte access alignment on any memory type
-    // (including Device / Write-Combined GPU buffers which trap on unaligned GPR accesses).
+    // Safe copy helpers using Mach VM APIs when available so that reads/writes
+    // to unmapped or invalid guest ranges return gracefully without faulting.
     auto SafeCopyFromGuest = [](void* dst, const void* src, size_t size) {
+#if defined(__APPLE__)
+        vm_size_t outsize = 0;
+        kern_return_t kr = vm_read_overwrite(mach_task_self(), reinterpret_cast<vm_address_t>(src), size,
+                                              reinterpret_cast<vm_address_t>(dst), &outsize);
+        if (kr == KERN_SUCCESS && outsize == size) {
+            return;
+        }
+        std::memset(dst, 0, size);
+#else
         auto* d = static_cast<uint8_t*>(dst);
         const auto* s = static_cast<const volatile uint8_t*>(src);
         for (size_t i = 0; i < size; ++i) {
             d[i] = s[i];
         }
+#endif
     };
 
     auto SafeCopyToGuest = [](void* dst, const void* src, size_t size) {
+#if defined(__APPLE__)
+        kern_return_t kr = vm_write(mach_task_self(), reinterpret_cast<vm_address_t>(dst),
+                                    reinterpret_cast<vm_offset_t>(src), static_cast<mach_msg_type_number_t>(size));
+        if (kr == KERN_SUCCESS) {
+            return;
+        }
+#else
         auto* d = static_cast<volatile uint8_t*>(dst);
         const auto* s = static_cast<const uint8_t*>(src);
         for (size_t i = 0; i < size; ++i) {
             d[i] = s[i];
         }
+#endif
     };
 
     bool emulated = false;
@@ -1428,8 +1446,7 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
 
         target_addr = get_gpr(rn) + offset;
         size_t bytes = (v && (opc & 2)) ? 16 : (1 << size);
-        // Only emulate genuinely unaligned memory accesses; naturally aligned accesses cannot be alignment faults
-        if (target_addr >= 0x1000 && bytes > 1 && (target_addr & (bytes - 1)) != 0) {
+        if (target_addr >= 0x1000) {
             if (v) { // SIMD / FP
                 if (opc & 2) { // Q (128-bit)
                     if (opc & 1) { // LDR Q
@@ -1501,8 +1518,7 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
 
         uint32_t scale = (v && (opc & 2)) ? 16 : (1 << size);
         target_addr = get_gpr(rn) + static_cast<uint64_t>(imm12) * scale;
-        // Only emulate unaligned memory accesses, naturally aligned accesses cannot be alignment faults
-        if (target_addr >= 0x1000 && scale > 1 && (target_addr & (scale - 1)) != 0) {
+        if (target_addr >= 0x1000) {
             if (v) { // SIMD / FP
                 if (opc & 2) { // Q (128-bit)
                     if (opc & 1) { // LDR Q
@@ -1574,8 +1590,7 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
 
         target_addr = (idx_mode == 0b01) ? get_gpr(rn) : (get_gpr(rn) + imm9);
         size_t bytes = (v && (opc & 2)) ? 16 : (1 << size);
-        // Only emulate unaligned memory accesses, naturally aligned accesses cannot be alignment faults
-        if (target_addr >= 0x1000 && bytes > 1 && (target_addr & (bytes - 1)) != 0) {
+        if (target_addr >= 0x1000) {
             if (v) { // SIMD / FP
                 if (opc & 2) { // Q (128-bit)
                     if (opc & 1) { // LDUR Q
@@ -1663,8 +1678,7 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
 
         int64_t offset = static_cast<int64_t>(imm7) * scale;
         target_addr = (type == 0b001) ? get_gpr(rn) : (get_gpr(rn) + offset);
-        // Only emulate genuinely unaligned memory accesses; naturally aligned accesses cannot be alignment faults
-        if (target_addr >= 0x1000 && scale > 1 && (target_addr & (scale - 1)) != 0) {
+        if (target_addr >= 0x1000) {
             if (v) { // SIMD / FP pair
                 size_t bytes = scale;
                 if (l == 1) { // LDP
