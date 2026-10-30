@@ -135,6 +135,9 @@ DppTargetLane EmitDppTargetLane(EmitterState& state, const IR::DppMoveFlags& fla
 }
 
 uint32_t EmitSubgroupLocalInvocationId(EmitterState& state) {
+	if (state.program.stage == ShaderType::Vertex || state.program.stage == ShaderType::Local) {
+		return ConstantU32(state, state.lane_half == 0 ? 0 : 32);
+	}
 	if (state.subgroup_local_invocation_id_variable == 0) {
 		EXIT("SubgroupLocalInvocationId was not declared before SPIR-V function emission\n");
 	}

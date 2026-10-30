@@ -839,9 +839,14 @@ int VertexLaunchField(Value value, const Program& program) {
 	int kind = 1;
 	if (field == nullptr || !U32Is(Arg(*field, 1), 0xffu)) {
 		field = Operation(value, ValueOpcode::BitFieldUExtract);
-		if (field == nullptr || !U32Is(Arg(*field, 1), 8u) ||
-		    !U32Is(Arg(*field, 2), 8u)) return 0;
-		kind = 2;
+		if (field == nullptr) return 0;
+		if (U32Is(Arg(*field, 1), 0u) && U32Is(Arg(*field, 2), 8u)) {
+			kind = 1;
+		} else if (U32Is(Arg(*field, 1), 8u) && U32Is(Arg(*field, 2), 8u)) {
+			kind = 2;
+		} else {
+			return 0;
+		}
 	}
 	const auto* packed = Operation(Arg(*field, 0), ValueOpcode::BitwiseOr32);
 	return packed != nullptr && U32Is(Arg(*packed, 1), 1u << 28u) &&
@@ -874,10 +879,25 @@ int VertexLaunchPredicate(const Inst& inst, const Program& program) {
 	if (low == nullptr || !U32Is(Arg(*low, 1), 0u) ||
 	    (high != nullptr && Arg(*high, 0) != Arg(*low, 0))) return 0;
 	const auto* mask = Operation(Arg(*low, 0), ValueOpcode::ShiftRightLogical64);
-	if (mask == nullptr || Arg(*mask, 0) != Value(UINT64_MAX)) return 0;
-	const auto* shift = Operation(Arg(*mask, 1), ValueOpcode::ISub32);
-	if (shift == nullptr || !U32Is(Arg(*shift, 0), 64u)) return 0;
-	return VertexLaunchField(Arg(*shift, 1), program);
+	if (mask != nullptr && Arg(*mask, 0) == Value(UINT64_MAX)) {
+		const auto* shift = Operation(Arg(*mask, 1), ValueOpcode::ISub32);
+		if (shift != nullptr && U32Is(Arg(*shift, 0), 64u)) {
+			return VertexLaunchField(Arg(*shift, 1), program);
+		}
+	}
+	auto mask_val = Arg(*low, 0);
+	if (const auto* lsh = Operation(mask_val, ValueOpcode::ShiftLeftLogical64);
+	    lsh != nullptr && U32Is(Arg(*lsh, 1), 0u)) {
+		mask_val = Arg(*lsh, 0);
+	}
+	if (const auto* sub = Operation(mask_val, ValueOpcode::ISub64);
+	    sub != nullptr && Arg(*sub, 1) == Value(uint64_t{1})) {
+		if (const auto* lsh1 = Operation(Arg(*sub, 0), ValueOpcode::ShiftLeftLogical64);
+		    lsh1 != nullptr && Arg(*lsh1, 0) == Value(uint64_t{1})) {
+			return VertexLaunchField(Arg(*lsh1, 1), program);
+		}
+	}
+	return 0;
 }
 
 } // namespace
