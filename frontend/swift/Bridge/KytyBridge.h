@@ -84,6 +84,9 @@ typedef NS_ENUM(NSInteger, KytyButton) {
 /// Returns the dynamically detected or bundled MoltenVK version
 + (NSString *)moltenVkVersion;
 
+/// Applies graphics debug flags (e.g. skip mesh shaders) based on user preferences
++ (void)applyGraphicsDebugSettings;
+
 /// Controls Apple's Metal Performance HUD (FPS, GPU/CPU frame times, memory)
 + (void)setMetalHudEnabled:(BOOL)enabled;
 + (BOOL)isMetalHudEnabled;

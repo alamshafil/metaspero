@@ -12,6 +12,7 @@ struct SettingsView: View {
     @AppStorage("enableLogFileWriting") private var enableLogFileWriting = false
     @AppStorage("enableMemoryWarningToast") private var enableMemoryWarningToast = true
     @AppStorage("memoryBackingMode") private var memoryBackingMode = "ram"
+    @AppStorage("skipMeshShaders") private var skipMeshShaders = false
     
     @State private var showLogSheet = false
     @State private var showAboutSheet = false
@@ -218,6 +219,13 @@ struct SettingsView: View {
                         Text(KytyBridge.moltenVkVersion())
                             .foregroundColor(.secondary)
                     }
+
+                    Divider()
+
+                    Toggle("Skip Mesh Shaders (Debug)", isOn: $skipMeshShaders)
+                        .onChange(of: skipMeshShaders) { _ in
+                            KytyBridge.applyGraphicsDebugSettings()
+                        }
                 }
                 .padding(8)
             }
@@ -423,6 +431,11 @@ struct SettingsView: View {
                         Text(KytyBridge.moltenVkVersion())
                             .foregroundColor(.secondary)
                     }
+
+                    Toggle("Skip Mesh Shaders (Debug)", isOn: $skipMeshShaders)
+                        .onChange(of: skipMeshShaders) { _ in
+                            KytyBridge.applyGraphicsDebugSettings()
+                        }
                 }
         }
         .navigationTitle("Graphics & Display")

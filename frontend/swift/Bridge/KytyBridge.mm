@@ -524,6 +524,19 @@ static void KytyFatalExitCallback(int status, const char *message) {
     return @"MoltenVK 1.4.3 (Metal)";
 }
 
++ (void)applyGraphicsDebugSettings {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL skipMesh = [defaults boolForKey:@"skipMeshShaders"];
+    if (skipMesh) {
+        setenv("KYTY_SKIP_MESH_SHADERS", "1", 1);
+        std::printf("[KytyBridge] Graphics Debug: Skip Mesh Shaders ENABLED\n");
+    } else {
+        unsetenv("KYTY_SKIP_MESH_SHADERS");
+        std::printf("[KytyBridge] Graphics Debug: Skip Mesh Shaders DISABLED\n");
+    }
+    std::fflush(stdout);
+}
+
 + (void)setMetalHudEnabled:(BOOL)enabled {
     [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:@"enableMetalHud"];
     [[NSUserDefaults standardUserDefaults] synchronize];
@@ -570,6 +583,8 @@ static void KytyFatalExitCallback(int status, const char *message) {
     g_is_running.store(true);
     g_host_view = targetView;
     g_host_layer = targetLayer;
+
+    [KytyBridge applyGraphicsDebugSettings];
 
     std::printf("[KytyBridge] ---\n");
     std::printf("[KytyBridge] Launching Game: %s\n", path.c_str());
