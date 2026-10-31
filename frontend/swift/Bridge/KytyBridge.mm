@@ -1089,12 +1089,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
                         NSString *ucpPath = [dir stringByAppendingPathComponent:file];
                         auto pkg = Common::Trophies::LoadPackage(std::filesystem::path([ucpPath UTF8String]), consoleLanguage);
                         
-                        Common::Trophies::UnlockData unlocks;
-                        NSString *unlockPath = [dir stringByAppendingPathComponent:[file stringByReplacingOccurrencesOfString:@".ucp" withString:@".dat"]];
-                        if ([fm fileExistsAtPath:unlockPath]) {
-                            unlocks = Common::Trophies::LoadUnlockData(std::filesystem::path([unlockPath UTF8String]));
-                        }
-                        
                         for (const auto& [tid, trophy] : pkg.trophies) {
                             NSString *gradeStr = @"Bronze";
                             switch (trophy.grade) {
@@ -1103,21 +1097,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
                                 case 3: gradeStr = @"Silver"; break;
                                 case 4: gradeStr = @"Bronze"; break;
                                 default: break;
-                            }
-                            
-                            BOOL unlocked = (unlocks.unlocked.find(tid) != unlocks.unlocked.end());
-                            NSString *earnedDate = @"";
-                            auto it = unlocks.timestamps.find(tid);
-                            if (it != unlocks.timestamps.end()) {
-                                uint64_t tick = it->second;
-                                if (tick > Common::Trophies::UnixEpochTick) {
-                                    NSTimeInterval secs = (NSTimeInterval)(tick - Common::Trophies::UnixEpochTick) / 10000000.0;
-                                    NSDate *date = [NSDate dateWithTimeIntervalSince1970:secs];
-                                    NSDateFormatter *df = [[NSDateFormatter alloc] init];
-                                    [df setDateStyle:NSDateFormatterMediumStyle];
-                                    [df setTimeStyle:NSDateFormatterShortStyle];
-                                    earnedDate = [df stringFromDate:date];
-                                }
                             }
                             
                             NSData *iconData = nil;
@@ -1131,10 +1110,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
                             dict[@"description"] = [NSString stringWithUTF8String:trophy.description.c_str()];
                             dict[@"grade"] = gradeStr;
                             dict[@"hidden"] = @(trophy.hidden);
-                            dict[@"unlocked"] = @(unlocked);
-                            if (earnedDate.length > 0) {
-                                dict[@"earnedDate"] = earnedDate;
-                            }
                             if (iconData) {
                                 dict[@"iconData"] = iconData;
                             }

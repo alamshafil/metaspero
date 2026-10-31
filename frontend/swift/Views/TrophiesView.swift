@@ -7,15 +7,7 @@ struct TrophiesView: View {
     
     @State private var trophies: [TrophyItem] = []
     @State private var isLoading = true
-    @State private var selectedFilter: TrophyFilter = .all
     @State private var searchText: String = ""
-    
-    enum TrophyFilter: String, CaseIterable, Identifiable {
-        case all = "All"
-        case earned = "Earned"
-        case locked = "Locked"
-        var id: String { rawValue }
-    }
     
     struct TrophyItem: Identifiable {
         let id: Int
@@ -23,26 +15,30 @@ struct TrophiesView: View {
         let description: String
         let grade: String
         let hidden: Bool
-        let unlocked: Bool
-        let earnedDate: String?
         let iconData: Data?
     }
     
-    var unlockedCount: Int {
-        trophies.filter { $0.unlocked }.count
+    var gradeCounts: (platinum: Int, gold: Int, silver: Int, bronze: Int) {
+        var p = 0, g = 0, s = 0, b = 0
+        for t in trophies {
+            switch t.grade.lowercased() {
+            case "platinum": p += 1
+            case "gold": g += 1
+            case "silver": s += 1
+            default: b += 1
+            }
+        }
+        return (p, g, s, b)
     }
     
     var filteredTrophies: [TrophyItem] {
-        trophies.filter { t in
-            switch selectedFilter {
-            case .all: break
-            case .earned: if !t.unlocked { return false }
-            case .locked: if t.unlocked { return false }
-            }
-            if !searchText.isEmpty {
-                return t.name.localizedCaseInsensitiveContains(searchText) || t.description.localizedCaseInsensitiveContains(searchText)
-            }
-            return true
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            return trophies
+        }
+        return trophies.filter { t in
+            t.name.localizedCaseInsensitiveContains(query) ||
+            t.description.localizedCaseInsensitiveContains(query)
         }
     }
     
@@ -70,31 +66,40 @@ struct TrophiesView: View {
                 } else {
                     VStack(spacing: 0) {
                         // Summary Banner
-                        VStack(spacing: 12) {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(game.title)
-                                        .font(.headline)
-                                    Text("\(unlockedCount) of \(trophies.count) Unlocked (\(Int((Double(unlockedCount) / Double(max(1, trophies.count))) * 100))%)")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                Spacer()
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(game.title)
+                                    .font(.headline)
+                                    .lineLimit(1)
+                                
+                                Spacer(minLength: 8)
+                                
+                                Text("\(trophies.count) \(trophies.count == 1 ? "Trophy" : "Trophies")")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: true, vertical: false)
                             }
                             
-                            ProgressView(value: Double(unlockedCount), total: Double(max(1, trophies.count)))
-                                .accentColor(.blue)
-                            
-                            // Filter Picker
-                            Picker("", selection: $selectedFilter) {
-                                ForEach(TrophyFilter.allCases) { filter in
-                                    Text(filter.rawValue).tag(filter)
+                            // Grade breakdown pills
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    if gradeCounts.platinum > 0 {
+                                        GradeBadge(grade: "Platinum", count: gradeCounts.platinum, color: Color(red: 0.7, green: 0.85, blue: 1.0))
+                                    }
+                                    if gradeCounts.gold > 0 {
+                                        GradeBadge(grade: "Gold", count: gradeCounts.gold, color: Color(red: 1.0, green: 0.84, blue: 0.0))
+                                    }
+                                    if gradeCounts.silver > 0 {
+                                        GradeBadge(grade: "Silver", count: gradeCounts.silver, color: Color(red: 0.75, green: 0.75, blue: 0.78))
+                                    }
+                                    if gradeCounts.bronze > 0 {
+                                        GradeBadge(grade: "Bronze", count: gradeCounts.bronze, color: Color(red: 0.8, green: 0.5, blue: 0.2))
+                                    }
                                 }
                             }
-                            .pickerStyle(.segmented)
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 14)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
 #if os(macOS)
                         .background(Color(NSColor.controlBackgroundColor))
 #else
@@ -105,10 +110,19 @@ struct TrophiesView: View {
                         
                         List {
                             if filteredTrophies.isEmpty {
-                                Text("No trophies match the filter.")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                                    .padding(.vertical, 8)
+                                VStack(spacing: 8) {
+                                    Image(systemName: "magnifyingglass")
+                                        .font(.title2)
+                                        .foregroundColor(.secondary)
+                                    Text("No trophies match \"\(searchText)\"")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 24)
+#if os(iOS)
+                                .listRowSeparator(.hidden)
+#endif
                             } else {
                                 ForEach(filteredTrophies) { t in
                                     TrophyRow(trophy: t)
@@ -117,15 +131,23 @@ struct TrophiesView: View {
                         }
 #if os(macOS)
                         .listStyle(.inset)
+#else
+                        .listStyle(.plain)
 #endif
                     }
-#if os(iOS)
-                    .searchable(text: $searchText, prompt: "Search trophies")
-#endif
                 }
             }
             .navigationTitle("Trophies")
-#if os(macOS)
+#if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Search trophies")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .font(.body.weight(.semibold))
+                }
+            }
+#else
             .frame(minWidth: 640, idealWidth: 700, minHeight: 520, idealHeight: 580)
             .toolbar {
                 ToolbarItem(placement: .automatic) {
@@ -150,12 +172,6 @@ struct TrophiesView: View {
                         .keyboardShortcut(.cancelAction)
                 }
             }
-#else
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
 #endif
             .onAppear {
                 loadTrophies()
@@ -173,8 +189,6 @@ struct TrophiesView: View {
                 let desc = d["description"] as? String ?? ""
                 let grade = d["grade"] as? String ?? "Bronze"
                 let hidden = (d["hidden"] as? NSNumber)?.boolValue ?? false
-                let unlocked = (d["unlocked"] as? NSNumber)?.boolValue ?? false
-                let earnedDate = d["earnedDate"] as? String
                 let iconData = d["iconData"] as? Data
                 items.append(TrophyItem(
                     id: id,
@@ -182,8 +196,6 @@ struct TrophiesView: View {
                     description: desc,
                     grade: grade,
                     hidden: hidden,
-                    unlocked: unlocked,
-                    earnedDate: earnedDate,
                     iconData: iconData
                 ))
             }
@@ -192,6 +204,27 @@ struct TrophiesView: View {
                 self.isLoading = false
             }
         }
+    }
+}
+
+struct GradeBadge: View {
+    let grade: String
+    let count: Int
+    let color: Color
+    
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "trophy.fill")
+                .font(.system(size: 11))
+                .foregroundColor(color)
+            Text("\(count)")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.primary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(color.opacity(0.15))
+        .cornerRadius(6)
     }
 }
 
@@ -218,27 +251,37 @@ struct TrophyRow: View {
                         .aspectRatio(contentMode: .fill)
                         .frame(width: 44, height: 44)
                         .cornerRadius(8)
-                        .opacity(trophy.unlocked ? 1.0 : 0.4)
                 } else {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(gradeColor.opacity(trophy.unlocked ? 0.25 : 0.12))
+                        .fill(gradeColor.opacity(0.18))
                         .frame(width: 44, height: 44)
-                    Image(systemName: trophy.unlocked ? "trophy.fill" : "trophy")
-                        .font(.system(size: 22))
-                        .foregroundColor(trophy.unlocked ? gradeColor : .secondary)
+                    Image(systemName: "trophy.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(gradeColor)
                 }
             }
             
             // Details
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .top, spacing: 8) {
-                    Text(trophy.hidden && !trophy.unlocked ? "Hidden Trophy" : trophy.name)
+                    Text(trophy.name)
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(trophy.unlocked ? .primary : .secondary)
+                        .foregroundColor(.primary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                     
                     Spacer(minLength: 8)
+                    
+                    if trophy.hidden {
+                        Text("Hidden")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.12))
+                            .cornerRadius(4)
+                            .fixedSize(horizontal: true, vertical: true)
+                    }
                     
                     Text(trophy.grade)
                         .font(.system(size: 10, weight: .bold))
@@ -251,16 +294,12 @@ struct TrophyRow: View {
                         .layoutPriority(1)
                 }
                 
-                Text(trophy.hidden && !trophy.unlocked ? "Details hidden until earned" : trophy.description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
-                
-                if let earned = trophy.earnedDate, !earned.isEmpty {
-                    Text("Earned on \(earned)")
-                        .font(.system(size: 9))
-                        .foregroundColor(.green)
+                if !trophy.description.isEmpty {
+                    Text(trophy.description)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }

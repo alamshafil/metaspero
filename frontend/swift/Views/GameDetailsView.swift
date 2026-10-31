@@ -12,46 +12,15 @@ struct GameDetailsView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     // Artwork Header
-                    ZStack {
-#if os(iOS)
-                        if let iconPath = game.iconPath, let uiImage = UIImage(contentsOfFile: iconPath) {
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: 130, height: 130)
-                                .cornerRadius(16)
-                        } else {
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                .frame(width: 130, height: 130)
-                            Image(systemName: "gamecontroller.fill")
-                                .font(.system(size: 48))
-                                .foregroundColor(.white)
-                        }
-#else
-                        if let iconPath = game.iconPath, let nsImage = NSImage(contentsOfFile: iconPath) {
-                            Image(nsImage: nsImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: 130, height: 130)
-                                .cornerRadius(16)
-                        } else {
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                .frame(width: 130, height: 130)
-                            Image(systemName: "gamecontroller.fill")
-                                .font(.system(size: 48))
-                                .foregroundColor(.white)
-                        }
-#endif
-                    }
-                    .shadow(radius: 6)
+                    artworkView
+                        .shadow(color: .black.opacity(0.15), radius: 6, x: 0, y: 3)
                     
                     VStack(spacing: 6) {
                         Text(game.title)
                             .font(.title2)
                             .fontWeight(.bold)
                             .multilineTextAlignment(.center)
+                            .padding(.horizontal, 16)
                         
                         Text(game.titleId)
                             .font(.system(.subheadline, design: .monospaced))
@@ -84,7 +53,11 @@ struct GameDetailsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(16)
+#if os(macOS)
                     .background(Color.secondary.opacity(0.1))
+#else
+                    .background(Color(UIColor.secondarySystemGroupedBackground))
+#endif
                     .cornerRadius(12)
                     
                     // Actions
@@ -93,7 +66,7 @@ struct GameDetailsView: View {
                             dismiss()
                             onLaunch()
                         }) {
-                            HStack {
+                            HStack(spacing: 8) {
                                 Image(systemName: "play.fill")
                                 Text("Launch Game")
                             }
@@ -107,14 +80,19 @@ struct GameDetailsView: View {
                         
                         Button(action: {
                             dismiss()
-                            onViewTrophies()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                onViewTrophies()
+                            }
                         }) {
-                            Text("View Trophies")
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                                .background(Color.secondary.opacity(0.15))
-                                .foregroundColor(.primary)
-                                .cornerRadius(10)
+                            HStack(spacing: 8) {
+                                Image(systemName: "trophy.fill")
+                                Text("View Trophies")
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color.secondary.opacity(0.15))
+                            .foregroundColor(.primary)
+                            .cornerRadius(10)
                         }
                         .buttonStyle(.plain)
                     }
@@ -130,12 +108,50 @@ struct GameDetailsView: View {
                 }
             }
 #else
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
+                        .font(.body.weight(.semibold))
                 }
             }
 #endif
+        }
+    }
+    
+    @ViewBuilder
+    private var artworkView: some View {
+#if os(iOS)
+        if let iconPath = game.iconPath, let uiImage = UIImage(contentsOfFile: iconPath) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 130, height: 130)
+                .cornerRadius(16)
+        } else {
+            placeholderArtwork
+        }
+#else
+        if let iconPath = game.iconPath, let nsImage = NSImage(contentsOfFile: iconPath) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 130, height: 130)
+                .cornerRadius(16)
+        } else {
+            placeholderArtwork
+        }
+#endif
+    }
+    
+    private var placeholderArtwork: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16)
+                .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .frame(width: 130, height: 130)
+            Image(systemName: "gamecontroller.fill")
+                .font(.system(size: 48))
+                .foregroundColor(.white)
         }
     }
 }
@@ -145,13 +161,14 @@ struct DetailInfoRow: View {
     let value: String
     
     var body: some View {
-        HStack {
+        HStack(alignment: .top) {
             Text(label)
                 .foregroundColor(.secondary)
-            Spacer()
+            Spacer(minLength: 12)
             Text(value)
                 .fontWeight(.medium)
                 .font(.system(.body, design: .monospaced))
+                .multilineTextAlignment(.trailing)
         }
     }
 }
