@@ -323,7 +323,14 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 	}
 
 	(void)poll;
-	if (!TestWaitRegMemValue(*addr, ref, mask, func)) {
+	const T current_val = __atomic_load_n(addr, __ATOMIC_ACQUIRE);
+	if (!TestWaitRegMemValue(current_val, ref, mask, func)) {
+		for (uint32_t i = 0; i < 50; ++i) {
+			std::this_thread::yield();
+			if (TestWaitRegMemValue(__atomic_load_n(addr, __ATOMIC_ACQUIRE), ref, mask, func)) {
+				return;
+			}
+		}
 		SuspendPm4();
 	}
 }
@@ -607,6 +614,9 @@ bool GuestGpu::Process(Submission& submission) {
 			           Pm4ProcessResult::Complete;
 			if (submission.command_execution.MadeProgress()) {
 				cp.BufferFlush();
+			}
+			if (complete) {
+				m_renderer.TriggerInterrupt(cp.GetInterruptEventId(), 0);
 			}
 			break;
 		}

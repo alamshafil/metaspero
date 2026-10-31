@@ -146,6 +146,7 @@ public:
 	[[nodiscard]] uint64_t GetSubmitId() const { return m_submit_id; }
 	void                   SetSubmitId(uint64_t submit_id) { m_submit_id = submit_id; }
 	[[nodiscard]] bool     IsAsyncComputeQueue() const { return m_interrupt_event_id >= 0x20; }
+	[[nodiscard]] int      GetInterruptEventId() const { return m_interrupt_event_id; }
 
 private:
 	template <typename T>
