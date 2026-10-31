@@ -6,8 +6,8 @@ This document describes the design and runtime architecture of KytyPS5 on Apple 
 
 KytyPS5 on Darwin separates UI from core emulation:
 
-- Frontend: SwiftUI app on iOS and macOS (`frontend/ios/`), with an optional CLI binary on macOS (`kyty_emulator`).
-- Bridge: Objective-C++ bridge (`frontend/ios/Bridge/KytyBridge.mm`) connects Swift UI to the C++ core and pipes standard output to the UI log viewer.
+- Frontend: SwiftUI app on iOS and macOS (`frontend/swift/`), with an optional CLI binary on macOS (`kyty_emulator`).
+- Bridge: Objective-C++ bridge (`frontend/swift/Bridge/KytyBridge.mm`) connects Swift UI to the C++ core and pipes standard output to the UI log viewer.
 - Core emulation: OS HLE (LibKernel, pthreads, memory management), graphics translation via MoltenVK, and multimedia subsystems.
 - CPU translation: Custom FEXCore fork (`alamshafil/fexcore-darwin`) translating guest x86_64 to ARM64 at runtime, based on the porting work from AetherPS4.
 

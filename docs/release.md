@@ -6,7 +6,7 @@ This document describes how to update the version number and build release packa
 
 The application version and build numbers are set in two files:
 
-### frontend/ios/CMakeLists.txt
+### frontend/swift/CMakeLists.txt
 
 Update the default version cache variables:
 
@@ -15,7 +15,7 @@ set(KYTY_APP_VERSION "0.1.0" CACHE STRING "SwiftUI app version")
 set(KYTY_APP_BUILD "1" CACHE STRING "SwiftUI app build number")
 ```
 
-### frontend/ios/Info.plist
+### frontend/swift/Info.plist
 
 Update the version strings to match:
 
@@ -28,7 +28,7 @@ Update the version strings to match:
 
 ### Upstream Base Commit Tracking
 
-When syncing changes from upstream KytyPS5, update the base commit hash displayed in the UI in `frontend/ios/Views/AboutView.swift`:
+When syncing changes from upstream KytyPS5, update the base commit hash displayed in the UI in `frontend/swift/Views/AboutView.swift`:
 
 ```swift
 static let upstreamCommit = "df5b9b9"
@@ -48,7 +48,7 @@ Package the app bundle into an IPA file:
 
 ```bash
 mkdir -p _Build/xcode/Payload
-cp -R _Build/xcode/frontend/ios/Release-iphoneos/KytyPS5.app _Build/xcode/Payload/
+cp -R _Build/xcode/frontend/swift/Release-iphoneos/KytyPS5.app _Build/xcode/Payload/
 cd _Build/xcode
 zip -r -q KytyPS5-iOS-arm64.ipa Payload
 rm -rf Payload
@@ -70,8 +70,8 @@ cmake --build --preset macos-swiftui --config Release --target KytyPS5
 Package the application bundle into a zip archive:
 
 ```bash
-cd _Build/xcode-mac/frontend/ios/Release
+cd _Build/xcode-mac/frontend/swift/Release
 zip -r -q KytyPS5-macOS-arm64.zip KytyPS5.app
 ```
 
-Output: `_Build/xcode-mac/frontend/ios/Release/KytyPS5-macOS-arm64.zip`
+Output: `_Build/xcode-mac/frontend/swift/Release/KytyPS5-macOS-arm64.zip`

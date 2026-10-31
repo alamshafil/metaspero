@@ -884,7 +884,7 @@ if(APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
 endif()
 
 if(IOS OR KYTY_BUILD_SWIFTUI_APP)
-	# The emulator core is a library target so the SwiftUI app (frontend/ios) links it with all of its
+	# The emulator core is a library target so the SwiftUI app (frontend/swift) links it with all of its
 	# transitive dependencies instead of globbing object files and hand-listing static archives.
 	add_library(kyty_core STATIC ${kyty_emulator_src})
 	target_link_libraries(kyty_core ${kyty_emulator_link_libraries})
@@ -1011,13 +1011,13 @@ if(KYTY_CLANG_CL)
 endif()
 
 if(IOS)
-	option(KYTY_BUILD_IOS_APP "Build the SwiftUI iOS app (frontend/ios) on top of kyty_core" ON)
+	option(KYTY_BUILD_IOS_APP "Build the SwiftUI iOS app (frontend/swift) on top of kyty_core" ON)
 	if(KYTY_BUILD_IOS_APP)
-		add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/frontend/ios" "${CMAKE_CURRENT_BINARY_DIR}/frontend/ios")
+		add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/frontend/swift" "${CMAKE_CURRENT_BINARY_DIR}/frontend/swift")
 	endif()
 elseif(APPLE)
-	option(KYTY_BUILD_SWIFTUI_APP "Build the Native macOS SwiftUI app (frontend/ios) on top of kyty_core" OFF)
+	option(KYTY_BUILD_SWIFTUI_APP "Build the Native macOS SwiftUI app (frontend/swift) on top of kyty_core" OFF)
 	if(KYTY_BUILD_SWIFTUI_APP)
-		add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/frontend/ios" "${CMAKE_CURRENT_BINARY_DIR}/frontend/ios")
+		add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/frontend/swift" "${CMAKE_CURRENT_BINARY_DIR}/frontend/swift")
 	endif()
 endif()

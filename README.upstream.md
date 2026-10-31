@@ -347,7 +347,7 @@ Requirements:
    cmake --preset ios
    cmake --build --preset ios
    ```
-   The compiled application bundle is generated at `_Build/xcode/frontend/ios/Release-iphoneos/KytyPS5.app` and packaged into `_Build/xcode/KytyPS5.ipa`.
+   The compiled application bundle is generated at `_Build/xcode/frontend/swift/Release-iphoneos/KytyPS5.app` and packaged into `_Build/xcode/KytyPS5.ipa`.
 
 2. **Open in Xcode**:
    ```bash

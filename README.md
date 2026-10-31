@@ -52,7 +52,7 @@ Configured in `CMakePresets.json`:
 - `3rdparty/fexcore`: FEXCore submodule fork for ARM64 Darwin JIT
 - `cmake/`: CMake helper scripts for MoltenVK, FFmpeg, and platform configuration
 - `docs/`: Architecture notes and JIT documentation (`docs/darwin_jit.md`)
-- `frontend/ios/`: SwiftUI application and Objective-C++ bridge (`KytyBridge.mm`)
+- `frontend/swift/`: SwiftUI application and Objective-C++ bridge (`KytyBridge.mm`)
 - `src/loader/fex/`: FEXCore guest engine, dual-mapping allocator, HLE thunks
 - `tests/`: Regression test suites
 - `README.upstream.md`: Upstream KytyPS5 documentation
@@ -91,7 +91,7 @@ Package into an IPA:
 
 ```bash
 mkdir -p _Build/xcode/Payload
-cp -R _Build/xcode/frontend/ios/Release-iphoneos/KytyPS5.app _Build/xcode/Payload/
+cp -R _Build/xcode/frontend/swift/Release-iphoneos/KytyPS5.app _Build/xcode/Payload/
 cd _Build/xcode
 zip -r -q KytyPS5.ipa Payload
 rm -rf Payload
