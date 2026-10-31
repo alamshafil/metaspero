@@ -466,6 +466,16 @@ void FexGuestEngine::StopAllThreads() {
     }
     {
         std::lock_guard<std::mutex> lock(s_active_threads_mutex);
+        for (auto& entry : s_active_guest_threads) {
+            if (entry && entry->session_id <= finished_session && !entry->exited.load(std::memory_order_acquire)) {
+#if defined(__APPLE__)
+                if (entry->mach_port != MACH_PORT_NULL && entry->mach_port != mach_thread_self()) {
+                    thread_terminate(entry->mach_port);
+                }
+#endif
+                entry->exited.store(true, std::memory_order_release);
+            }
+        }
         std::erase_if(s_active_guest_threads, [](const auto& entry) {
             return !entry || entry->exited.load(std::memory_order_acquire);
         });
@@ -1057,6 +1067,38 @@ uint64_t FexGuestEngine::CallGuestFunction(uint64_t rip,
     }
 
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+    auto* current_fex_thread = s_tls_current_fex_thread;
+    if (current_fex_thread != nullptr && current_fex_thread->CurrentFrame != nullptr && m_fex_context != nullptr) {
+        auto* frame = current_fex_thread->CurrentFrame;
+        uint64_t saved_rdi = frame->State.gregs[FEXCore::X86State::REG_RDI];
+        uint64_t saved_rsi = frame->State.gregs[FEXCore::X86State::REG_RSI];
+        uint64_t saved_rdx = frame->State.gregs[FEXCore::X86State::REG_RDX];
+        uint64_t saved_rcx = frame->State.gregs[FEXCore::X86State::REG_RCX];
+        uint64_t saved_r8  = frame->State.gregs[FEXCore::X86State::REG_R8];
+        uint64_t saved_r9  = frame->State.gregs[FEXCore::X86State::REG_R9];
+
+        frame->State.gregs[FEXCore::X86State::REG_RDI] = arg0;
+        frame->State.gregs[FEXCore::X86State::REG_RSI] = arg1;
+        frame->State.gregs[FEXCore::X86State::REG_RDX] = arg2;
+        frame->State.gregs[FEXCore::X86State::REG_RCX] = arg3;
+        frame->State.gregs[FEXCore::X86State::REG_R8]  = arg4;
+        frame->State.gregs[FEXCore::X86State::REG_R9]  = arg5;
+
+        auto* ctx = static_cast<FEXCore::Context::Context*>(m_fex_context);
+        ctx->HandleCallback(current_fex_thread, target_rip);
+
+        uint64_t ret = frame->State.gregs[FEXCore::X86State::REG_RAX];
+
+        frame->State.gregs[FEXCore::X86State::REG_RDI] = saved_rdi;
+        frame->State.gregs[FEXCore::X86State::REG_RSI] = saved_rsi;
+        frame->State.gregs[FEXCore::X86State::REG_RDX] = saved_rdx;
+        frame->State.gregs[FEXCore::X86State::REG_RCX] = saved_rcx;
+        frame->State.gregs[FEXCore::X86State::REG_R8]  = saved_r8;
+        frame->State.gregs[FEXCore::X86State::REG_R9]  = saved_r9;
+
+        return ret;
+    }
+
     uint64_t result = 0;
     auto* caller_thread = Libs::LibKernel::PthreadSelfOrNull();
     std::thread helper([&, caller_thread, target_rip]() {
