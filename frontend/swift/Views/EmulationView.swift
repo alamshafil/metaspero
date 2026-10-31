@@ -21,6 +21,7 @@ struct EmulationView: View {
     let game: GameItem
     @Binding var isEmulating: Bool
     @AppStorage("enableTouchOverlay") private var enableTouchOverlay = touchOverlayDefault
+    @AppStorage("resolutionScale") private var resolutionScale = "720p"
     @ObservedObject private var physicalManager = PhysicalControllerManager.shared
     
     var body: some View {
@@ -29,11 +30,11 @@ struct EmulationView: View {
             
             // Core Metal rendering surface (16:9 aspect ratio on macOS, full-screen on iOS)
 #if os(macOS)
-            EmulatorMetalSurface(gamePath: game.path)
+            EmulatorMetalSurface(gamePath: game.path, resolution: resolutionScale)
                 .aspectRatio(16.0 / 9.0, contentMode: .fit)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 #else
-            EmulatorMetalSurface(gamePath: game.path)
+            EmulatorMetalSurface(gamePath: game.path, resolution: resolutionScale)
                 .edgesIgnoringSafeArea(.all)
 #endif
             
@@ -221,13 +222,16 @@ private func configuredDrawableSize() -> (width: Int, height: Int) {
 }
 
 private func configureMetalLayerScale(_ metalLayer: CAMetalLayer, hostBounds: CGRect) -> (width: Int, height: Int) {
-    let (_, targetH) = configuredDrawableSize()
+    let (targetW, targetH) = configuredDrawableSize()
     metalLayer.frame = hostBounds
-    guard hostBounds.width > 0, hostBounds.height > 0 else { return (0, 0) }
+    guard hostBounds.width > 0, hostBounds.height > 0 else { return (targetW, targetH) }
     let scale = CGFloat(targetH) / hostBounds.height
     metalLayer.contentsScale = scale
-    let w = Int((hostBounds.width * scale).rounded())
-    let h = Int((hostBounds.height * scale).rounded())
+    var w = Int((hostBounds.width * scale).rounded())
+    let h = targetH
+    if abs(w - targetW) <= 3 {
+        w = targetW
+    }
     metalLayer.drawableSize = CGSize(width: w, height: h)
     return (w, h)
 }
@@ -260,6 +264,7 @@ final class HostMetalView: UIView {
 
 struct EmulatorMetalSurface: UIViewRepresentable {
     let gamePath: String
+    var resolution: String = "720p"
 
     func makeUIView(context: Context) -> HostMetalView {
         let view = HostMetalView(frame: .zero)
@@ -272,7 +277,10 @@ struct EmulatorMetalSurface: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: HostMetalView, context: Context) {}
+    func updateUIView(_ uiView: HostMetalView, context: Context) {
+        let (w, h) = configureMetalLayerScale(uiView.metalLayer, hostBounds: uiView.bounds)
+        KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
+    }
 }
 #elseif os(macOS)
 final class HostMetalView: NSView {
@@ -303,6 +311,7 @@ final class HostMetalView: NSView {
 
 struct EmulatorMetalSurface: NSViewRepresentable {
     let gamePath: String
+    var resolution: String = "720p"
 
     func makeNSView(context: Context) -> HostMetalView {
         let view = HostMetalView(frame: .zero)
@@ -315,6 +324,12 @@ struct EmulatorMetalSurface: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: HostMetalView, context: Context) {}
+    func updateNSView(_ nsView: HostMetalView, context: Context) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let (w, h) = configureMetalLayerScale(nsView.metalLayer, hostBounds: nsView.bounds)
+        CATransaction.commit()
+        KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
+    }
 }
 #endif
