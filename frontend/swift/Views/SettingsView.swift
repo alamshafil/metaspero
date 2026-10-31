@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage("enableMetalHud") private var enableMetalHud = false
     @AppStorage("enableLogFileWriting") private var enableLogFileWriting = false
     @AppStorage("enableMemoryWarningToast") private var enableMemoryWarningToast = true
+    @AppStorage("memoryBackingMode") private var memoryBackingMode = "ram"
     
     @State private var showLogSheet = false
     @State private var showAboutSheet = false
@@ -371,8 +372,8 @@ struct SettingsView: View {
                     NavigationLink { iosControllersPage } label: {
                         Label("Controllers & Input", systemImage: "gamecontroller.fill")
                     }
-                    NavigationLink { iosJitPage } label: {
-                        Label("JIT Compilation", systemImage: "cpu")
+                    NavigationLink { iosSystemMemoryPage } label: {
+                        Label("System & Memory", systemImage: "cpu")
                     }
                     NavigationLink { iosDiagnosticsPage } label: {
                         Label("Diagnostics", systemImage: "waveform.path.ecg")
@@ -476,46 +477,71 @@ struct SettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private var iosJitPage: some View {
+    private var iosSystemMemoryPage: some View {
         Form {
-                Section(header: Text("JIT Compilation")) {
+            Section(header: Text("JIT Compilation")) {
+                HStack {
+                    Text("JIT Status")
+                    Spacer()
+                    Text(KytyBridge.isJitReady() ? "Ready" : (KytyBridge.isProcessDebugged() ? "Debugger Attached" : "Inactive"))
+                        .foregroundColor(KytyBridge.isJitReady() ? .green : (KytyBridge.isProcessDebugged() ? .orange : .secondary))
+                }
+                
+                HStack {
+                    Text("Process ID (PID)")
+                    Spacer()
+                    Text("\(KytyBridge.processId())")
+                        .foregroundColor(.secondary)
+                        .font(.system(.body, design: .monospaced))
+                }
+                
+                Button(action: {
+                    KytyBridge.openStikDebug()
+                }) {
                     HStack {
-                        Text("JIT Status")
-                        Spacer()
-                        Text(KytyBridge.isJitReady() ? "Ready" : (KytyBridge.isProcessDebugged() ? "Debugger Attached" : "Inactive"))
-                            .foregroundColor(KytyBridge.isJitReady() ? .green : (KytyBridge.isProcessDebugged() ? .orange : .secondary))
-                    }
-                    
-                    HStack {
-                        Text("Process ID (PID)")
-                        Spacer()
-                        Text("\(KytyBridge.processId())")
-                            .foregroundColor(.secondary)
-                            .font(.system(.body, design: .monospaced))
-                    }
-                    
-                    Button(action: {
-                        KytyBridge.openStikDebug()
-                    }) {
-                        HStack {
-                            Image(systemName: "arrow.up.right.square")
-                            Text("Open StikDebug")
-                        }
-                    }
-                    
-                    Button(action: {
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            _ = KytyBridge.refreshJitStatus()
-                        }
-                    }) {
-                        HStack {
-                            Image(systemName: "arrow.clockwise")
-                            Text("Refresh JIT Status")
-                        }
+                        Image(systemName: "arrow.up.right.square")
+                        Text("Open StikDebug")
                     }
                 }
+                
+                Button(action: {
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        _ = KytyBridge.refreshJitStatus()
+                    }
+                }) {
+                    HStack {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Refresh JIT Status")
+                    }
+                }
+            }
+            
+            Section(
+                header: Text("Direct Memory Backing"),
+                footer: Text(memoryBackingMode == "file"
+                    ? "Disk-Backed (APFS) creates sparse swap files on internal storage. Warning: increases NAND storage writes."
+                    : "RAM (Mach VM) stores direct memory entirely in RAM for highest performance with zero storage writes. Recommended.")
+            ) {
+                Picker("Backing Mode", selection: $memoryBackingMode) {
+                    Text("RAM (Mach VM)").tag("ram")
+                    Text("Disk-Backed (APFS)").tag("file")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                
+                if memoryBackingMode == "file" {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text("Warning: Disk-backed memory increases internal storage writes. Not recommended, only use for testing.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
         }
-        .navigationTitle("JIT Compilation")
+        .navigationTitle("System & Memory")
         .navigationBarTitleDisplayMode(.inline)
     }
 

@@ -627,13 +627,21 @@ static void KytyFatalExitCallback(int status, const char *message) {
             } else {
                 unsetenv("MTL_HUD_ENABLED");
             }
+
+            NSString *memoryBacking = [[NSUserDefaults standardUserDefaults] stringForKey:@"memoryBackingMode"];
+            if ([memoryBacking isEqualToString:@"file"]) {
+                setenv("KYTY_DIRECT_MEMORY_BACKING", "file", 1);
+            } else {
+                setenv("KYTY_DIRECT_MEMORY_BACKING", "ram", 1);
+            }
             
             std::printf("[KytyBridge] Configured app0_dir: %s, elf: %s\n",
                         options.app0_dir.string().c_str(), options.elf.string().c_str());
-            std::printf("[KytyBridge] Graphics: %ux%u, Present Mode: %s, Metal HUD: %s\n",
+            std::printf("[KytyBridge] Graphics: %ux%u, Present Mode: %s, Metal HUD: %s, Memory Backing: %s\n",
                         options.config.screen_width, options.config.screen_height,
                         present ? [present UTF8String] : "Mailbox",
-                        [KytyBridge isMetalHudEnabled] ? "ENABLED" : "DISABLED");
+                        [KytyBridge isMetalHudEnabled] ? "ENABLED" : "DISABLED",
+                        [memoryBacking isEqualToString:@"file"] ? "Disk-Backed (APFS)" : "RAM (Mach VM)");
             std::fflush(stdout);
 
             if (completion) {
