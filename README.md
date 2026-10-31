@@ -11,7 +11,6 @@ If you get errors about dependencies or build tools on macOS, check [README.upst
 - Upstream macOS build: Upstream KytyPS5 builds an x86_64 binary that runs under Apple's Rosetta 2 translation layer. Apple plans to drop Rosetta 2 in a future macOS release (expected in macOS 28).
 - This fork: Focuses on native ARM64 execution for iOS and macOS. It replaces Rosetta 2 with an integrated fork of FEXCore ([alamshafil/fexcore-darwin](https://github.com/alamshafil/fexcore-darwin)) to translate x86_64 to ARM64 at runtime.
 - Shared codebase: The native macOS build uses the same ARM64 codebase, FEXCore JIT engine, and MoltenVK Metal renderer as the iOS build.
-- Performance: An upstream x86_64 build on Rosetta 2 would theoretically be more performant than FEXCore software translation, but this fork provides a native ARM64 implementation designed to work when Rosetta 2 is dropped.
 
 ## iOS Memory Limit Entitlement
 
@@ -164,6 +163,14 @@ Status ratings:
 - Main menu: Reaches title or menu, but cannot enter gameplay.
 - Logo: Displays intro logos then stops.
 - Doesn't boot: Crashes on launch.
+
+## Credits and Acknowledgments
+
+- KytyPS5: Upstream PlayStation 5 translation layer (https://github.com/KytyPS5/KytyPS5).
+- Kyty: Original emulator by InoriRus (https://github.com/InoriRus/Kyty).
+- AetherPS4: The fexcore-darwin JIT fork is based on the porting work from AetherPS4 (https://github.com/Leviidev/AetherPS4).
+- FEX-Emu: Fast x86_64 to ARM64 dynamic binary translation engine (https://github.com/FEX-Emu/FEX).
+- MoltenVK: Vulkan implementation on Apple Metal (https://github.com/KhronosGroup/MoltenVK).
 
 ## Disclaimer and Licenses
 
