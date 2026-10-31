@@ -1,0 +1,69 @@
+name: Bug Report
+description: Report a crash, frontend bug, UI glitch, or platform issue on iOS, macOS, Windows, or Linux.
+title: "[BUG]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please verify that you are testing the latest build before filing a report.
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Operating System / Platform
+      description: Select the platform where the bug occurs.
+      options:
+        - "iOS / iPadOS"
+        - "macOS ARM64 (Apple Silicon)"
+        - "macOS x86_64"
+        - "Windows"
+        - "Linux"
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS Version & Device Model
+      description: Exact OS version and hardware model.
+      placeholder: "Example: macOS 26 Tahoe (M4 Max) or iOS 26 (iPhone 17 Pro Max)"
+    validations:
+      required: true
+
+  - type: input
+    id: app-version
+    attributes:
+      label: KytyPS5 Version or Commit Hash
+      description: The version or commit hash shown in the About screen.
+      placeholder: "Example: v0.1.0 (1) or commit"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear description of what happened.
+      placeholder: "Explain what went wrong and how it deviated from expected behavior."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How to reproduce the bug.
+      placeholder: |
+        1. Launch KytyPS5.
+        2. Tap / click on ...
+        3. Observe crash / glitch.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log Output / Crash Report
+      description: Paste relevant logs or crash stack traces here.
+      placeholder: "Paste console output or crash stack trace."

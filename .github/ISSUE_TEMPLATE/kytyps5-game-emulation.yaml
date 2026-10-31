@@ -119,7 +119,7 @@ body:
     attributes:
       label: OS
       description: Include the operating system name, version, and edition when useful.
-      placeholder: "Example: Windows 11 Pro 25H2"
+      placeholder: "Example: macOS 26 Tahoe, iOS 26, or Windows 11 Pro 25H2"
     validations:
       required: true
 
@@ -128,7 +128,7 @@ body:
     attributes:
       label: CPU
       description: Include the exact processor model.
-      placeholder: "Example: AMD Ryzen 9 9950X3D"
+      placeholder: "Example: Apple M4 Max, Apple A18 Pro, AMD Ryzen 9 9950X3D"
     validations:
       required: true
 
@@ -137,7 +137,7 @@ body:
     attributes:
       label: GPU
       description: Include the graphics card model and driver version when available.
-      placeholder: "Example: NVIDIA GeForce RTX 5080, driver 576.80"
+      placeholder: "Example: Apple Metal (M4 Max), NVIDIA GeForce RTX 5080, driver 576.80"
     validations:
       required: true
 
@@ -146,7 +146,7 @@ body:
     attributes:
       label: RAM / VRAM
       description: Include both system memory and video memory.
-      placeholder: "Example: 64 GB DDR5 RAM / 16 GB VRAM"
+      placeholder: "Example: 16 GB Unified Memory (Mac/iOS) or 64 GB DDR5 RAM / 16 GB VRAM"
     validations:
       required: true
 
