@@ -731,7 +731,6 @@ if(BUILD_TESTING)
 	if(APPLE AND NOT IOS)
 		add_test(NAME macos_ngg_vertex COMMAND $<TARGET_FILE:macos_ngg_vertex_tests>)
 		set_tests_properties(macos_ngg_vertex PROPERTIES TIMEOUT 30)
-		add_dependencies(kyty_tests macos_ngg_vertex_tests)
 	endif()
 	add_test(NAME scalar_provenance COMMAND $<TARGET_FILE:scalar_provenance_tests>)
 	add_test(NAME image_page_table COMMAND $<TARGET_FILE:image_page_table_tests>)
@@ -815,7 +814,7 @@ if(BUILD_TESTING)
 	if(APPLE AND NOT IOS AND KYTY_MOLTENVK_DYLIB)
 		get_filename_component(_kyty_mvk_dir "${KYTY_MOLTENVK_DYLIB}" DIRECTORY)
 		foreach(t IN ITEMS
-			shader_recompiler_compute shader_recompiler_helper_quad shader_recompiler_alignbyte
+			shader_recompiler_compute shader_recompiler_alignbyte
 			graphics_pipeline_rasterization graphics_draw_offsets
 			command_scheduler_timeline stream_buffer_ring gpu_command_lane pm4_context_state
 			gpu_tiler image_transfer_layout texture_cache_layered_image host_image_allocation
@@ -864,6 +863,9 @@ if(BUILD_TESTING)
 		save_data_dialog_tests
 		http_uri_parse_tests
 	)
+	if(APPLE AND NOT IOS AND TARGET macos_ngg_vertex_tests)
+		add_dependencies(kyty_tests macos_ngg_vertex_tests)
+	endif()
 endif()
 
 # Test Darwin signal-context restoration for SSE4a instructions.

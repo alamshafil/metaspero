@@ -36,6 +36,7 @@ struct GraphicContext {
 	bool                               min_lod_remap                         = false;
 	bool                               shader_buffer_int64_atomics_enabled   = false;
 	bool                               shader_cull_distance_enabled          = false;
+	bool                               fragment_shader_barycentric_enabled   = false;
 	// bool fp64_denorm_preserve = false; // Temporarily disabled.
 	bool                               attachment_feedback_loop_enabled      = false;
 	bool                               provoking_vertex_last_enabled         = false;
