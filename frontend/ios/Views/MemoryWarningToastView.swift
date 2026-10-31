@@ -96,7 +96,7 @@ struct MemoryWarningToastBanner: View {
                         .foregroundColor(.secondary)
                 }
                 
-                Text("\(Int(data.availMB)) MB remaining before kill - \(data.reason)")
+                Text("\(Int(data.availMB)) MB remaining before kill. \(data.reason)")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
