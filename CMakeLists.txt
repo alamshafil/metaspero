@@ -170,7 +170,7 @@ else()
 endif()
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
-	add_compile_options("-fmacro-prefix-map=${CMAKE_SOURCE_DIR}=.")
+	add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-fmacro-prefix-map=${CMAKE_SOURCE_DIR}=.>")
 endif()
 
 include_directories(
