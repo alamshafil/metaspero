@@ -4,8 +4,8 @@
 
 set(KYTY_APP_BUNDLE_ID "com.alamshafil.ps5emu" CACHE STRING "App bundle identifier")
 set(KYTY_IOS_TEAM_ID "" CACHE STRING "Apple development team ID used for Xcode code signing (empty = unset)")
-set(KYTY_APP_VERSION "0.0.1" CACHE STRING "SwiftUI app version")
-set(KYTY_APP_BUILD "0.0.1" CACHE STRING "SwiftUI app build number")
+set(KYTY_APP_VERSION "0.1.0" CACHE STRING "SwiftUI app version")
+set(KYTY_APP_BUILD "1" CACHE STRING "SwiftUI app build number")
 
 enable_language(Swift OBJC OBJCXX)
 set(CMAKE_Swift_LANGUAGE_VERSION 5.0)
