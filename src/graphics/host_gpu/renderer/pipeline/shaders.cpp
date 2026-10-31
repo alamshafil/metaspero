@@ -228,6 +228,14 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	                        rendering.stencil_format != vk::Format::eUndefined;
 	EXIT_IF(!vs_input_info.stage);
 	const bool mesh = vs_input_info.stage.program->stage == ShaderType::Mesh;
+	const char* skip_mesh_env = std::getenv("KYTY_SKIP_MESH_SHADERS");
+	const bool force_skip_mesh = skip_mesh_env != nullptr &&
+	                             (std::strcmp(skip_mesh_env, "1") == 0 || std::strcmp(skip_mesh_env, "true") == 0);
+	if (mesh && force_skip_mesh) {
+		LOGF("CreatePipelineInternal: mesh shader requested but KYTY_SKIP_MESH_SHADERS is enabled; skipping\n");
+		pipeline.pipeline = nullptr;
+		return;
+	}
 	EXIT_NOT_IMPLEMENTED(mesh && !graphics.mesh_shader_enabled);
 	const bool rect_list =
 	    !mesh && !tessellation && static_params.topology == vk::PrimitiveTopology::ePatchList;
@@ -548,16 +556,15 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		LOGF("PipelineTrace: vkCreateGraphicsPipelines done result=%s pipeline=%p\n",
 		     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	}
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
-
-	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
-
 	if (tess_control_shader_module != nullptr) {
 		graphics.device.destroyShaderModule(tess_control_shader_module, nullptr);
 	}
 	if (tess_eval_shader_module != nullptr) {
 		graphics.device.destroyShaderModule(tess_eval_shader_module, nullptr);
 	}
+
+	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)

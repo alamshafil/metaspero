@@ -694,6 +694,16 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 	}
 	const bool mesh_active = vertex_info[0].logical_stage == ShaderType::Mesh;
 	if (mesh_active) {
+		const char* skip_mesh_env = std::getenv("KYTY_SKIP_MESH_SHADERS");
+		const bool force_skip_mesh = skip_mesh_env != nullptr &&
+		                             (std::strcmp(skip_mesh_env, "1") == 0 || std::strcmp(skip_mesh_env, "true") == 0);
+		if (force_skip_mesh) {
+			static std::atomic_uint log_count{0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF("PipelineCache: mesh shader requested but KYTY_SKIP_MESH_SHADERS is enabled; skipping program\n");
+			}
+			return {};
+		}
 		EXIT_NOT_IMPLEMENTED(!m_graphics.mesh_shader_enabled);
 		auto& mesh              = vertex_info[0].mesh;
 		mesh.host_subgroup_size = m_graphics.subgroup_size;
@@ -832,6 +842,7 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 	for (uint32_t i = 0; i < color_count; i++) {
 		const auto slot = colors[i].target_slot;
 		EXIT_IF(slot >= RENDER_COLOR_ATTACHMENTS_MAX);
+
 		rendering.color_count = std::max(rendering.color_count, slot + 1);
 		EXIT_IF(!colors[i].image_id || colors[i].desc.view_info.format == vk::Format::eUndefined);
 		static_params.color_mask[slot] = colors[i].export_mapping.ApplyMask(
