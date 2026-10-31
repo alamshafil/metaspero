@@ -137,6 +137,10 @@ open _Build/xcode-mac/KytyEmulatorCLANG.xcodeproj
 
 Select the KytyPS5 scheme, choose My Mac, and press Cmd+R to build and run.
 
+### 5. Release Builds
+
+For instructions on bumping version numbers, building release binaries, and packaging iOS IPA or macOS zip archives, see [docs/release.md](docs/release.md).
+
 ## Running with JIT on iOS
 
 iOS requires an attached debugger for JIT permissions:
