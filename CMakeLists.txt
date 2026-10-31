@@ -169,6 +169,10 @@ else()
 	project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 0.3.0)
 endif()
 
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
+	add_compile_options("-fmacro-prefix-map=${CMAKE_SOURCE_DIR}=.")
+endif()
+
 include_directories(
 	${KYTY_THIRD_PARTY_DIR}/gtest/include
 	${KYTY_THIRD_PARTY_DIR}/gtest
