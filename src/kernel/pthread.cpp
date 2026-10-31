@@ -526,6 +526,9 @@ static void SleepMicroWithSignalPoll(uint64_t microseconds) {
 	}
 
 	while (microseconds > 0) {
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return;
+		}
 		const auto step = std::min<uint64_t>(microseconds, SIGNAL_APC_POLL_MICROS);
 		Common::Thread::SleepMicro(step);
 		microseconds -= step;
@@ -541,6 +544,9 @@ static void SleepNanoWithSignalPoll(uint64_t nanoseconds) {
 
 	constexpr uint64_t poll_nanos = static_cast<uint64_t>(SIGNAL_APC_POLL_MICROS) * 1000ull;
 	while (nanoseconds > 0) {
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return;
+		}
 		const auto step = std::min<uint64_t>(nanoseconds, poll_nanos);
 		Common::Thread::SleepNano(step);
 		nanoseconds -= step;
@@ -1060,8 +1066,13 @@ static void FreeDetachedThreads(void* /*arg*/) {
 
 	auto* pthread_pool = g_pthread_context->GetPthreadPool();
 
-	while (true) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(10000));
+	while (!Common::HostException::IsEmulationShuttingDown()) {
+		for (int i = 0; i < 100 && !Common::HostException::IsEmulationShuttingDown(); ++i) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			break;
+		}
 		pthread_pool->FreeDetachedThreads();
 	}
 }
@@ -1363,6 +1374,13 @@ static int NativeMutexLock(PthreadMutexPrivate* mutex, KernelUseconds* timeout_u
 	if (timeout_us == nullptr) {
 		int wait_loops = 0;
 		while (mutex->owner != nullptr) {
+			if (Common::HostException::IsEmulationShuttingDown()
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+			    || Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()
+#endif
+			) {
+				return ECANCELED;
+			}
 			mutex->cv.wait_for(lock, std::chrono::microseconds(SIGNAL_APC_POLL_MICROS));
 			if (mutex->owner != nullptr) {
 				if (++wait_loops % 1000 == 0) { // Every ~1 second
@@ -1386,6 +1404,13 @@ static int NativeMutexLock(PthreadMutexPrivate* mutex, KernelUseconds* timeout_u
 			const auto deadline =
 			    std::chrono::steady_clock::now() + std::chrono::microseconds(wait_us);
 			while (mutex->owner != nullptr) {
+				if (Common::HostException::IsEmulationShuttingDown()
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+				    || Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()
+#endif
+				) {
+					return ECANCELED;
+				}
 				const auto now = std::chrono::steady_clock::now();
 				if (now >= deadline) {
 					return ETIMEDOUT;

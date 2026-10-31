@@ -320,6 +320,8 @@ static void SignalHandler(int sig, siginfo_t* si, void* uctx) {
 		}
 	}
 
+	SetEmulationShuttingDown(true);
+
 #if defined(__APPLE__)
 	char crash_buf[4096];
 	uint64_t crash_pc = static_cast<uint64_t>(arm_thread_state64_get_pc(ss));
