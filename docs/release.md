@@ -26,6 +26,14 @@ Update the version strings to match:
 <string>1</string>
 ```
 
+### Upstream Base Commit Tracking
+
+When syncing changes from upstream KytyPS5, update the base commit hash displayed in the UI in `frontend/ios/Views/AboutView.swift`:
+
+```swift
+static let upstreamCommit = "df5b9b9"
+```
+
 ## 2. iOS Release Build and Packaging
 
 Configure and compile the release binary:

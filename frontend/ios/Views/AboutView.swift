@@ -4,6 +4,9 @@ import SwiftUI
 struct AboutKytyContentView: View {
     let appVersion: String
     
+    // Upstream KytyPS5 commit this fork is currently based on. Update when merging upstream.
+    static let upstreamCommit = "df5b9b9"
+
     private var defaultIconView: some View {
         Image(systemName: "gamecontroller.fill")
             .font(.system(size: 44))
@@ -74,7 +77,7 @@ struct AboutKytyContentView: View {
                     Text("Credits")
                         .font(.headline)
                     
-                    Text("Upstream KytyPS5 emulator")
+                    Text("Based on upstream KytyPS5 (commit \(Self.upstreamCommit))")
                         .font(.subheadline)
                 }
                 
@@ -86,8 +89,8 @@ struct AboutKytyContentView: View {
                         .font(.headline)
                     
                     VStack(alignment: .leading, spacing: 8) {
-                        LibraryCreditRow(title: "FEXCore", desc: "Fast x86_64 to AArch64 dynamic binary translation engine")
-                        LibraryCreditRow(title: "MoltenVK", desc: "Vulkan translation layer implemented on Apple Metal")
+                        LibraryCreditRow(title: "FEXCore", desc: "Fast x86_64 to AArch64 dynamic binary translation (MIT)")
+                        LibraryCreditRow(title: "MoltenVK", desc: "Vulkan translation layer on Apple Metal")
                     }
                 }
                 
@@ -97,7 +100,7 @@ struct AboutKytyContentView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("License")
                         .font(.headline)
-                    Text("KytyPS5 is open-source software.")
+                    Text("KytyPS5-Apple is licensed under the GNU General Public License version 2 (GPL-2.0-only).")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
