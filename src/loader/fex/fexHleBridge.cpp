@@ -37,6 +37,7 @@ void FexHleBridge::Reset() {
     m_thunk_capacity        = 0;
     m_custom_code_offset    = 0;
     m_fiber_trampoline_addr = 0;
+    m_callback_ret_addr     = 0;
     m_functions.clear();
     m_host_to_id.clear();
     if (m_call_counts) {
@@ -129,6 +130,15 @@ void FexHleBridge::EnsureInitialized() {
         std::memcpy(fiber_stub, kFiberTrampolineCode, sizeof(kFiberTrampolineCode));
         Common::VirtualMemory::FlushInstructionCache(m_fiber_trampoline_addr, 128);
 
+        // Emit shared guest x86-64 FEX callback return trampoline (CALLBACKRET: 0x0F, 0x3E)
+        m_callback_ret_addr = m_thunk_base + m_custom_code_offset;
+        m_custom_code_offset += 32;
+        auto* callback_ret_stub = reinterpret_cast<uint8_t*>(m_callback_ret_addr);
+        std::memset(callback_ret_stub, 0xcc, 32);
+        callback_ret_stub[0] = 0x0f;
+        callback_ret_stub[1] = 0x3e; // FEX custom CALLBACKRET instruction
+        Common::VirtualMemory::FlushInstructionCache(m_callback_ret_addr, 32);
+
         LOGF("FexHleBridge: Allocated thunk buffer at 0x%016" PRIx64 " (size: 0x%" PRIx64 ")\n",
              m_thunk_base, m_thunk_capacity);
     } else {
@@ -140,6 +150,12 @@ uint64_t FexHleBridge::GetHltAddress() {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
     EnsureInitialized();
     return m_thunk_base;
+}
+
+uint64_t FexHleBridge::GetCallbackRetAddress() {
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    EnsureInitialized();
+    return m_callback_ret_addr;
 }
 
 static ThunkSignature DetectSignatureByName(const std::string& name) {

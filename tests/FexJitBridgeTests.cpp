@@ -279,18 +279,9 @@ static uint64_t HostNestedStep2(uint64_t val) {
 }
 
 static uint64_t HostNestedStep1(uint64_t guest_callback, uint64_t val) {
-    uint64_t nested_stack = AllocateGuestStack();
-    uint64_t stack_top = (nested_stack + 0x10000 - 128) & ~0xFull;
-    stack_top -= 8;
-    *reinterpret_cast<uint64_t*>(stack_top) = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
-
-    auto* thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
-        guest_callback, stack_top, val * 3, 0, 0, 0);
-    Check(thread != nullptr, "CreateThread for nested callback");
-    int inner_res = Loader::Fex::FexGuestEngine::Instance().Run(thread, false);
-    Loader::Fex::FexGuestEngine::Instance().DestroyThread(thread);
-
-    return static_cast<uint64_t>(inner_res) * 2;
+    uint64_t inner_res = Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
+        guest_callback, val * 3);
+    return inner_res * 2;
 }
 
 void TestCallbackReentrancy() {

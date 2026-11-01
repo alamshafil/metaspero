@@ -254,7 +254,10 @@ public:
         : CallbackReturn{callbackReturn} {}
 
     uintptr_t GetThunkCallbackRET() const override {
-        return CallbackReturn;
+        if (CallbackReturn != 0) {
+            return CallbackReturn;
+        }
+        return Loader::Fex::FexHleBridge::Instance().GetCallbackRetAddress();
     }
 
 private:
@@ -351,7 +354,8 @@ bool FexGuestEngine::Initialize() {
         return false;
     }
 
-    auto signal_delegator = std::make_unique<KytySignalDelegator>();
+    uint64_t callback_ret_addr = Loader::Fex::FexHleBridge::Instance().GetCallbackRetAddress();
+    auto signal_delegator = std::make_unique<KytySignalDelegator>(callback_ret_addr);
     auto syscall_handler = std::make_unique<KytySyscallHandler>();
 
     ctx->SetSignalDelegator(signal_delegator.get());
@@ -620,6 +624,7 @@ GuestThreadState* FexGuestEngine::CreateThreadWithArgs(uint64_t entry_rip, uint6
     if (fs_base != 0) {
         cpu_state.fs_cached = fs_base;
     }
+    fex_thread->CurrentFrame->Pointers.ThunkCallbackRet = Loader::Fex::FexHleBridge::Instance().GetCallbackRetAddress();
 
     if (fex_thread->CallRetStackBase == nullptr || cpu_state.callret_sp == 0) {
         size_t stack_size = FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE;
@@ -820,6 +825,9 @@ uint64_t FexGuestEngine::CallGuestFunction(uint64_t rip,
     auto* current_fex_thread = s_tls_current_fex_thread;
     if (current_fex_thread != nullptr && current_fex_thread->CurrentFrame != nullptr && m_fex_context != nullptr) {
         auto* frame = current_fex_thread->CurrentFrame;
+        if (frame->Pointers.ThunkCallbackRet == 0) {
+            frame->Pointers.ThunkCallbackRet = Loader::Fex::FexHleBridge::Instance().GetCallbackRetAddress();
+        }
         SavedGuestThreadState saved_state{};
         SaveCpuState(frame->State, &saved_state);
 

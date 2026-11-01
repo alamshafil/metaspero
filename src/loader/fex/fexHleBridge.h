@@ -289,6 +289,9 @@ public:
     /// Get the HLT trampoline address (used as return address for guest entry/module funcs)
     uint64_t GetHltAddress();
 
+    /// Get the FEX callback return trampoline address (CALLBACKRET: 0x0F, 0x3E)
+    uint64_t GetCallbackRetAddress();
+
     /// Dispatch an intercepted HLE call from guest registers
     /// gpr: [0]=RDI, [1]=RSI, [2]=RDX, [3]=R10 (preserved RCX), [4]=R8, [5]=R9
     uint64_t DispatchHle(uint64_t thunk_id, const uint64_t* gpr, uint64_t guest_rsp);
@@ -354,6 +357,7 @@ private:
     uint64_t m_thunk_capacity{0};
     uint64_t m_custom_code_offset{0};
     uint64_t m_fiber_trampoline_addr{0};
+    uint64_t m_callback_ret_addr{0};
 
     std::atomic<uint64_t> m_recent_calls_total{0};
     RecentCall m_recent_calls[RECENT_CALLS_CAPACITY];
