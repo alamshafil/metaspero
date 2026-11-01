@@ -15,6 +15,8 @@ extern NSString * const KytyEmulationCrashedNotification;
 extern NSString * const KytyCrashErrorKey;
 extern NSString * const KytyCrashDetailKey;
 extern NSString * const KytyWindowDestroyedNotification;
+extern NSString * const KytyEmulationStoppingNotification;
+extern NSString * const KytyEmulationStoppedNotification;
 extern NSString * const KytyMemoryPressureNotification;
 extern NSString * const KytyMemoryPressureLevelKey;
 extern NSString * const KytyMemoryPressureReasonKey;
@@ -111,6 +113,9 @@ typedef NS_ENUM(NSInteger, KytyButton) {
 
 /// Returns whether an emulation session is currently active
 + (BOOL)isEmulationRunning;
+
+/// Returns whether an emulation session is in the process of shutting down
++ (BOOL)isStopping;
 
 /// Dispatches a digital button press or release
 + (void)setButton:(KytyButton)button pressed:(BOOL)pressed;

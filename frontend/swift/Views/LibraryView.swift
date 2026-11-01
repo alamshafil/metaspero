@@ -35,6 +35,7 @@ struct LibraryView: View {
     @State private var gameToRemove: GameItem? = nil
     @State private var showRemoveConfirmation = false
     @State private var showJitWarning = false
+    @State private var showSlowClosingAlert = false
     @State private var pendingLaunchGame: GameItem? = nil
     @State private var isRefreshing = false
     
@@ -89,11 +90,11 @@ struct LibraryView: View {
                     ToolbarItem(placement: .primaryAction) {
                         Button(action: {
                             KytyBridge.stopEmulation()
-                            isEmulating = false
                         }) {
                             Label("Stop Game", systemImage: "xmark.circle.fill")
                         }
                         .tint(.red)
+                        .disabled(KytyBridge.isStopping())
                         .help("Stop Emulation")
                     }
                 }
@@ -339,6 +340,23 @@ struct LibraryView: View {
         } message: { _ in
             Text("KytyPS5 requires JIT compilation to emulate games smoothly. JIT is currently not active.\n\nOpen StikDebug to enable JIT for this process (PID: \(KytyBridge.processId())), or try launching anyway?")
         }
+        .alert("Game Still Closing", isPresented: $showSlowClosingAlert, presenting: pendingLaunchGame) { game in
+            Button("Wait and Launch") {
+                KytyBridge.addLogMessage("[LibraryView] Queued '\(game.title)' to launch after shutdown.")
+            }
+            Button("Cancel", role: .cancel) {
+                pendingLaunchGame = nil
+            }
+        } message: { _ in
+            Text("The previous game is still closing. Please wait a moment.")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.KytyEmulationStopped)) { _ in
+            if let queued = pendingLaunchGame, !isEmulating {
+                pendingLaunchGame = nil
+                showSlowClosingAlert = false
+                handleConfirmedLaunch(queued)
+            }
+        }
         .onAppear {
             loadGames()
             if KytyBridge.isProcessDebugged() {
@@ -388,6 +406,12 @@ struct LibraryView: View {
     }
     
     private func handleConfirmedLaunch(_ game: GameItem) {
+        if KytyBridge.isEmulationRunning() || KytyBridge.isStopping() {
+            pendingLaunchGame = game
+            showSlowClosingAlert = true
+            KytyBridge.addLogMessage("[LibraryView] Previous session still closing. Offered launch queue for '\(game.title)'")
+            return
+        }
         _ = KytyBridge.acquireJitPool()
         selectedGame = game
         isEmulating = true

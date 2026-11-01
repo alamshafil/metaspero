@@ -249,6 +249,7 @@ void Run(const RunOptions& options) {
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
 	Loader::Fex::FexGuestEngine::Instance().StopAllThreads();
 #endif
+	Libs::Graphics::Shutdown();
 	rt->Clear();
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
 	Loader::Fex::FexHleBridge::Instance().Reset();

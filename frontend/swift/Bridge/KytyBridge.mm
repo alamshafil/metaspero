@@ -69,6 +69,8 @@ NSString * const KytyEmulationCrashedNotification = @"KytyEmulationCrashedNotifi
 NSString * const KytyCrashErrorKey = @"error";
 NSString * const KytyCrashDetailKey = @"detail";
 NSString * const KytyWindowDestroyedNotification = @"KytyWindowDestroyedNotification";
+NSString * const KytyEmulationStoppingNotification = @"KytyEmulationStoppingNotification";
+NSString * const KytyEmulationStoppedNotification = @"KytyEmulationStoppedNotification";
 NSString * const KytyMemoryPressureNotification = @"KytyMemoryPressureNotification";
 NSString * const KytyMemoryPressureLevelKey = @"level";
 NSString * const KytyMemoryPressureReasonKey = @"reason";
@@ -169,6 +171,7 @@ extern "C" void KytyNotifyWindowDestroyed() {
 namespace {
 
 std::atomic<bool> g_is_running{false};
+std::atomic<bool> g_is_stopping{false};
 std::atomic<bool> g_crash_reported{false};
 std::mutex g_session_mutex;
 NSString *g_last_crash_error = nil;
@@ -565,12 +568,16 @@ static void KytyFatalExitCallback(int status, const char *message) {
     return g_is_running.load();
 }
 
++ (BOOL)isStopping {
+    return g_is_stopping.load();
+}
+
 + (void)startEmulationWithGamePath:(NSString *)gamePath
                             inView:(PlatformView *)renderView
                         completion:(void (^)(BOOL, NSString * _Nullable))completion {
-    if (g_is_running.load()) {
+    if (g_is_running.load() || g_is_stopping.load()) {
         if (completion) {
-            completion(NO, @"Emulation session is already active.");
+            completion(NO, @"Emulation session is already active or shutting down.");
         }
         return;
     }
@@ -581,6 +588,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
     g_crash_reported.store(false);
     g_last_crash_error = nil;
     g_is_running.store(true);
+    g_is_stopping.store(false);
     g_host_view = targetView;
     g_host_layer = targetLayer;
 
@@ -741,20 +749,30 @@ static void KytyFatalExitCallback(int status, const char *message) {
         }
 #endif
         g_is_running.store(false);
+        g_is_stopping.store(false);
         g_host_layer = nil;
         std::printf("[KytyBridge] Emulation thread ended.\n");
         std::fflush(stdout);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter] postNotificationName:KytyEmulationStoppedNotification object:nil];
+        });
     });
 }
 
 + (void)stopEmulation {
-    if (!g_is_running.load()) {
+    if (!g_is_running.load() && !g_is_stopping.load()) {
+        return;
+    }
+    if (g_is_stopping.exchange(true)) {
         return;
     }
     std::printf("[KytyBridge] Stopping emulation session...\n");
     std::fflush(stdout);
     g_host_view = nullptr;
-    g_is_running.store(false);
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:KytyEmulationStoppingNotification object:nil];
+    });
 
 #if HAS_KYTY_CORE
     Common::HostException::SetEmulationShuttingDown(true);
@@ -857,6 +875,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
     }
 
     g_is_running.store(false);
+    g_is_stopping.store(false);
 #if HAS_KYTY_CORE
     Common::HostException::SetEmulationShuttingDown(true);
 #endif

@@ -461,8 +461,8 @@ void FexGuestEngine::StopAllThreads() {
     Common::HostException::SetEmulationShuttingDown(true);
     const uint64_t finished_session = s_current_session_id.fetch_add(1, std::memory_order_seq_cst);
 
-    // Give active threads in syscalls or condvar waits a brief window to notice shutdown and exit cleanly
-    for (int i = 0; i < 15; ++i) {
+    // Give active threads in syscalls or condvar waits a cooperative window to notice shutdown and exit cleanly
+    for (int i = 0; i < 60; ++i) {
         bool any_running = false;
         {
             std::lock_guard<std::mutex> lock(s_active_threads_mutex);
@@ -479,42 +479,62 @@ void FexGuestEngine::StopAllThreads() {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    // Suspend remaining threads from the finished session. Threads inside an HLE syscall are never
-    // suspended mid-call (they hold host state), wait for them to leave the syscall first.
-    for (int i = 0; i < 400; ++i) {
-        bool pending_syscall = false;
+#if defined(__APPLE__)
+    // Inspect remaining threads. Threads actively executing host code (or in a syscall) must never
+    // be terminated mid-execution because they may hold internal locks or OS state.
+    // Threads confirmed to be executing purely inside translated guest JIT code can be safely terminated.
+    mach_port_t self_mach = mach_thread_self();
+    for (int i = 0; i < 200; ++i) {
+        bool any_running = false;
         {
             std::lock_guard<std::mutex> lock(s_active_threads_mutex);
             for (auto& entry : s_active_guest_threads) {
-                if (entry && entry->session_id <= finished_session && !entry->exited.load(std::memory_order_acquire)) {
-#if defined(__APPLE__)
-                    if (!entry->in_syscall.load(std::memory_order_acquire)) {
-                        if (entry->mach_port != MACH_PORT_NULL) {
-                            thread_suspend(entry->mach_port);
-                            // Re-check: thread may have entered a syscall just before suspension.
-                            entry->exited.store(true, std::memory_order_release);
+                if (!entry || entry->session_id > finished_session || entry->exited.load(std::memory_order_acquire)) {
+                    continue;
+                }
+                any_running = true;
+                if (entry->mach_port == MACH_PORT_NULL || entry->mach_port == self_mach) {
+                    continue;
+                }
+                if (entry->in_syscall.load(std::memory_order_acquire)) {
+                    continue;
+                }
+
+                if (thread_suspend(entry->mach_port) == KERN_SUCCESS) {
+                    bool in_host_image = false;
+                    arm_thread_state64_t reg_state;
+                    mach_msg_type_number_t reg_count = ARM_THREAD_STATE64_COUNT;
+                    if (thread_get_state(entry->mach_port, ARM_THREAD_STATE64,
+                                         reinterpret_cast<thread_state_t>(&reg_state),
+                                         &reg_count) == KERN_SUCCESS) {
+                        uint64_t pc = arm_thread_state64_get_pc(reg_state);
+                        Dl_info info{};
+                        if (pc != 0 && dladdr(reinterpret_cast<void*>(pc), &info) != 0 && info.dli_fname != nullptr) {
+                            in_host_image = true;
                         }
-                    } else {
-                        pending_syscall = true;
                     }
-#endif
+
+                    if (in_host_image || entry->in_syscall.load(std::memory_order_acquire)) {
+                        thread_resume(entry->mach_port);
+                    } else {
+                        thread_terminate(entry->mach_port);
+                        entry->exited.store(true, std::memory_order_release);
+                    }
                 }
             }
         }
-        if (!pending_syscall) {
+        if (!any_running) {
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
+    mach_port_deallocate(mach_task_self(), self_mach);
+#endif
+
     {
         std::lock_guard<std::mutex> lock(s_active_threads_mutex);
         for (auto& entry : s_active_guest_threads) {
-            if (entry && entry->session_id <= finished_session && !entry->exited.load(std::memory_order_acquire)) {
-#if defined(__APPLE__)
-                if (entry->mach_port != MACH_PORT_NULL && entry->mach_port != mach_thread_self()) {
-                    thread_terminate(entry->mach_port);
-                }
-#endif
+            if (entry && entry->session_id <= finished_session) {
                 entry->exited.store(true, std::memory_order_release);
             }
         }

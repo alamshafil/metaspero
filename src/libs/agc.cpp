@@ -96,7 +96,9 @@ void Initialize() {
 }
 
 void Shutdown() {
-	EXIT_IF(g_renderer == nullptr);
+	if (g_renderer == nullptr) {
+		return;
+	}
 	ShaderShutdown();
 	g_renderer->ShutdownGpu();
 	Gen5Driver::ReleaseDmem();

@@ -94,6 +94,21 @@ struct ContentView: View {
                     KytyBridge.stopEmulation()
                 }
             }
+
+            NotificationCenter.default.addObserver(
+                forName: NSNotification.Name.KytyEmulationStopped,
+                object: nil,
+                queue: .main
+            ) { _ in
+                if isEmulating {
+                    withAnimation {
+                        isEmulating = false
+                    }
+#if os(iOS)
+                    OrientationManager.unlockOrientation()
+#endif
+                }
+            }
         }
     }
     

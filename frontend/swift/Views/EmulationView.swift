@@ -20,6 +20,7 @@ let touchOverlayDefault = true
 struct EmulationView: View {
     let game: GameItem
     @Binding var isEmulating: Bool
+    @State private var isClosing: Bool = false
     @AppStorage("enableTouchOverlay") private var enableTouchOverlay = touchOverlayDefault
     @AppStorage("resolutionScale") private var resolutionScale = "720p"
     @ObservedObject private var physicalManager = PhysicalControllerManager.shared
@@ -44,10 +45,14 @@ struct EmulationView: View {
             }
 #else
             InGameOverlayView(game: game) {
-                KytyBridge.stopEmulation()
-                isEmulating = false
+                requestCloseGame()
             }
 #endif
+
+            // Graceful "Closing Game..." toast overlay while teardown completes
+            if isClosing || KytyBridge.isStopping() {
+                closingToastOverlay
+            }
         }
         .onAppear {
             #if os(iOS)
@@ -60,10 +65,68 @@ struct EmulationView: View {
             #endif
             KytyBridge.stopEmulation()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.KytyEmulationStopping)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isClosing = true
+            }
+            // Safety timeout: transition back to library after 2.5s even if notification was delayed
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                if isEmulating {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        isClosing = false
+                        isEmulating = false
+                    }
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.KytyEmulationStopped)) { _ in
+            withAnimation(.easeInOut(duration: 0.25)) {
+                isClosing = false
+                isEmulating = false
+            }
+        }
         #if os(iOS)
         .navigationBarHidden(true)
         .statusBar(hidden: true)
         #endif
+    }
+    
+    private func requestCloseGame() {
+        guard !isClosing else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            isClosing = true
+        }
+        KytyBridge.stopEmulation()
+    }
+
+    private var closingToastOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.6)
+                .edgesIgnoringSafeArea(.all)
+            
+            VStack(spacing: 14) {
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                    .scaleEffect(1.25)
+                
+                Text("Closing Game...")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(.white)
+                
+                Text("Releasing GPU & system memory")
+                    .font(.system(size: 13))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 22)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(.ultraThinMaterial)
+                    .shadow(color: .black.opacity(0.35), radius: 20, x: 0, y: 10)
+            )
+        }
+        .transition(.opacity)
+        .zIndex(99)
     }
 }
 
