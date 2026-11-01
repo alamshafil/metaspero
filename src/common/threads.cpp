@@ -323,13 +323,7 @@ void CondVar::Wait(Mutex* mutex) {
 	}
 #else
 	if (g_cond_wait_poll_callback == nullptr) {
-		int wait_seconds = 0;
-		while (m_cond_var->m_cv.wait_for(cpp_lock, std::chrono::seconds(2)) == std::cv_status::timeout) {
-			wait_seconds += 2;
-			std::printf("[CondVar::Wait] Waiting on CondVar %p (mutex=%p) for %d seconds...\n",
-			            this, mutex, wait_seconds);
-			std::fflush(stdout);
-		}
+		m_cond_var->m_cv.wait(cpp_lock);
 	} else {
 		if (m_cond_var->m_cv.wait_for(cpp_lock, std::chrono::microseconds(10000)) ==
 		    std::cv_status::timeout) {

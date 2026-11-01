@@ -256,10 +256,6 @@ static KYTY_SYSV_ABI void RunEntry(uint64_t addr, EntryParams* params, atexit_fu
 
 	uint64_t fs_base = RuntimeLinker::GetMainTlsBase();
 
-	std::printf("[RunEntry] Starting main program entry at 0x%016llx (RSP=0x%016llx, FS_BASE=0x%016llx)...\n",
-	            (unsigned long long)addr, (unsigned long long)fex_rsp, (unsigned long long)fs_base);
-	std::fflush(stdout);
-
 	auto* thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
 	    addr, fex_rsp,
 	    reinterpret_cast<uint64_t>(params),
@@ -269,8 +265,6 @@ static KYTY_SYSV_ABI void RunEntry(uint64_t addr, EntryParams* params, atexit_fu
 		Loader::Fex::FexGuestEngine::Instance().Run(thread);
 		Loader::Fex::FexGuestEngine::Instance().DestroyThread(thread);
 	}
-	std::printf("[RunEntry] Main program entry execution finished.\n");
-	std::fflush(stdout);
 #elif defined(__x86_64__) || defined(_M_X64)
 	auto* func = reinterpret_cast<entry_func_t>(addr);
 
@@ -1014,9 +1008,6 @@ static void PatchProgram(Program* program, uint64_t address, uint64_t size) {
 		for (auto* ptr = start_ptr; ptr <= end_ptr; ptr++) {
 			if (std::memcmp(ptr, gc_arena_256gb_pattern, sizeof(gc_arena_256gb_pattern)) == 0 &&
 			    ptr[10] == 0x48 && ptr[11] == 0xd1 && ptr[12] == 0xe9) {
-				std::printf("[PatchProgram] Found CoreCLR 256GB arena calculation at 0x%016llx, forcing arena to 512MB\n",
-				            reinterpret_cast<unsigned long long>(ptr));
-				std::fflush(stdout);
 				ptr[0] = 0xb8;
 				ptr[1] = 0x00;
 				ptr[2] = 0x00;
@@ -1344,16 +1335,8 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 		}
 	}
 	if (libc != nullptr && libc->dynamic_info->init_vaddr != 0) {
-		std::printf("[RuntimeLinker] Initializing libc module...\n");
-		std::fflush(stdout);
-		int libc_res = StartModule(libc, 0, nullptr, nullptr);
-		std::printf("[RuntimeLinker] libc initialization completed with result %d\n", libc_res);
-		std::fflush(stdout);
+		StartModule(libc, 0, nullptr, nullptr);
 	}
-
-	std::printf("[RuntimeLinker] Starting Main program (entry=0x%llx)...\n",
-	            (unsigned long long)GetEntry());
-	std::fflush(stdout);
 
 	if (auto entry = GetEntry(); entry != 0) {
 		const auto& arguments = Config::GetGuestArguments();
@@ -1366,9 +1349,6 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 		for (const auto& argument: arguments) {
 			params->argv[params->argc++] = argument.c_str();
 		}
-
-		std::printf("[RuntimeLinker] stack_addr = 0x%016llx\n", (unsigned long long)reinterpret_cast<uint64_t>(params));
-		std::fflush(stdout);
 
 		RunEntry(entry, params, ProgramExitHandler,
 		         reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(params) - 0x1000u));
@@ -1675,13 +1655,6 @@ int RuntimeLinker::StartModule(Program* program, size_t args, const void* argp,
 		g_primary_tls_program = program;
 	}
 
-	std::printf("[StartModule] Starting module: %s (entry_vaddr=0x%llx, stack_top=0x%llx, fs_base=0x%llx)\n",
-	            Common::PathToString(program->file_name).c_str(),
-	            (unsigned long long)entry_vaddr,
-	            (unsigned long long)stack_top,
-	            (unsigned long long)fs_base);
-	std::fflush(stdout);
-
 	auto* thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
 	    entry_vaddr, stack_top, args, reinterpret_cast<uint64_t>(argp), reinterpret_cast<uint64_t>(func), fs_base);
 	int result = 0;
@@ -1689,9 +1662,6 @@ int RuntimeLinker::StartModule(Program* program, size_t args, const void* argp,
 		result = Loader::Fex::FexGuestEngine::Instance().Run(thread);
 		Loader::Fex::FexGuestEngine::Instance().DestroyThread(thread);
 	}
-	std::printf("[StartModule] Module %s finished with code %d\n",
-	            Common::PathToString(program->file_name).c_str(), result);
-	std::fflush(stdout);
 	Libs::LibKernel::Memory::FreeGuestMemory(stack_base, stack_size);
 	return result;
 #elif defined(__x86_64__) || defined(_M_X64)

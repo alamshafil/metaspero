@@ -1555,8 +1555,6 @@ uint64_t PatchFexUnsupportedInstructions(uint64_t segment_addr, uint64_t segment
 	Common::VirtualMemory::Protect(segment_addr, segment_size, Common::VirtualMemory::Mode::ExecuteRead);
 	if (patched > 0) {
 		Common::VirtualMemory::FlushInstructionCache(segment_addr, segment_size);
-		LOGF("[InstructionPatcher] Patched %" PRIu64 " unsupported AMD instructions (MONITORX/MWAITX)\n",
-		     patched);
 	}
 	return patched;
 }

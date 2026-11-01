@@ -479,8 +479,6 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 	file->real_name = g_mount_points->ResolvePath(file->name);
 	if (file->real_name.empty()) {
 		g_files->DeleteDescriptor(descriptor);
-		std::printf("[KernelOpen] Failed: path '%s' cannot be resolved (ENOENT)\n", path);
-		std::fflush(stdout);
 		return KERNEL_ERROR_ENOENT;
 	}
 	if (Common::IsArchivePath(file->real_name) &&
@@ -501,9 +499,6 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 	// A missing path opened without O_CREAT is ENOENT
 	if (!creat && !dir_exist && !file_exist) {
 		g_files->DeleteDescriptor(descriptor);
-		std::printf("[KernelOpen] Failed: path '%s' (resolved '%s') not found (ENOENT)\n",
-		            path, Common::PathToString(file->real_name).c_str());
-		std::fflush(stdout);
 		return KERNEL_ERROR_ENOENT;
 	}
 
@@ -559,9 +554,6 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 
 		if (!result || file->f.IsInvalid()) {
 			g_files->DeleteDescriptor(descriptor);
-			std::printf("[KernelOpen] Failed: could not open/create '%s' (resolved '%s', rw_mode=%d) (EACCES)\n",
-			            path, Common::PathToString(file->real_name).c_str(), static_cast<int>(rw_mode));
-			std::fflush(stdout);
 			return KERNEL_ERROR_EACCES;
 		}
 	}

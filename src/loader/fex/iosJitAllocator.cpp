@@ -158,7 +158,7 @@ bool VerifyExecutableCode(void* rx_addr, void* rw_addr) {
     uint32_t readback[2] = {0, 0};
     std::memcpy(readback, rx_addr, sizeof(readback));
     if (readback[0] != kTestCode[0] || readback[1] != kTestCode[1]) {
-        std::printf("[Kyty iOS JIT] Verification failed: readback mismatch (got 0x%08x 0x%08x, expected 0x%08x 0x%08x)\n",
+        std::printf("[Kyty JIT] Verification failed: readback mismatch (got 0x%08x 0x%08x, expected 0x%08x 0x%08x)\n",
                     readback[0], readback[1], kTestCode[0], kTestCode[1]);
         std::fflush(stdout);
         return false;
@@ -181,12 +181,12 @@ bool VerifyExecutableCode(void* rx_addr, void* rw_addr) {
         int result = fn();
         ok = (result == 42);
         if (!ok) {
-            std::printf("[Kyty iOS JIT] Verification failed: fn() returned %d, expected 42\n", result);
+            std::printf("[Kyty JIT] Verification failed: fn() returned %d, expected 42\n", result);
             std::fflush(stdout);
         }
     } else {
         ok = false;
-        std::printf("[Kyty iOS JIT] Verification trapped: memory at %p is not executable by hardware (W^X protected)\n", rx_addr);
+        std::printf("[Kyty JIT] Verification trapped: memory at %p is not executable by hardware (W^X protected)\n", rx_addr);
         std::fflush(stdout);
     }
     Common::HostException::SetAllocatorSelftestRunning(false);
@@ -242,13 +242,13 @@ static uint8_t* KytyRwAlias(uint8_t* rx, size_t size, bool fixed) {
                                 fixed ? (VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE) : VM_FLAGS_ANYWHERE,
                                 mach_task_self(), reinterpret_cast<vm_address_t>(rx), FALSE, &cur, &max, VM_INHERIT_NONE);
     if (kr != KERN_SUCCESS) {
-        std::printf("[Kyty iOS JIT] KytyRwAlias: vm_remap failed: %d (%s)\n", kr, mach_error_string(kr));
+        std::printf("[Kyty JIT] KytyRwAlias: vm_remap failed: %d (%s)\n", kr, mach_error_string(kr));
         std::fflush(stdout);
         return nullptr;
     }
     kr = vm_protect(mach_task_self(), alias, static_cast<vm_size_t>(size), FALSE, VM_PROT_READ | VM_PROT_WRITE);
     if (kr != KERN_SUCCESS) {
-        std::printf("[Kyty iOS JIT] KytyRwAlias: vm_protect failed: %d (%s)\n", kr, mach_error_string(kr));
+        std::printf("[Kyty JIT] KytyRwAlias: vm_protect failed: %d (%s)\n", kr, mach_error_string(kr));
         std::fflush(stdout);
         vm_deallocate(mach_task_self(), alias, static_cast<vm_size_t>(size));
         return nullptr;
@@ -269,7 +269,7 @@ static Loader::Fex::DualMappedRegion KytySelfDualMapping(size_t bytes) {
             region.rx_addr = map_jit_ptr;
             region.rw_addr = rw;
             region.size = size;
-            std::printf("[Kyty iOS JIT] MAP_JIT dual-mapping SUCCESS: RW=%p, RX=%p (%zu bytes)\n",
+            std::printf("[Kyty JIT] MAP_JIT dual-mapping succeeded: RW=%p, RX=%p (%zu bytes)\n",
                         static_cast<void*>(rw), static_cast<void*>(map_jit_ptr), size);
             std::fflush(stdout);
             return region;
@@ -283,7 +283,7 @@ static Loader::Fex::DualMappedRegion KytySelfDualMapping(size_t bytes) {
             region.rx_addr = map_jit_ptr;
             region.rw_addr = map_jit_ptr;
             region.size = size;
-            std::printf("[Kyty iOS JIT] MAP_JIT single-mapping SUCCESS: RW=%p, RX=%p (%zu bytes)\n",
+            std::printf("[Kyty JIT] MAP_JIT single-mapping succeeded: RW=%p, RX=%p (%zu bytes)\n",
                         static_cast<void*>(map_jit_ptr), static_cast<void*>(map_jit_ptr), size);
             std::fflush(stdout);
             return region;
@@ -291,7 +291,7 @@ static Loader::Fex::DualMappedRegion KytySelfDualMapping(size_t bytes) {
 
         munmap(map_jit_ptr, size);
     } else {
-        std::printf("[Kyty iOS JIT] mmap(MAP_JIT) failed (errno: %d)\n", errno);
+        std::printf("[Kyty JIT] mmap(MAP_JIT) failed (errno: %d)\n", errno);
         std::fflush(stdout);
     }
 
@@ -328,7 +328,7 @@ bool KytyAcquireJitPool() noexcept {
     const bool is_traced = IsTraced();
     const bool is_debugged = IsProcessDebugged();
 
-    std::printf("[Kyty iOS JIT] Attempting to acquire %zu MB JIT pool (P_TRACED=%d, CS_DEBUGGED=%d)...\n",
+    std::printf("[Kyty JIT] Attempting to acquire %zu MB JIT pool (P_TRACED=%d, CS_DEBUGGED=%d)...\n",
                 kJitPoolSize / (1024 * 1024), is_traced ? 1 : 0, is_debugged ? 1 : 0);
     std::fflush(stdout);
 
@@ -345,7 +345,7 @@ bool KytyAcquireJitPool() noexcept {
                 g_pool.allocated_offset = 0;
                 g_pool.is_ready = true;
                 g_pool.status_str = "Xcode LLDB Active (Dual-Mapped MAP_JIT, 64MB Ready)";
-                std::printf("[Kyty iOS JIT] %s: RX=%p, RW=%p\n", g_pool.status_str.c_str(), map_jit_ptr, static_cast<void*>(rw));
+                std::printf("[Kyty JIT] %s: RX=%p, RW=%p\n", g_pool.status_str.c_str(), map_jit_ptr, static_cast<void*>(rw));
                 std::fflush(stdout);
                 return true;
             }
@@ -359,7 +359,7 @@ bool KytyAcquireJitPool() noexcept {
                 g_pool.allocated_offset = 0;
                 g_pool.is_ready = true;
                 g_pool.status_str = "Xcode LLDB Active (Single-Mapped MAP_JIT, 64MB Ready)";
-                std::printf("[Kyty iOS JIT] %s at %p\n", g_pool.status_str.c_str(), map_jit_ptr);
+                std::printf("[Kyty JIT] %s at %p\n", g_pool.status_str.c_str(), map_jit_ptr);
                 std::fflush(stdout);
                 return true;
             }
@@ -412,7 +412,7 @@ bool KytyAcquireJitPool() noexcept {
                 g_pool.allocated_offset = 0;
                 g_pool.is_ready = true;
                 g_pool.status_str = "StikDebug Universal Protocol (Dual-Mapped, 64MB Ready)";
-                std::printf("[Kyty iOS JIT] %s: RX=%p, RW=%p\n", g_pool.status_str.c_str(), rx, reinterpret_cast<void*>(rw));
+                std::printf("[Kyty JIT] %s: RX=%p, RW=%p\n", g_pool.status_str.c_str(), rx, reinterpret_cast<void*>(rw));
                 std::fflush(stdout);
                 return true;
             }
@@ -439,14 +439,14 @@ bool KytyAcquireJitPool() noexcept {
         g_pool.status_str = "Direct Dual-Mapped (64MB Ready)";
         region.rx_addr = nullptr;
         region.rw_addr = nullptr;
-        std::printf("[Kyty iOS JIT] %s: RX=%p, RW=%p\n", g_pool.status_str.c_str(), g_pool.rx_base, g_pool.rw_base);
+        std::printf("[Kyty JIT] %s: RX=%p, RW=%p\n", g_pool.status_str.c_str(), g_pool.rx_base, g_pool.rw_base);
         std::fflush(stdout);
         return true;
     }
 
     g_pool.is_ready = false;
     g_pool.status_str = "JIT Inactive (Executable permissions unavailable)";
-    std::printf("[Kyty iOS JIT] KytyAcquireJitPool: All acquisition strategies failed for 64MB pool\n");
+    std::printf("[Kyty JIT] KytyAcquireJitPool: All acquisition strategies failed for 64MB pool\n");
     std::fflush(stdout);
     return false;
 }
@@ -464,7 +464,7 @@ void KytyResetJitPoolForNewSession() noexcept {
     constexpr size_t kDispatcherReservedBytes = 16 * 1024 * 1024;
     if (g_pool.is_ready && g_pool.allocated_offset > kDispatcherReservedBytes) {
         g_pool.allocated_offset = kDispatcherReservedBytes;
-        std::printf("[Kyty iOS JIT] Reset JIT pool offset to %zu MB for new session\n",
+        std::printf("[Kyty JIT] Reset JIT pool offset to %zu MB for new session\n",
                     kDispatcherReservedBytes / (1024 * 1024));
         std::fflush(stdout);
     }
@@ -493,17 +493,10 @@ void KytyResetJitPoolForNewSession() noexcept {
 DualMappedRegion DualMappedRegion::Allocate(size_t bytes) noexcept {
     DualMappedRegion region;
     InstallJitTrapHandler();
-    const uint64_t request_number = g_allocation_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+    g_allocation_counter.fetch_add(1, std::memory_order_relaxed);
     const bool is_debugged = IsProcessDebugged();
-    const bool is_traced = IsTraced();
-
-    std::printf("[Kyty iOS JIT] Allocation #%" PRIu64 " requested (%zu bytes). Debugger: %s (PID: %d, P_TRACED=%d)\n",
-                request_number, bytes, is_debugged ? "ACTIVE" : "INACTIVE", getpid(), is_traced ? 1 : 0);
-    std::fflush(stdout);
 
     if (!is_debugged) {
-        std::printf("[Kyty iOS JIT] ERROR: Process is not debugged. Debugger / StikDebug must be attached before allocating JIT memory.\n");
-        std::fflush(stdout);
         return region;
     }
 
@@ -532,9 +525,6 @@ DualMappedRegion DualMappedRegion::Allocate(size_t bytes) noexcept {
             region.rx_addr = static_cast<uint8_t*>(rx);
             region.rw_addr = reinterpret_cast<uint8_t*>(rw);
             region.size = bytes;
-            std::printf("[Kyty iOS JIT] StikDebug dual-mapping VERIFIED (42 test passed): RW=%p, RX=%p (%zu bytes)\n",
-                        static_cast<void*>(region.rw_addr), static_cast<void*>(region.rx_addr), bytes);
-            std::fflush(stdout);
             return region;
         }
         if (rw != 0) {
@@ -546,10 +536,9 @@ DualMappedRegion DualMappedRegion::Allocate(size_t bytes) noexcept {
     // PATH 2: Direct dual-mapping fallback (StikDebug already detached or persistent CS_DEBUGGED)
     region = KytySelfDualMapping(bytes);
     if (!region.IsValid()) {
-        std::printf("[Kyty iOS JIT] FAILED: All JIT allocation strategies failed for %zu bytes.\n"
-                    "[Kyty iOS JIT] NOTE: To run with JIT on iOS:\n"
-                    "[Kyty iOS JIT]   Option 1: Launch via Xcode debugger (P_TRACED=1 enables MAP_JIT).\n"
-                    "[Kyty iOS JIT]   Option 2: Use StikDebug with universal.js actively attached.\n",
+        std::printf("[Kyty JIT] FAILED: All JIT allocation strategies failed for %zu bytes.\n"
+                    "[Kyty JIT] NOTE: To run with JIT on iOS:\n"
+                    "[Kyty JIT]   Option: Use StikDebug with universal.js actively attached.\n",
                     bytes);
         std::fflush(stdout);
     }
@@ -610,14 +599,9 @@ bool KytyDualMappedAlloc(size_t size, void** out_rw, void** out_rx) noexcept {
             *out_rw = g_pool.rw_base + g_pool.allocated_offset;
             *out_rx = g_pool.rx_base + g_pool.allocated_offset;
             g_pool.allocated_offset += aligned_size;
-            std::printf("[Kyty iOS JIT] KytyDualMappedAlloc SUCCESS: RW=%p, RX=%p (%zu bytes, %zu/%zu MB pool used)\n",
-                        *out_rw, *out_rx, size,
-                        g_pool.allocated_offset / (1024 * 1024),
-                        g_pool.total_size / (1024 * 1024));
-            std::fflush(stdout);
             return true;
         }
-        std::printf("[Kyty iOS JIT] WARNING: Preallocated JIT pool full (%zu/%zu MB), trying fallback\n",
+        std::printf("[Kyty JIT] WARNING: Preallocated JIT pool full (%zu/%zu MB), trying fallback\n",
                     g_pool.allocated_offset / (1024 * 1024), g_pool.total_size / (1024 * 1024));
         std::fflush(stdout);
     }
@@ -630,13 +614,13 @@ bool KytyDualMappedAlloc(size_t size, void** out_rw, void** out_rx) noexcept {
         region.rw_addr = nullptr;
         region.rx_addr = nullptr;
         region.size = 0;
-        std::printf("[Kyty iOS JIT] KytyDualMappedAlloc (fallback) SUCCESS: RW=%p, RX=%p (%zu bytes)\n",
+        std::printf("[Kyty JIT] KytyDualMappedAlloc (fallback) SUCCESS: RW=%p, RX=%p (%zu bytes)\n",
                     *out_rw, *out_rx, size);
         std::fflush(stdout);
         return true;
     }
 
-    std::printf("[Kyty iOS JIT] KytyDualMappedAlloc FAILED for %zu bytes\n", size);
+    std::printf("[Kyty JIT] KytyDualMappedAlloc FAILED for %zu bytes\n", size);
     std::fflush(stdout);
     *out_rw = nullptr;
     *out_rx = nullptr;
@@ -665,8 +649,6 @@ void KytyDualMappedFree(void* rw, void* rx, size_t size) noexcept {
     if (rx != nullptr) {
         vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(rx), static_cast<vm_size_t>(size));
     }
-    std::printf("[Kyty iOS JIT] KytyDualMappedFree: RW=%p, RX=%p (%zu bytes)\n", rw, rx, size);
-    std::fflush(stdout);
 }
 
 extern "C" __attribute__((visibility("default"))) void* BreakGetJITMapping(void* addr, size_t len) noexcept {
@@ -683,8 +665,6 @@ extern "C" __attribute__((visibility("default"))) void* BreakGetJITMapping(void*
         if (g_pool.allocated_offset + size <= g_pool.total_size) {
             void* rx = g_pool.rx_base + g_pool.allocated_offset;
             g_pool.allocated_offset += size;
-            std::printf("[Kyty iOS JIT] BreakGetJITMapping (from pool): %p (%zu bytes)\n", rx, size);
-            std::fflush(stdout);
             return rx;
         }
     }
@@ -705,8 +685,6 @@ extern "C" __attribute__((visibility("default"))) void* BreakGetJITMapping(void*
                 usleep(25 * 1000);
             }
             if (rx != nullptr) {
-                std::printf("[Kyty iOS JIT] BreakGetJITMapping via StikDebug: %p (%zu bytes)\n", rx, size);
-                std::fflush(stdout);
                 return rx;
             }
         }
@@ -721,12 +699,8 @@ extern "C" __attribute__((visibility("default"))) void* BreakGetJITMapping(void*
         ptr = ::mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANON, -1, 0);
     }
     if (ptr == MAP_FAILED) {
-        std::printf("[Kyty iOS JIT] BreakGetJITMapping failed for %zu bytes (errno: %d)\n", len, errno);
-        std::fflush(stdout);
         return nullptr;
     }
-    std::printf("[Kyty iOS JIT] BreakGetJITMapping direct: %p (%zu bytes)\n", ptr, size);
-    std::fflush(stdout);
     return ptr;
 }
 

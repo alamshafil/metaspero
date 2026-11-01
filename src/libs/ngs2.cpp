@@ -1483,13 +1483,6 @@ static void Ngs2FinishBlock(Ngs2VoiceInternal& voice) {
 			reinterpret_cast<void KYTY_SYSV_ABI (*)(const Ngs2VoiceCallbackInfo*)>(voice.callback)(
 			    &info);
 		} else {
-			static std::atomic<int> s_callback_log_count{0};
-			if (s_callback_log_count.fetch_add(1) < 5) {
-				std::printf("[Ngs2] Handled guest voice callback (voice=0x%016llx, callback=0x%016llx, data=0x%016llx, flag=0x%x)\n",
-				            (unsigned long long)&voice, (unsigned long long)voice.callback,
-				            (unsigned long long)info.data, info.flag);
-				std::fflush(stdout);
-			}
 			if ((info.flag & 1) != 0 && info.data != 0) {
 				auto* rbx = reinterpret_cast<uint8_t*>(info.data);
 				auto* counter_ptr = reinterpret_cast<std::atomic<uint32_t>*>(rbx + 4);

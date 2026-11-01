@@ -514,10 +514,6 @@ void GameController::Button(int id, uint32_t button, bool down) {
 
 		m_state.buttons = down ? m_state.buttons | button : m_state.buttons & ~button;
 
-		std::printf("[PadInput] Button %s: 0x%08x (all=0x%08x, active_id=%d)\n",
-		            down ? "DOWN" : "UP", button, m_state.buttons, m_active_id);
-		std::fflush(stdout);
-
 		AddState();
 	}
 }
@@ -1142,14 +1138,6 @@ int KYTY_SYSV_ABI PadReadState(int handle, PadData* data) {
 	g_controller->ReadState(&state, &connected, &connected_count);
 
 	pad_fill_data(data, state, connected, connected_count);
-
-	static uint32_t last_logged_buttons = 0;
-	if (data->buttons != last_logged_buttons) {
-		std::printf("[PadReadState] Buttons: 0x%08x -> 0x%08x (handle=%d, conn=%d)\n",
-		            last_logged_buttons, data->buttons, handle, (int)data->connected);
-		std::fflush(stdout);
-		last_logged_buttons = data->buttons;
-	}
 
 	return OK;
 }

@@ -91,8 +91,6 @@ void PostLaunchActivityEvent() {
 	std::scoped_lock lock(g_event_mutex);
 	g_events.push_back(0x10000017); // SCE_SYSTEM_SERVICE_EVENT_GAME_INTENT (launchActivity)
 	g_events.push_back(0x10000000); // SCE_SYSTEM_SERVICE_EVENT_ON_RESUME
-	std::printf("[SystemService] Queued launch activity events (0x10000017, 0x10000000)\n");
-	std::fflush(stdout);
 }
 
 struct SystemServiceDisplaySafeAreaInfo {
@@ -189,8 +187,6 @@ static int KYTY_SYSV_ABI SystemServiceReceiveEvent(SystemServiceEvent* event) {
 	}
 	event->event_type = g_events.front();
 	g_events.pop_front();
-	std::printf("[SystemService] Delivered event 0x%08x to guest\n", static_cast<uint32_t>(event->event_type));
-	std::fflush(stdout);
 	LOGF("\t SystemService event = 0x%08x\n", static_cast<uint32_t>(event->event_type));
 	return OK;
 }

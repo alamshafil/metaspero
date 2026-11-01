@@ -281,8 +281,6 @@ int KYTY_SYSV_ABI KernelCreateSema(KernelSema* sem, const char* name, uint32_t a
 	}
 
 	*sem = new KernelSemaPrivate(std::string(name), fifo, init, max);
-	std::printf("[KernelCreateSema] sem=%p '%s' init=%d max=%d\n", static_cast<void*>(*sem), name ? name : "", init, max);
-	std::fflush(stdout);
 
 	return OK;
 }
@@ -293,9 +291,6 @@ int KYTY_SYSV_ABI KernelDeleteSema(KernelSema sem) {
 	if (sem == nullptr) {
 		return KERNEL_ERROR_ESRCH;
 	}
-
-	std::printf("[KernelDeleteSema] sem=%p '%s'\n", static_cast<void*>(sem), sem->GetName().c_str());
-	std::fflush(stdout);
 
 	delete sem;
 

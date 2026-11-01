@@ -172,15 +172,7 @@ void GuestGpu::SuspendPoint() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
 	// Do not hold a queue lock while waiting: asynchronous work may be needed to
 	// finish the preceding graphics frame. The first point returns immediately.
-	static std::atomic<uint32_t> s_sp_count{0};
-	uint32_t sp = ++s_sp_count;
-	if (!m_suspend_point_ready->try_acquire_for(std::chrono::milliseconds(25))) {
-		if (sp <= 10 || (sp % 60) == 0) {
-			LOGF("[GuestGpu::SuspendPoint #%u] GPU pacing wait timeout (25ms), continuing...\n", sp);
-		}
-	} else if (sp <= 10 || (sp % 60) == 0) {
-		LOGF("[GuestGpu::SuspendPoint #%u] acquired smoothly\n", sp);
-	}
+	m_suspend_point_ready->try_acquire_for(std::chrono::milliseconds(25));
 	Submission submission;
 	submission.type = SubmissionType::SuspendPoint;
 	Enqueue(std::move(submission));
@@ -1117,13 +1109,6 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 			(void)command.Handle();
 			__atomic_store_n(dst, value, __ATOMIC_SEQ_CST);
 			std::atomic_thread_fence(std::memory_order_seq_cst);
-			static std::atomic<uint32_t> s_w64_cnt{0};
-			if (s_w64_cnt.fetch_add(1) < 20) {
-				std::printf("[WriteAtEndOfPipe64] dst=0x%llx val=0x%llx with_int=%d ctx=%u\n",
-				            (unsigned long long)dst_gpu_addr, (unsigned long long)value,
-				            with_interrupt, interrupt_context_id);
-				std::fflush(stdout);
-			}
 		}
 
 		if (with_interrupt) {

@@ -667,7 +667,6 @@ public final class PhysicalControllerManager: ObservableObject {
             self.physicalControllers.insert(controller)
             self.hasPhysicalController = true
             self.setupGamepad(controller)
-            NSLog("[PhysicalController] Connected: %@", controller.vendorName ?? "Gamepad")
         }
         
         NotificationCenter.default.addObserver(
@@ -678,7 +677,6 @@ public final class PhysicalControllerManager: ObservableObject {
             guard let self = self, let controller = notif.object as? GCController else { return }
             self.physicalControllers.remove(controller)
             self.hasPhysicalController = !self.physicalControllers.isEmpty
-            NSLog("[PhysicalController] Disconnected: %@", controller.vendorName ?? "Gamepad")
         }
     }
     

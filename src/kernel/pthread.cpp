@@ -833,10 +833,6 @@ KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func, void* 
 #if defined(__APPLE__)
 	Dl_info host_info {};
 	if (dladdr(reinterpret_cast<void*>(func), &host_info) != 0 && host_info.dli_saddr != nullptr) {
-		std::printf("[RunOnGuestStack] Executing native host thread func %s (0x%016llx)...\n",
-		            host_info.dli_sname ? host_info.dli_sname : "?",
-		            (unsigned long long)reinterpret_cast<uint64_t>(func));
-		std::fflush(stdout);
 		return func(arg);
 	}
 #endif
@@ -846,12 +842,6 @@ KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func, void* 
 	*reinterpret_cast<uint64_t*>(fex_rsp) = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
 
 	uint64_t fs_base = Loader::RuntimeLinker::GetMainTlsBase();
-
-	std::printf("[RunOnGuestStack] Starting thread func=0x%016llx (RSP=0x%016llx, FS_BASE=0x%016llx)...\n",
-	            (unsigned long long)reinterpret_cast<uint64_t>(func),
-	            (unsigned long long)fex_rsp,
-	            (unsigned long long)fs_base);
-	std::fflush(stdout);
 
 	auto* thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
 	    reinterpret_cast<uint64_t>(func),
@@ -1372,7 +1362,6 @@ static int NativeMutexLock(PthreadMutexPrivate* mutex, KernelUseconds* timeout_u
 	}
 
 	if (timeout_us == nullptr) {
-		int wait_loops = 0;
 		while (mutex->owner != nullptr) {
 			if (Common::HostException::IsEmulationShuttingDown()
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
@@ -1383,12 +1372,6 @@ static int NativeMutexLock(PthreadMutexPrivate* mutex, KernelUseconds* timeout_u
 			}
 			mutex->cv.wait_for(lock, std::chrono::microseconds(SIGNAL_APC_POLL_MICROS));
 			if (mutex->owner != nullptr) {
-				if (++wait_loops % 1000 == 0) { // Every ~1 second
-					std::printf("[NativeMutexLock Contention] Thread %s (id=%d) waiting on mutex '%s' owned by thread %s (id=%d, count=%u)\n",
-					     self->name.c_str(), self->guest.thread_id, mutex->name.c_str(),
-					     mutex->owner->name.c_str(), mutex->owner->guest.thread_id, mutex->count);
-					std::fflush(stdout);
-				}
 				lock.unlock();
 				KernelDispatchPendingSignalForCurrentThread();
 				lock.lock();
@@ -2481,7 +2464,6 @@ static int RwlockLockCooperative(PthreadRwlock rwlock, bool write, KernelUsecond
 	    (has_timeout ? std::chrono::steady_clock::now() + std::chrono::microseconds(wait_us)
 	                 : std::chrono::steady_clock::time_point {});
 	bool writer_wait_registered = false;
-	int  wait_loops             = 0;
 
 	for (;;) {
 		{
@@ -2533,13 +2515,6 @@ static int RwlockLockCooperative(PthreadRwlock rwlock, bool write, KernelUsecond
 				                             std::chrono::microseconds(SIGNAL_APC_POLL_MICROS)));
 				rwlock->cv.wait_for(lock, poll);
 			} else {
-				if (++wait_loops % 1000 == 0) { // Every ~1 second
-					std::printf("[NativeRwlock Contention] Thread %s (id=%d) waiting on rwlock '%s' (writer=%s, waiting_writers=%u, readers=%u)\n",
-					     self->name.c_str(), self->guest.thread_id, rwlock->name.c_str(),
-					     rwlock->writer ? rwlock->writer->name.c_str() : "none",
-					     rwlock->waiting_writers, rwlock->reader_count);
-					std::fflush(stdout);
-				}
 				rwlock->cv.wait_for(lock, std::chrono::microseconds(SIGNAL_APC_POLL_MICROS));
 			}
 		}
@@ -3180,18 +3155,9 @@ int KYTY_SYSV_ABI PthreadCondWait(PthreadCond* cond, PthreadMutex* mutex) {
 
 	auto ready = [thread, thread_sequence] { return thread->cond_sequence != thread_sequence; };
 
-	int wait_loops = 0;
-
 	while (!ready() && !Common::HostException::IsEmulationShuttingDown()) {
 		thread->cond_cv.wait_for(cond_lock, std::chrono::microseconds(SIGNAL_APC_POLL_MICROS));
 		if (!ready() && !Common::HostException::IsEmulationShuttingDown()) {
-			wait_loops++;
-			if (wait_loops % 1000 == 0) { // Every ~1 second
-				std::printf("[PthreadCondWait] Thread %s (id=%d) waiting on cond '%s' (mutex '%s') for %d s\n",
-				     thread->name.c_str(), thread->guest.thread_id, cond_value->name.c_str(),
-				     mutex_value->name.c_str(), wait_loops / 1000);
-				std::fflush(stdout);
-			}
 			cond_lock.unlock();
 			KernelDispatchPendingSignalForCurrentThread();
 			cond_lock.lock();
@@ -3361,11 +3327,6 @@ static void CleanupThread(void* arg) {
 	auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
 	rt->DeleteTlss(thread->unique_id);
 
-	std::printf("[Pthread] Exited thread '%s' (guest_id=%d, unique_id=%d)\n",
-	            thread ? thread->name.c_str() : "?", thread ? thread->guest.thread_id : -1,
-	            thread ? thread->unique_id : -1);
-	std::fflush(stdout);
-
 	thread->almost_done = true;
 }
 
@@ -3407,12 +3368,6 @@ static void* RunThread(void* arg) {
 	     reinterpret_cast<uint64_t>(thread->entry), reinterpret_cast<uint64_t>(thread->arg),
 	     reinterpret_cast<uint64_t>(thread->attr->stack_addr),
 	     static_cast<uint64_t>(thread->attr->stack_size));
-
-	std::printf("[Pthread] Starting thread '%s' (guest_id=%d, unique_id=%d, entry=0x%016llx, stack_addr=0x%016llx)...\n",
-	            thread->name.c_str(), thread->guest.thread_id, thread->unique_id,
-	            reinterpret_cast<unsigned long long>(thread->entry),
-	            reinterpret_cast<unsigned long long>(thread->attr->stack_addr));
-	std::fflush(stdout);
 
 	// NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
 	pthread_cleanup_push(CleanupThread, thread);
@@ -3480,11 +3435,6 @@ int KYTY_SYSV_ABI PthreadCreate(Pthread* thread, const PthreadAttr* attr,
 		result =
 		    pthread_create(&created_thread->p, &created_thread->attr->p, RunThread, created_thread);
 
-		std::printf("[Pthread] Created thread '%s' (guest_id=%d, entry=0x%016llx) result=%d\n",
-		            created_thread->name.c_str(), created_thread->guest.thread_id,
-		            reinterpret_cast<unsigned long long>(entry), result);
-		std::fflush(stdout);
-
 		if (result != 0) {
 			FreeGuestStack(created_thread->attr);
 		}
@@ -3536,14 +3486,7 @@ int KYTY_SYSV_ABI PthreadJoin(Pthread thread, void** value) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	std::printf("[PthreadJoin] Joining thread '%s' (guest_id=%d, unique_id=%d)...\n",
-	            thread->name.c_str(), thread->guest.thread_id, thread->unique_id);
-	std::fflush(stdout);
-
 	int result = pthread_join(thread->p, value);
-
-	std::printf("[PthreadJoin] Joined thread '%s' result=%d\n", thread->name.c_str(), result);
-	std::fflush(stdout);
 
 	if (PRINT_NAME_ENABLED) {
 		LOGF("\tthread join: %s, %d\n", thread->name.c_str(), result);
@@ -4229,10 +4172,6 @@ run_init:
 			*reinterpret_cast<uint64_t*>(stack_top) = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
 
 			uint64_t fs_base = Loader::RuntimeLinker::GetMainTlsBase();
-
-			std::printf("[Posix] pthread_once: executing guest callback at 0x%016llx via FEX...\n",
-			            (unsigned long long)reinterpret_cast<uint64_t>(init_routine));
-			std::fflush(stdout);
 
 			auto* thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
 			    reinterpret_cast<uint64_t>(init_routine),

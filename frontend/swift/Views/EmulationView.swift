@@ -164,7 +164,6 @@ struct InGameOverlayView: View {
                             HStack(spacing: 12) {
                                 // Diagnostics / Logs
                                 Button(action: {
-                                    NSLog("[InGameOverlayView] Terminal/Logs button tapped")
                                     showLogSheet = true
                                 }) {
                                     Image(systemName: "terminal.fill")
@@ -195,7 +194,6 @@ struct InGameOverlayView: View {
                                 
                                 // Quit Button
                                 Button(action: {
-                                    NSLog("[InGameOverlayView] Quit button tapped")
                                     onExit()
                                 }) {
                                     HStack(spacing: 6) {

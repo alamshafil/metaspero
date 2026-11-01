@@ -1067,11 +1067,7 @@ void Presenter::Impl::Present() {
 		}
 
 		presented_overlay_revision.store(overlay_visual.revision, std::memory_order_release);
-		uint64_t prev_frames = window.loop.presented_frames.fetch_add(1, std::memory_order_relaxed);
-		if (prev_frames < 5 || (prev_frames % 60) == 0) {
-			std::printf("[Presenter] Presented frame #%llu to swapchain\n", (unsigned long long)(prev_frames + 1));
-			std::fflush(stdout);
-		}
+		window.loop.presented_frames.fetch_add(1, std::memory_order_relaxed);
 		return;
 	}
 	LOGF("Vulkan presentation retry exhausted; dropping frame\n");

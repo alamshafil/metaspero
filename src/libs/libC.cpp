@@ -85,8 +85,6 @@ static KYTY_SYSV_ABI void exit(int code) {
 
 	LOGF("Guest called LibC::exit(%d)\n", code);
 #if defined(__APPLE__)
-	std::printf("[LibC] Guest requested exit(code=%d). Gracefully notifying shutdown...\n", code);
-	std::fflush(stdout);
 	Common::HostException::SetEmulationShuttingDown(true);
 	SDL_Event quit_ev;
 	std::memset(&quit_ev, 0, sizeof(quit_ev));
@@ -331,8 +329,6 @@ static KYTY_SYSV_ABI int puts(const char* s) {
 	if (s == nullptr) {
 		return -1;
 	}
-	std::printf("[Game stdout] %s\n", s);
-	std::fflush(stdout);
 	return 0;
 }
 
@@ -369,8 +365,6 @@ static KYTY_SYSV_ABI const char* getenv(const char* name) {
 	    std::strcmp(name, "GCHeapHardLimit") == 0 ||
 	    std::strcmp(name, "DOTNET_GCHeapHardLimitSOH") == 0 ||
 	    std::strcmp(name, "GCHeapHardLimitSOH") == 0) {
-		std::printf("[LibC] getenv(%s) -> 0x20000000 (512 MB hard limit for iOS)\n", name);
-		std::fflush(stdout);
 		return "0x20000000";
 	}
 	if (std::strcmp(name, "DOTNET_gcServer") == 0 ||
@@ -574,10 +568,6 @@ static KYTY_SYSV_ABI int std_execute_once(int* flag, execute_once_func_t func, v
 
 		uint64_t guest_ctx_addr = stack_base + 0x10;
 		*reinterpret_cast<uint64_t*>(guest_ctx_addr) = 0;
-
-		std::printf("[LibC] std_execute_once: executing guest callback at 0x%016llx via FEX...\n",
-		            (unsigned long long)reinterpret_cast<uint64_t>(func));
-		std::fflush(stdout);
 
 		auto* thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
 		    reinterpret_cast<uint64_t>(func),

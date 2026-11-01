@@ -88,8 +88,6 @@ static void ConfigureMetalLayerHud(CALayer *layer, BOOL enabled) {
             #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
             [layer performSelector:setDevHud withObject:props];
             #pragma clang diagnostic pop
-            std::printf("[KytyBridge] Metal Performance HUD configured on CAMetalLayer %p (enabled=%d)\n", layer, enabled);
-            std::fflush(stdout);
         }
     }
     for (CALayer *sub in layer.sublayers) {
@@ -142,8 +140,6 @@ static void PushHostPixelSize(int w, int h) {
 // view's CAMetalLayer, so there is nothing to show or hide here, we only sync
 // the renderer with the view's current size and apply the Metal HUD.
 extern "C" void KytyNotifyWindowCreated(void *window) {
-    std::printf("[KytyBridge] Presentation surface created (host layer: %p)\n", (__bridge void *)g_host_layer);
-    std::fflush(stdout);
     (void)window;
     if (g_host_layer == nil) return;
     PushHostPixelSize(g_host_pixel_w.load(), g_host_pixel_h.load());
@@ -156,8 +152,6 @@ extern "C" void KytyNotifyWindowCreated(void *window) {
 }
 
 extern "C" void KytyNotifyWindowDestroyed() {
-    std::printf("[KytyBridge] Presentation surface destroyed\n");
-    std::fflush(stdout);
     dispatch_async(dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter] postNotificationName:KytyWindowDestroyedNotification
                                                             object:nil];
@@ -548,8 +542,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
     } else {
         unsetenv("MTL_HUD_ENABLED");
     }
-    std::printf("[KytyBridge] Metal Performance HUD: %s\n", enabled ? "ENABLED" : "DISABLED");
-    std::fflush(stdout);
 }
 
 + (BOOL)isMetalHudEnabled {
@@ -718,7 +710,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
                         options.config.console_language, options.config.vblank_frequency,
                         options.game_patch.empty() ? "None" : options.game_patch.string().c_str());
             std::fflush(stdout);
-            std::fflush(stdout);
 
             if (completion) {
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -816,8 +807,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
             break;
     }
     if (pad_btn != 0) {
-        std::printf("[KytyBridge] setButton:%d pressed:%d (pad_btn=0x%08x)\n", (int)button, (int)pressed, pad_btn);
-        std::fflush(stdout);
         if (button == KytyButtonTouchpad) {
             Libs::Controller::SetTouchPad(Libs::Controller::HOST_INPUT_CONTROLLER_ID, 0, pressed, 0.5f, 0.5f);
         }
@@ -1291,8 +1280,6 @@ static NSString *g_last_memory_warning_level = nil;
         @"[Jetsam Warning] Level: %@ | Reason: %@ | Footprint: %.1f MB / %.1f MB (%.1f MB remaining)",
         level, reason, usedMB, limitMB, availMB];
     
-    std::printf("%s\n", [logLine UTF8String]);
-    std::fflush(stdout);
     [self addLogMessageInternal:logLine writeToFile:NO];
     
     dispatch_async(dispatch_get_main_queue(), ^{

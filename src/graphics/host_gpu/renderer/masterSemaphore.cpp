@@ -45,7 +45,6 @@ void MasterSemaphore::Wait(uint64_t tick) {
 	}
 
 	constexpr uint64_t TIMEOUT_NS = 100000000ULL; // 100ms
-	int wait_retries = 0;
 	while (!IsFree(tick)) {
 		vk::SemaphoreWaitInfo wait_info {};
 		wait_info.semaphoreCount = 1;
@@ -58,11 +57,6 @@ void MasterSemaphore::Wait(uint64_t tick) {
 			break;
 		}
 		if (result == vk::Result::eTimeout) {
-			if (++wait_retries % 20 == 0) { // Every 2 seconds
-				std::printf("[MasterSemaphore::Wait] Still waiting for GPU tick %" PRIu64 " (known GPU tick: %" PRIu64 ", elapsed: %d ms)...\n",
-				     tick, KnownGpuTick(), wait_retries * 100);
-				std::fflush(stdout);
-			}
 			continue;
 		}
 		EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);

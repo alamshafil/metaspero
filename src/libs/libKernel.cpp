@@ -1147,13 +1147,6 @@ static void ExecuteGuestExceptionHandler(exception_handler_func_t handler, int s
 
 			uint64_t fs_base = Loader::RuntimeLinker::GetMainTlsBase();
 
-			static std::atomic<uint32_t> s_dispatch_count{0};
-			if (s_dispatch_count.fetch_add(1, std::memory_order_relaxed) < 3) {
-				std::printf("[LibKernel] ExecuteGuestExceptionHandler: executing guest handler at 0x%016llx for signum=%d via FEX on helper thread...\n",
-				            (unsigned long long)reinterpret_cast<uint64_t>(handler), signum);
-				std::fflush(stdout);
-			}
-
 			auto* fex_thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
 			    reinterpret_cast<uint64_t>(handler),
 			    stack_top,
@@ -1826,12 +1819,8 @@ static void KYTY_SYSV_ABI KernelDebugRaiseException(int /*c1*/, int /*c2*/) {
 	PRINT_NAME();
 }
 
-static int KYTY_SYSV_ABI KernelDebugOutText(int channel, const char* text) {
+static int KYTY_SYSV_ABI KernelDebugOutText(int /*channel*/, const char* /*text*/) {
 	PRINT_NAME();
-	if (text != nullptr) {
-		std::printf("[GuestDebug %d] %s\n", channel, text);
-		std::fflush(stdout);
-	}
 	return OK;
 }
 

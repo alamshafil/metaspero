@@ -347,12 +347,6 @@ struct CommandBuffer {
 
 					uint64_t fs_base = Loader::RuntimeLinker::GetMainTlsBase();
 
-					std::printf("[AGC] CommandBuffer grow callback: executing guest callback at 0x%016llx (orig=0x%016llx, requested=%u) via FEX on helper thread...\n",
-					            (unsigned long long)target_rip,
-					            (unsigned long long)reinterpret_cast<uint64_t>(callback),
-					            num_dw + reserved_dw);
-					std::fflush(stdout);
-
 					auto* fex_thread = Loader::Fex::FexGuestEngine::Instance().CreateThread(
 					    target_rip,
 					    stack_top,
@@ -4475,15 +4469,6 @@ struct TessellationDriverState {
 static TessellationDriverState g_tessellation_driver_state {};
 
 static void submit_dcb(uint32_t* dcb, uint32_t size_in_dwords) {
-	static std::atomic<uint32_t> s_dcb_count{0};
-	uint32_t dc = ++s_dcb_count;
-	if (dc <= 5 || (dc % 60) == 0) {
-		std::printf("[AGC] submit_dcb #%u (size=%u dwords):\n", dc, size_in_dwords);
-		for (uint32_t i = 0; i < size_in_dwords && i < 32; i++) {
-			std::printf("  [%02u] 0x%08x\n", i, dcb[i]);
-		}
-		std::fflush(stdout);
-	}
 	GraphicsDbgDumpDcb("d", size_in_dwords, dcb);
 	EXIT_IF(g_renderer == nullptr);
 	g_renderer->GetGpu().Submit(std::span {dcb, size_in_dwords}, {});

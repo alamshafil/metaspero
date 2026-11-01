@@ -461,20 +461,9 @@ void FexHleBridge::RecordHleCall(uint64_t thunk_id, const uint64_t* args, uint64
     const auto* fn_info = FindById(thunk_id);
     if (fn_info == nullptr) return;
 
-    uint64_t call_num = 0;
-    if (m_call_counts && thunk_id < 16384) {
-        call_num = m_call_counts[thunk_id].load(std::memory_order_relaxed);
-    }
-
     uint64_t caller_rip = (s_current_caller_rip != 0)
                               ? s_current_caller_rip
                               : ((guest_rsp != 0) ? *reinterpret_cast<const uint64_t*>(guest_rsp) : 0);
-    bool is_special = (fn_info->name.find("DirectMemory") != std::string::npos);
-    if (call_num <= 3 || is_special) {
-        std::printf("[HLE Ret #%" PRIu64 "] [%" PRIu64 "] %s -> 0x%" PRIx64 "\n",
-                    call_num, thunk_id, fn_info->name.c_str(), result);
-        std::fflush(stdout);
-    }
 
     // Record in recent calls ring buffer
     uint64_t r_idx = m_recent_calls_total.fetch_add(1, std::memory_order_relaxed);
@@ -550,57 +539,6 @@ uint64_t FexHleBridge::DispatchHle(uint64_t thunk_id, const uint64_t* gpr, uint6
     s_current_caller_rip        = caller_rip;
     s_current_guest_rsp         = guest_rsp;
     s_has_pending_fiber_restore = false;
-    bool is_special = (fn_name.find("DirectMemory") != std::string::npos);
-    if (call_num < 3 || is_special) {
-        std::printf("[HLE #%" PRIu64 "] [%" PRIu64 "] %s (caller=0x%" PRIx64 ", arg0=0x%" PRIx64 ", arg1=0x%" PRIx64 ", arg2=0x%" PRIx64 ")\n",
-                    call_num + 1, thunk_id, fn_name.c_str(), caller_rip, a0, a1, a2);
-        if (fn_name.find("open") != std::string::npos && a0 >= 0x10000000) {
-            std::printf("      -> path: %s\n", reinterpret_cast<const char*>(a0));
-        }
-        std::fflush(stdout);
-    }
-
-    static std::atomic<uint64_t> s_spin_calls{0};
-    if ((caller_rip & 0xfffff) == 0xb8441 || (caller_rip & 0xfffff) == 0xb844a || (caller_rip & 0xfffff) == 0xb842e || (caller_rip & 0xfff) == 0xa2a) {
-        uint64_t sc = ++s_spin_calls;
-        if (sc <= 3) {
-            std::printf("[GuestLoop #%llu] Caller=0x%016llx (HLE: %s, a0=0x%llx, a1=0x%llx, a2=0x%llx, a3=0x%llx, a4=0x%llx)\n",
-                        (unsigned long long)sc, (unsigned long long)caller_rip, fn_name.c_str(),
-                        (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2,
-                        (unsigned long long)a3, (unsigned long long)a4);
-            if (a0 >= 0x10000000) {
-                const auto* p0 = reinterpret_cast<const uint32_t*>(a0);
-                std::printf("  *a0 (0x%016llx) = [0x%08x, 0x%08x, 0x%08x, 0x%08x]\n",
-                            (unsigned long long)a0, p0[0], p0[1], p0[2], p0[3]);
-            }
-            if (a1 >= 0x10000000) {
-                const auto* p1 = reinterpret_cast<const uint32_t*>(a1);
-                std::printf("  *a1 (0x%016llx) = [0x%08x, 0x%08x, 0x%08x, 0x%08x]\n",
-                            (unsigned long long)a1, p1[0], p1[1], p1[2], p1[3]);
-            }
-            ZydisDecoder loop_decoder;
-            if (ZYAN_SUCCESS(ZydisDecoderInit(&loop_decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64))) {
-                ZydisDecodedInstruction insn;
-                ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
-                ZydisFormatter formatter;
-                ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
-                char buf[256];
-                uint64_t dis_rip = (caller_rip >= 0x25) ? (caller_rip - 0x25) : caller_rip;
-                for (int di = 0; di < 12; di++) {
-                    if (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&loop_decoder, reinterpret_cast<const void*>(dis_rip), 15, &insn, ops))) {
-                        ZydisFormatterFormatInstruction(&formatter, &insn, ops, insn.operand_count_visible, buf, sizeof(buf), dis_rip, nullptr);
-                        std::printf("  [LoopDisasm] %s0x%016llx: %s\n",
-                                    (dis_rip == caller_rip ? "-> " : "   "),
-                                    (unsigned long long)dis_rip, buf);
-                        dis_rip += insn.length;
-                    } else {
-                        break;
-                    }
-                }
-            }
-            std::fflush(stdout);
-        }
-    }
 
     // Stack arguments: [guest_rsp + 8] .. [guest_rsp + 48] (skip return address at stack[0])
     uint64_t a6  = 0;
@@ -798,12 +736,6 @@ uint64_t FexHleBridge::DispatchHle(uint64_t thunk_id, const uint64_t* gpr, uint6
     rc.ret = result;
     std::strncpy(rc.name, fn_name.c_str(), sizeof(rc.name) - 1);
     rc.name[sizeof(rc.name) - 1] = '\0';
-
-    if (call_num < 3) {
-        std::printf("[HLE Ret #%" PRIu64 "] [%" PRIu64 "] %s -> 0x%" PRIx64 "\n",
-                    call_num + 1, thunk_id, fn_name.c_str(), result);
-        std::fflush(stdout);
-    }
 
     return result;
 }

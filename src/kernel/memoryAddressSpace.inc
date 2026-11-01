@@ -108,8 +108,6 @@ public:
 			}
 			if (m_fd >= 0) {
 				m_backing_base = nullptr;
-				std::printf("[GuestBackingStore] Direct memory backing initialized with file-backed APFS (fd=%d, size=%llu MB, sparse)\n",
-				            m_fd, (unsigned long long)(m_size / (1024 * 1024)));
 			} else {
 				std::fprintf(stderr, "[GuestBackingStore] APFS file backing failed, falling back to RAM\n");
 			}
@@ -124,8 +122,6 @@ public:
 				return;
 			}
 			m_backing_base = static_cast<uint8_t*>(backing);
-			std::printf("[GuestBackingStore] Direct memory backing initialized in RAM via Mach VM remap (size=%llu MB)\n",
-			            (unsigned long long)(m_size / (1024 * 1024)));
 		}
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 		m_fd = static_cast<int>(syscall(SYS_memfd_create, "KytyDirectMemory", 0));
@@ -1137,38 +1133,21 @@ public:
 	}
 
 	bool SelfTest() {
-		std::printf("[GuestVM] Starting SelfTest...\n");
 		const auto addr = ReserveAligned(0, PageSize(), PageSize());
-		std::printf("[GuestVM] SelfTest: ReserveAligned(0, 0x%llx) -> 0x%016llx\n",
-		            (unsigned long long)PageSize(), (unsigned long long)addr);
 		if (addr == 0) {
-			std::printf("[GuestVM] SelfTest: No free range available! Free ranges count: %zu, Owned: %zu\n",
-			            m_free.size(), m_owned.size());
-			for (const auto& [base, rsize]: m_free) {
-				std::printf("[GuestVM]   Free: 0x%016llx - 0x%016llx (%llu MB)\n",
-				            (unsigned long long)base, (unsigned long long)(base + rsize),
-				            (unsigned long long)(rsize / (1024 * 1024)));
-			}
 			return false;
 		}
 		if (!Commit(addr, PageSize(), VirtualMemory::Mode::ReadWrite)) {
-			std::printf("[GuestVM] SelfTest: Commit(0x%016llx) failed! errno = %d\n",
-			            (unsigned long long)addr, errno);
 			return false;
 		}
 
 		auto* ptr = reinterpret_cast<uint64_t*>(addr);
 		*ptr      = 0x4b59545950484f4cull; // "KYTYPHOL"
-		std::printf("[GuestVM] SelfTest: Memory write succeeded (*ptr = 0x%016llx)\n",
-		            (unsigned long long)*ptr);
 
 		if (!ReleaseCommitted(addr, PageSize())) {
-			std::printf("[GuestVM] SelfTest: ReleaseCommitted(0x%016llx) failed!\n",
-			            (unsigned long long)addr);
 			return false;
 		}
 
-		std::printf("[GuestVM] SelfTest: PASSED successfully\n");
 		return true;
 	}
 
@@ -1541,7 +1520,6 @@ private:
 		// Fallback: If predefined regions yielded no free memory on this device,
 		// scan all gaps between occupied mappings and reserve them
 		if (m_free.empty()) {
-			std::printf("[GuestVM] Predefined regions empty, scanning all free gaps...\n");
 			for (size_t i = 0; i < occupied.size() - 1; ++i) {
 				uint64_t gap_start = occupied[i].second;
 				uint64_t gap_end   = occupied[i + 1].first;
@@ -1559,9 +1537,7 @@ private:
 		}
 
 		uint64_t max_free_contiguous = 0;
-		uint64_t total_free_bytes = 0;
 		for (const auto& [base, rsz]: m_free) {
-			total_free_bytes += rsz;
 			if (rsz > max_free_contiguous) {
 				max_free_contiguous = rsz;
 			}
@@ -1571,9 +1547,6 @@ private:
 		// so that large GPU direct memory allocations (like Dead Cells 3GB heap) succeed!
 		constexpr uint64_t REQUIRED_CONTIGUOUS = 3584ULL * 1024ULL * 1024ULL; // 3584 MB
 		if (max_free_contiguous < REQUIRED_CONTIGUOUS) {
-			std::printf("[GuestVM] Largest free range is %llu MB (< %llu MB), allocating contiguous pool with VM_FLAGS_ANYWHERE...\n",
-			            (unsigned long long)(max_free_contiguous / (1024 * 1024)),
-			            (unsigned long long)(REQUIRED_CONTIGUOUS / (1024 * 1024)));
 			constexpr uint64_t POOL_SIZES[] = {
 				3584ULL * 1024ULL * 1024ULL,              // 3584 MB
 				3200ULL * 1024ULL * 1024ULL,              // 3200 MB (enough for 3072 MB)
@@ -1586,18 +1559,11 @@ private:
 					vm_protect(mach_task_self(), pool_addr, static_cast<vm_size_t>(try_size), FALSE, VM_PROT_NONE);
 					AddFreeUnlocked(static_cast<uint64_t>(pool_addr), try_size);
 					m_owned.emplace_back(static_cast<uint64_t>(pool_addr), try_size);
-					total_free_bytes += try_size;
 					max_free_contiguous = std::max(max_free_contiguous, try_size);
-					std::printf("[GuestVM] Allocated %llu MB contiguous pool at 0x%016llx\n",
-					            (unsigned long long)(try_size / (1024 * 1024)), (unsigned long long)pool_addr);
 					break;
 				}
 			}
 		}
-
-		std::printf("[GuestVM] ReserveGuestRegions finished: %zu owned chunks, %zu free ranges (%llu MB total free, max contiguous %llu MB)\n",
-		            m_owned.size(), m_free.size(), (unsigned long long)(total_free_bytes / (1024 * 1024)),
-		            (unsigned long long)(max_free_contiguous / (1024 * 1024)));
 #else
 		for (const auto& [start, end]: regions) {
 			int flags = MAP_PRIVATE | MAP_ANON | MAP_NORESERVE;

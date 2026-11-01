@@ -430,14 +430,6 @@ int KYTY_SYSV_ABI KernelWaitEqueue(KernelEqueue eq, KernelEvent* ev, int num, in
 	     (timo == nullptr ? "inf" : fmt::format("{}", *timo).c_str()),
 	     Common::Thread::GetThreadIdUnique());
 
-	static std::atomic<uint32_t> s_wait_count{0};
-	uint32_t wc = ++s_wait_count;
-	if (wc <= 10) {
-		std::printf("[KernelWaitEqueue #%u] eq=%lld num=%d timo=%s\n",
-		            wc, (long long)eq, num, (timo ? std::to_string(*timo).c_str() : "inf"));
-		std::fflush(stdout);
-	}
-
 	if (timo == nullptr) {
 		*out = owner->WaitForEvents(ev, num, 0);
 	}
@@ -449,15 +441,6 @@ int KYTY_SYSV_ABI KernelWaitEqueue(KernelEqueue eq, KernelEvent* ev, int num, in
 		} else {
 			*out = owner->WaitForEvents(ev, num, wait_us);
 		}
-	}
-
-	if (wc <= 10) {
-		std::printf("[KernelWaitEqueue #%u] returned out=%d (event ident=0x%llx, filter=%d, data=0x%llx)\n",
-		            wc, *out,
-		            (*out > 0 ? (unsigned long long)ev[0].ident : 0ull),
-		            (*out > 0 ? ev[0].filter : 0),
-		            (*out > 0 ? (unsigned long long)ev[0].data : 0ull));
-		std::fflush(stdout);
 	}
 
 	if (*out == KERNEL_ERROR_EBADF) {

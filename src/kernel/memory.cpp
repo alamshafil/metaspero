@@ -2632,12 +2632,6 @@ static int UnmapMemory(uint64_t vaddr, size_t len) {
 	     "\t len   = 0x%016" PRIx64 "\n",
 	     vaddr, len);
 
-	if (len >= 0x100000) {
-		std::printf("[DMEM] munmap vaddr=0x%llx len=0x%llx\n", (unsigned long long)vaddr,
-		            (unsigned long long)len);
-		std::fflush(stdout);
-	}
-
 	if (len == 0 || UINT64_MAX - vaddr < len) {
 		return KERNEL_ERROR_EINVAL;
 	}
@@ -2852,12 +2846,6 @@ int AllocateDirectMemory(int64_t search_start, int64_t search_end, size_t len, s
 
 	LOGF_COLOR(Log::Color::Green, "\tphys_addr    = %016" PRIx64 "\n\t[Ok]\n", addr);
 
-	if (len >= 0x100000) {
-		std::printf("[DMEM] alloc phys=0x%llx len=0x%llx type=%d\n", (unsigned long long)addr,
-		            (unsigned long long)len, memory_type);
-		std::fflush(stdout);
-	}
-
 	return OK;
 }
 
@@ -2900,15 +2888,6 @@ static int ReleaseDirectMemoryInternal(int64_t start, size_t len) {
 	}
 
 	const auto mapped_aliases = g_physical_memory->FindMappings(start, len);
-	if (len >= 0x100000) {
-		std::printf("[DMEM] release phys=0x%llx len=0x%llx aliases=%zu\n", (unsigned long long)start,
-		            (unsigned long long)len, mapped_aliases.size());
-		for (const auto& alias: mapped_aliases) {
-			std::printf("[DMEM]   alias vaddr=0x%llx size=0x%llx\n",
-			            (unsigned long long)alias.map_vaddr, (unsigned long long)alias.map_size);
-		}
-		std::fflush(stdout);
-	}
 	for (const auto& alias: mapped_aliases) {
 		VirtualRanges::Range range {};
 		if (!g_guest_address_space->BackingContains(alias.map_vaddr, alias.map_size) ||
@@ -3205,15 +3184,7 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 	     magic_enum::enum_name(gpu_mode), shared_backing ? "yes" : "no", shared_reason);
 
 	if (out_addr == 0) {
-		std::printf("[MapDirectMemory FAIL] out_addr == 0 for len=0x%llx (dmem=0x%llx, reason=%s)\n",
-		            (unsigned long long)len, (unsigned long long)direct_memory_start, shared_reason);
-		std::fflush(stdout);
 		return KERNEL_ERROR_ENOMEM;
-	} else if (len >= 0x100000) {
-		std::printf("[DMEM] map vaddr=0x%llx len=0x%llx phys=0x%llx in_addr=0x%llx\n",
-		            (unsigned long long)out_addr, (unsigned long long)len,
-		            (unsigned long long)direct_memory_start, (unsigned long long)in_addr);
-		std::fflush(stdout);
 	}
 
 	PhysicalMemory::AllocatedBlock mapped_block {};
@@ -3773,9 +3744,6 @@ uint64_t KYTY_SYSV_ABI KernelTranslateAddress(uint64_t addr) {
 				VirtualRanges::Range tr_range {};
 				if (g_virtual_ranges->Query(translated, 0, &tr_range) &&
 				    (tr_range.protection & PROT_CPU_EXEC) != 0) {
-					std::printf("[KernelTranslateAddress] Translated physical address 0x%016llx -> vaddr 0x%016llx (exec)\n",
-					            (unsigned long long)clean_addr, (unsigned long long)translated);
-					std::fflush(stdout);
 					return translated;
 				}
 			}
@@ -4052,8 +4020,6 @@ static int ProtectMemory(const void* addr, size_t len, int prot) {
 		     "\n",
 		     aligned_addr, aligned_len);
 	}
-	const auto old_mode = static_cast<VirtualMemory::Mode>(
-	    old_ranges.front().protection & (PROT_CPU_READ | PROT_CPU_WRITE | PROT_CPU_EXEC));
 	bool ok = g_guest_address_space->Protect(aligned_addr, aligned_len, mode);
 
 	if (!ok) {

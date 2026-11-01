@@ -289,8 +289,6 @@ int KYTY_SYSV_ABI KernelCreateEventFlag(KernelEventFlag* ef, const char* name, u
 	}
 
 	*ef = new KernelEventFlagPrivate(std::string(name), single, fifo, init_pattern);
-	std::printf("[KernelCreateEventFlag] ef=%p '%s' init_pattern=0x%llx\n", static_cast<void*>(*ef), name ? name : "", (unsigned long long)init_pattern);
-	std::fflush(stdout);
 
 	LOGF("\tEventFlag create: %s\n", name);
 

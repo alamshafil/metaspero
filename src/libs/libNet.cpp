@@ -2137,10 +2137,6 @@ static int KYTY_SYSV_ABI NpGameIntentReceiveIntent(NpGameIntentInfo* intent_info
 	intent_info->intent_type[sizeof(intent_info->intent_type) - 1] = '\0';
 	std::memset(&intent_info->intent_data, 0, sizeof(intent_info->intent_data));
 
-	std::printf("[NpGameIntent] Delivered intent '%s' (user_id=%d)\n", intent_info->intent_type,
-	            intent_info->user_id);
-	std::fflush(stdout);
-
 	return 0;
 }
 
@@ -2166,8 +2162,6 @@ static int KYTY_SYSV_ABI NpGameIntentGetPropertyValueString(const NpGameIntentDa
 		const char* default_activity = (title_id == "PPSA15552") ? "MainStory" : "default";
 		std::strncpy(value_buf, default_activity, buf_size - 1);
 		value_buf[buf_size - 1] = '\0';
-		std::printf("[NpGameIntent] Property '%s' -> '%s'\n", key, value_buf);
-		std::fflush(stdout);
 		return 0;
 	}
 

@@ -711,21 +711,9 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 		     static_cast<unsigned>(options.stage));
 	}
 
-	const auto compile_begin = std::chrono::steady_clock::now();
-	const auto phase_ms = [&compile_begin]() {
-		return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-		    std::chrono::steady_clock::now() - compile_begin).count());
-	};
-
 	std::string decoded_dump;
 	if (options.dump_ir) {
 		decoded_dump = Decoder::ProgramToString(decoded);
-		if (options.early_dump) {
-			std::printf("\n=== [ShaderDump] %s hash=0x%016llx decoded RDNA2 ===\n%s\n",
-			            StageName(options.stage), (unsigned long long)options.shader_hash,
-			            decoded_dump.c_str());
-			std::fflush(stdout);
-		}
 	}
 
 	LOGF("%s phase begin: stage=%s hash=0x%016" PRIx64 " CFG BuildGraph\n", GetDumpLabel(options),
@@ -885,12 +873,6 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	std::string ir_dump;
 	if (options.dump_ir) {
 		ir_dump = MakeIrDump(translated.cfg_dump, ir);
-		if (options.early_dump) {
-			std::printf("\n=== [ShaderDump] %s hash=0x%016llx native IR ===\n%s\n",
-			            StageName(ir.stage), (unsigned long long)ir.shader_hash,
-			            ir_dump.c_str());
-			std::fflush(stdout);
-		}
 	}
 
 	LOGF("%s phase begin: stage=%s hash=0x%016" PRIx64 " SPIR-V EmitProgram\n",

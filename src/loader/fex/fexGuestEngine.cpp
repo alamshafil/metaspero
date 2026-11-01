@@ -239,7 +239,7 @@ public:
     }
 
     void SleepThread(FEXCore::Context::Context*, FEXCore::Core::CpuStateFrame* frame) override {
-        LOGF("[Kyty FEX] SleepThread invoked! GuestRIP=0x%016" PRIx64 "\n", frame ? frame->State.rip : 0);
+        LOGF("[FEXCore] SleepThread invoked! GuestRIP=0x%016" PRIx64 "\n", frame ? frame->State.rip : 0);
     }
 
     std::optional<FEXCore::ExecutableFileSectionInfo>
@@ -358,7 +358,6 @@ bool FexGuestEngine::Initialize() {
     ctx->SetSyscallHandler(syscall_handler.get());
     ctx->EnableExitOnHLT();
 
-    LOGF("FexGuestEngine: Initializing FEXCore context core...\n");
     if (!ctx->InitCore()) {
         LOGF("FexGuestEngine: Failed to initialize FEXCore core\n");
         return false;
@@ -369,7 +368,6 @@ bool FexGuestEngine::Initialize() {
     m_syscall_handler = syscall_handler.release();
     m_initialized = true;
     Common::HostException::RegisterFexSignalHandler(&FexGuestEngine::HandleHostSignal);
-    LOGF("FexGuestEngine: Initialized FEXCore CPU engine successfully\n");
     return true;
 #else
     LOGF("FexGuestEngine: KYTY_ENABLE_FEX_GUEST_CPU not enabled in build\n");
@@ -594,14 +592,12 @@ GuestThreadState* FexGuestEngine::CreateThreadWithArgs(uint64_t entry_rip, uint6
 
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
     auto* ctx = static_cast<FEXCore::Context::Context*>(m_fex_context);
-    LOGF("FexGuestEngine: Creating internal FEX thread (RIP=0x%016" PRIx64 ", RSP=0x%016" PRIx64 ")...\n", entry_rip, stack_top);
     auto* fex_thread = ctx->CreateThread(entry_rip, stack_top);
     if (fex_thread == nullptr) {
         LOGF("FexGuestEngine: Failed to create internal FEX thread\n");
         delete thread_state;
         return nullptr;
     }
-    LOGF("FexGuestEngine: Internal FEX thread created successfully (%p)\n", static_cast<void*>(fex_thread));
 
     auto& cpu_state = fex_thread->CurrentFrame->State;
     cpu_state.segment_arrays[FEXCore::Core::CPUState::SEGMENT_ARRAY_INDEX_GDT] = &cpu_state.private_gdt[0];
@@ -623,7 +619,6 @@ GuestThreadState* FexGuestEngine::CreateThreadWithArgs(uint64_t entry_rip, uint6
     cpu_state.gregs[FEXCore::X86State::REG_R9]  = arg5;
     if (fs_base != 0) {
         cpu_state.fs_cached = fs_base;
-        LOGF("FexGuestEngine: Set FS_BASE to 0x%016" PRIx64 "\n", fs_base);
     }
 
     if (fex_thread->CallRetStackBase == nullptr || cpu_state.callret_sp == 0) {
@@ -648,15 +643,12 @@ GuestThreadState* FexGuestEngine::CreateThreadWithArgs(uint64_t entry_rip, uint6
             fex_thread->CallRetStackBase = callret_stack;
             fex_thread->CallRetStackAllocSize = stack_size;
             cpu_state.callret_sp = reinterpret_cast<uint64_t>(callret_stack) + (stack_size / 2);
-            LOGF("FexGuestEngine: Allocated CallRetStack at %p (size=0x%zx), callret_sp=0x%016" PRIx64 "\n",
-                 callret_stack, stack_size, cpu_state.callret_sp);
         }
     }
 
     if (cpu_state.callret_sp == 0) {
         static uint8_t emergency_callret[64 * 1024];
         cpu_state.callret_sp = reinterpret_cast<uint64_t>(emergency_callret) + 32768;
-        LOGF("FexGuestEngine: WARNING: Assigned emergency callret_sp=0x%016" PRIx64 "\n", cpu_state.callret_sp);
     }
 
     thread_state->internal_thread = fex_thread;
@@ -701,30 +693,6 @@ uint64_t FexGuestEngine::Run(GuestThreadState* thread, bool enable_watchdog) {
 
     auto* fex_thread = static_cast<FEXCore::Core::InternalThreadState*>(thread->internal_thread);
     auto* ctx = static_cast<FEXCore::Context::Context*>(m_fex_context);
-
-    if (m_signal_delegator != nullptr) {
-        auto config = static_cast<KytySignalDelegator*>(m_signal_delegator)->GetConfig();
-        LOGF("[Kyty FEX Config] Dispatcher=[0x%016" PRIx64 ", 0x%016" PRIx64 "] LoopTop=0x%016" PRIx64 " PauseRet=0x%016" PRIx64 " PauseHandler=0x%016" PRIx64 " StopHandler=0x%016" PRIx64 "\n",
-             config.DispatcherBegin, config.DispatcherEnd, config.AbsoluteLoopTopAddress,
-             config.PauseReturnInstruction, config.ThreadPauseHandlerAddress, config.ThreadStopHandlerAddress);
-    }
-    if (fex_thread != nullptr && fex_thread->CurrentFrame != nullptr) {
-        LOGF("[Kyty FEX Ptrs] ExitFuncLinker=0x%016" PRIx64 " RangeEnd=0x%016" PRIx64 " LoopTop=0x%016" PRIx64 " PauseSpill=0x%016" PRIx64 "\n",
-             fex_thread->CurrentFrame->Pointers.ExitFunctionLinker,
-             fex_thread->CurrentFrame->Pointers.ExitFunctionLinkerRangeEnd,
-             fex_thread->CurrentFrame->Pointers.DispatcherLoopTop,
-             fex_thread->CurrentFrame->Pointers.ThreadPauseHandlerSpillSRA);
-    }
-
-#if defined(__APPLE__)
-    LOGF("[Kyty FEX Syms] sys_icache_invalidate=0x%016" PRIx64 " os_sync_wait_on_address=0x%016" PRIx64 "\n",
-         (uint64_t)dlsym(RTLD_DEFAULT, "sys_icache_invalidate"),
-         (uint64_t)dlsym(RTLD_DEFAULT, "os_sync_wait_on_address"));
-#endif
-
-    std::printf("[FexGuestEngine] Starting ExecuteThread for guest thread at RIP=0x%016llx RSP=0x%016llx FS_BASE=0x%016llx...\n",
-                (unsigned long long)thread->rip, (unsigned long long)thread->rsp, (unsigned long long)thread->fs_base);
-    std::fflush(stdout);
 
 #if defined(__APPLE__)
     typedef void (*jit_protect_fn_t)(int);
@@ -803,281 +771,6 @@ uint64_t FexGuestEngine::Run(GuestThreadState* thread, bool enable_watchdog) {
         }
     };
 
-    if (is_main_thread && enable_watchdog) {
-        watchdog = std::thread([&]() {
-            int count = 0;
-            std::vector<uint64_t> prev_counts(16384, 0);
-            while (thread_running.load(std::memory_order_relaxed) &&
-                   !Common::HostException::IsEmulationShuttingDown()) {
-                for (int s = 0; s < 100 && thread_running.load(std::memory_order_relaxed) &&
-                                !Common::HostException::IsEmulationShuttingDown(); ++s) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                }
-                if (!thread_running.load(std::memory_order_relaxed) ||
-                    Common::HostException::IsEmulationShuttingDown()) {
-                    break;
-                }
-            count++;
-            uint64_t cur_rip = fex_thread->CurrentFrame->State.rip;
-            uint64_t cur_rsp = fex_thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP];
-            uint64_t host_pc = 0;
-            uint64_t host_lr = 0;
-#if defined(__APPLE__)
-            arm_thread_state64_t reg_state;
-            mach_msg_type_number_t reg_count = ARM_THREAD_STATE64_COUNT;
-            bool suspended = (thread_suspend(runner_mach) == KERN_SUCCESS);
-            if (thread_get_state(runner_mach, ARM_THREAD_STATE64, (thread_state_t)&reg_state, &reg_count) == KERN_SUCCESS) {
-                host_pc = arm_thread_state64_get_pc(reg_state);
-                host_lr = arm_thread_state64_get_lr(reg_state);
-            }
-            uint64_t host_frames[16] = {0};
-            int num_host_frames = 0;
-            if (suspended && host_pc != 0) {
-                uint64_t cur_fp = arm_thread_state64_get_fp(reg_state);
-                cur_fp = cur_fp & 0x0000ffffffffffffULL;
-                for (int f = 0; f < 16 && cur_fp >= 0x10000000 && (cur_fp & 7) == 0; f++) {
-                    uint64_t frame[2] = {0, 0};
-                    vm_size_t read_bytes = 0;
-                    if (vm_read_overwrite(mach_task_self(), (vm_address_t)cur_fp, sizeof(frame),
-                                          (vm_address_t)frame, &read_bytes) == KERN_SUCCESS && read_bytes == sizeof(frame)) {
-                        uint64_t next_fp = frame[0] & 0x0000ffffffffffffULL;
-                        uint64_t ret_pc = frame[1] & 0x0000ffffffffffffULL;
-                        if (ret_pc >= 0x10000000) {
-                            host_frames[num_host_frames++] = ret_pc;
-                        }
-                        if (next_fp <= cur_fp || (next_fp - cur_fp) > 0x1000000) {
-                            break;
-                        }
-                        cur_fp = next_fp;
-                    } else {
-                        break;
-                    }
-                }
-            }
-            if (suspended) {
-                thread_resume(runner_mach);
-            }
-            if (host_pc != 0) {
-                Dl_info pc_info{};
-                if (dladdr((void*)host_pc, &pc_info) && pc_info.dli_sname) {
-                    if (!is_main_thread &&
-                        (std::strstr(pc_info.dli_sname, "cvwait") != nullptr ||
-                         std::strstr(pc_info.dli_sname, "ulock") != nullptr ||
-                         std::strstr(pc_info.dli_sname, "semwait") != nullptr)) {
-                        // Worker thread is parked on a kernel condition variable or lock wait; sample every 30s
-                        if ((count % 3) != 0) {
-                            continue;
-                        }
-                    }
-                }
-            }
-#endif
-            std::printf("[FexWatchdog (Thread '%s', id=%d%s) +%ds] HostPC=0x%016llx LR=0x%016llx GuestRIP=0x%016llx RSP=0x%016llx\n",
-                        thread_name, guest_tid, is_main_thread ? ", MAIN" : "",
-                        count * 10, (unsigned long long)host_pc, (unsigned long long)host_lr,
-                        (unsigned long long)cur_rip, (unsigned long long)cur_rsp);
-#if defined(__APPLE__)
-            if (host_pc != 0) {
-                Dl_info pc_info{};
-                if (dladdr((void*)host_pc, &pc_info)) {
-                    uintptr_t saddr = (uintptr_t)pc_info.dli_saddr;
-                    uintptr_t fbase = (uintptr_t)pc_info.dli_fbase;
-                    std::printf("  [HostPC] %s (+0x%llx) [file off: 0x%llx] in %s\n",
-                                pc_info.dli_sname ? pc_info.dli_sname : "?",
-                                saddr != 0 ? (unsigned long long)(host_pc - saddr) : 0ULL,
-                                fbase != 0 ? (unsigned long long)(host_pc - fbase) : 0ULL,
-                                pc_info.dli_fname ? pc_info.dli_fname : "?");
-                }
-            }
-            if (host_lr != 0) {
-                Dl_info lr_info{};
-                if (dladdr((void*)host_lr, &lr_info)) {
-                    uintptr_t saddr = (uintptr_t)lr_info.dli_saddr;
-                    uintptr_t fbase = (uintptr_t)lr_info.dli_fbase;
-                    std::printf("  [HostLR] %s (+0x%llx) [file off: 0x%llx] in %s\n",
-                                lr_info.dli_sname ? lr_info.dli_sname : "?",
-                                saddr != 0 ? (unsigned long long)(host_lr - saddr) : 0ULL,
-                                fbase != 0 ? (unsigned long long)(host_lr - fbase) : 0ULL,
-                                lr_info.dli_fname ? lr_info.dli_fname : "?");
-                }
-            }
-            for (int f = 0; f < num_host_frames; f++) {
-                Dl_info f_info{};
-                if (dladdr((void*)host_frames[f], &f_info)) {
-                    uintptr_t saddr = (uintptr_t)f_info.dli_saddr;
-                    std::printf("  [HostStack #%d] %s (+0x%llx) in %s\n", f,
-                                f_info.dli_sname ? f_info.dli_sname : "?",
-                                saddr != 0 ? (unsigned long long)(host_frames[f] - saddr) : 0ULL,
-                                f_info.dli_fname ? f_info.dli_fname : "?");
-                } else {
-                    std::printf("  [HostStack #%d] 0x%016llx\n", f, (unsigned long long)host_frames[f]);
-                }
-            }
-#endif
-            // Check in-flight HLE calls across all threads
-            {
-                auto now_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch()).count());
-                const auto* in_flights = Loader::Fex::FexHleBridge::Instance().GetInFlightCalls();
-                for (size_t s = 0; s < Loader::Fex::FexHleBridge::MAX_IN_FLIGHT; s++) {
-                    uint64_t if_id = in_flights[s].thunk_id.load(std::memory_order_acquire);
-                    if (if_id != UINT64_MAX) {
-                        uint64_t start = in_flights[s].start_ms.load(std::memory_order_relaxed);
-                        uint64_t dur = (now_ms >= start ? now_ms - start : 0);
-                        if (dur >= 500) {
-                            const auto* if_fn = Loader::Fex::FexHleBridge::Instance().FindById(if_id);
-                            int32_t tid = in_flights[s].tid.load(std::memory_order_relaxed);
-                            uint64_t rip = in_flights[s].caller_rip.load(std::memory_order_relaxed);
-                            uint64_t a0 = in_flights[s].arg0.load(std::memory_order_relaxed);
-                            uint64_t a1 = in_flights[s].arg1.load(std::memory_order_relaxed);
-                            char extra_buf[128] = "";
-                            if (if_id == 723 && a0 != 0) { // KernelWaitSema
-                                auto* sem = reinterpret_cast<Libs::LibKernel::Semaphore::KernelSema>(a0);
-                                std::snprintf(extra_buf, sizeof(extra_buf), " sem='%s' cnt=%d",
-                                              Libs::LibKernel::Semaphore::KernelGetSemaName(sem),
-                                              Libs::LibKernel::Semaphore::KernelGetSemaCount(sem));
-                            } else if (if_id == 719 && a0 != 0) { // KernelWaitEventFlag
-                                auto* ef = reinterpret_cast<Libs::LibKernel::EventFlag::KernelEventFlag>(a0);
-                                std::snprintf(extra_buf, sizeof(extra_buf), " ef='%s' bits=0x%llx wait_pat=0x%llx",
-                                              Libs::LibKernel::EventFlag::KernelGetEventFlagName(ef),
-                                              (unsigned long long)Libs::LibKernel::EventFlag::KernelGetEventFlagBits(ef),
-                                              (unsigned long long)a1);
-                            }
-                            std::printf("  [InFlightHLE] Tid %d in [%llu] %s%s for %llu ms (caller=0x%llx, a0=0x%llx, a1=0x%llx)\n",
-                                        tid, (unsigned long long)if_id, if_fn ? if_fn->name.c_str() : "?", extra_buf,
-                                        (unsigned long long)dur, (unsigned long long)rip,
-                                        (unsigned long long)a0, (unsigned long long)a1);
-                        }
-                    }
-                }
-            }
-            const auto* hle_fn = Loader::Fex::FexHleBridge::Instance().FindByThunk(cur_rip);
-            if (hle_fn) {
-                uint64_t calls = Loader::Fex::FexHleBridge::Instance().GetCallCount(hle_fn->id);
-                std::printf("  [GuestHLE] [%llu] %s (calls=%llu)\n",
-                            (unsigned long long)hle_fn->id, hle_fn->name.c_str(), (unsigned long long)calls);
-            }
-            if (cur_rip >= 0x10000000) {
-                ZydisDecoder decoder;
-                if (ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64))) {
-                    ZydisDecodedInstruction insn;
-                    ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
-                    ZydisFormatter formatter;
-                    ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
-                    char disasm_buf[256];
-                    uint64_t dis_rip = cur_rip;
-                    for (int di = 0; di < 8; di++) {
-                        if (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, reinterpret_cast<const void*>(dis_rip), 15, &insn, ops))) {
-                            ZydisFormatterFormatInstruction(&formatter, &insn, ops, insn.operand_count_visible, disasm_buf, sizeof(disasm_buf), dis_rip, nullptr);
-                            uint64_t target_addr = 0;
-                            if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
-                                (void)ZydisCalcAbsoluteAddress(&insn, &ops[0], dis_rip, &target_addr);
-                            }
-                            const auto* target_fn = target_addr ? Loader::Fex::FexHleBridge::Instance().FindByThunk(target_addr) : nullptr;
-                            if (!target_fn && target_addr >= 0x10000000) {
-                                const auto* p = reinterpret_cast<const uint8_t*>(target_addr);
-                                if (p[0] == 0xff && p[1] == 0x25) {
-                                    int32_t disp = 0;
-                                    std::memcpy(&disp, &p[2], sizeof(disp));
-                                    uint64_t got_addr = target_addr + 6 + disp;
-                                    uint64_t dest = *reinterpret_cast<const uint64_t*>(got_addr);
-                                    target_fn = Loader::Fex::FexHleBridge::Instance().FindByThunk(dest);
-                                }
-                            }
-                            if (target_fn) {
-                                std::printf("  [GuestDisasm] 0x%016llx: %-35s -> %s\n",
-                                            (unsigned long long)dis_rip, disasm_buf, target_fn->name.c_str());
-                            } else {
-                                std::printf("  [GuestDisasm] 0x%016llx: %s\n", (unsigned long long)dis_rip, disasm_buf);
-                            }
-                            dis_rip += insn.length;
-                        } else {
-                            break;
-                        }
-                    }
-                }
-                const auto& st = fex_thread->CurrentFrame->State;
-                std::printf("  [GuestRegs] RAX=0x%llx RBX=0x%llx RCX=0x%llx RDX=0x%llx RSI=0x%llx RDI=0x%llx RBP=0x%llx\n",
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RAX],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RBX],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RCX],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RDX],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RSI],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RDI],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RBP]);
-            }
-            if (cur_rsp >= 0x10000000) {
-                const auto* stack = reinterpret_cast<const uint64_t*>(cur_rsp);
-                std::printf("  [GuestStack] #0:0x%016llx #1:0x%016llx #2:0x%016llx #3:0x%016llx #4:0x%016llx\n",
-                            (unsigned long long)stack[0], (unsigned long long)stack[1], (unsigned long long)stack[2],
-                            (unsigned long long)stack[3], (unsigned long long)stack[4]);
-                uint64_t caller_rip = 0;
-                for (int si = 0; si < 8; si++) {
-                    if (stack[si] >= 0x110000000 && stack[si] < 0x130000000 && stack[si] != cur_rip) {
-                        caller_rip = stack[si];
-                        break;
-                    }
-                }
-                if (caller_rip >= 0x110000000 && caller_rip < 0x130000000) {
-                    ZydisDecoder caller_decoder;
-                    if (ZYAN_SUCCESS(ZydisDecoderInit(&caller_decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64))) {
-                        ZydisDecodedInstruction c_insn;
-                        ZydisDecodedOperand c_ops[ZYDIS_MAX_OPERAND_COUNT];
-                        ZydisFormatter c_formatter;
-                        ZydisFormatterInit(&c_formatter, ZYDIS_FORMATTER_STYLE_INTEL);
-                        char c_buf[256];
-                        uint64_t dis_caller = caller_rip;
-                        for (int di = 0; di < 5; di++) {
-                            if (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&caller_decoder, reinterpret_cast<const void*>(dis_caller), 15, &c_insn, c_ops))) {
-                                ZydisFormatterFormatInstruction(&c_formatter, &c_insn, c_ops, c_insn.operand_count_visible, c_buf, sizeof(c_buf), dis_caller, nullptr);
-                                std::printf("  [CallerDisasm] 0x%016llx: %s\n", (unsigned long long)dis_caller, c_buf);
-                                dis_caller += c_insn.length;
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Delta HLE calls in last 5s
-            struct DeltaItem { uint64_t id; uint64_t delta; uint64_t total; };
-            std::vector<DeltaItem> deltas;
-            for (uint64_t i = 0; i < 16384; i++) {
-                uint64_t c = Loader::Fex::FexHleBridge::Instance().GetCallCount(i);
-                if (c > prev_counts[i]) {
-                    deltas.push_back({i, c - prev_counts[i], c});
-                }
-                prev_counts[i] = c;
-            }
-            std::sort(deltas.begin(), deltas.end(), [](const auto& a, const auto& b) { return a.delta > b.delta; });
-            if (!deltas.empty()) {
-                std::printf("  [DeltaHLE +5s] ");
-                for (size_t i = 0; i < std::min<size_t>(5, deltas.size()); ++i) {
-                    const auto* fn = Loader::Fex::FexHleBridge::Instance().FindById(deltas[i].id);
-                    std::printf("#%zu:%s(+%llu, tot=%llu) ", i + 1, fn ? fn->name.c_str() : "?",
-                                (unsigned long long)deltas[i].delta, (unsigned long long)deltas[i].total);
-                }
-                std::printf("\n");
-            }
-
-            uint64_t recent_tot = Loader::Fex::FexHleBridge::Instance().GetRecentCallCount();
-            if (recent_tot > 0) {
-                std::printf("  [RecentHLE (last 4)]\n");
-                uint64_t start_k = (recent_tot > 4 ? recent_tot - 4 : 0);
-                for (uint64_t k = start_k; k < recent_tot; ++k) {
-                    auto rc = Loader::Fex::FexHleBridge::Instance().GetRecentCall(k);
-                    std::printf("    #%llu: [%llu] %s (caller=0x%llx, a0=0x%llx, a1=0x%llx) -> 0x%llx\n",
-                                (unsigned long long)(k + 1), (unsigned long long)rc.thunk_id, rc.name,
-                                (unsigned long long)rc.caller_rip, (unsigned long long)rc.args[0],
-                                (unsigned long long)rc.args[1], (unsigned long long)rc.ret);
-                }
-            }
-            std::fflush(stdout);
-        }
-    });
-}
-
 auto* prev_fex_thread = s_tls_current_fex_thread;
 s_tls_current_fex_thread = fex_thread;
 ctx->ExecuteThread(fex_thread);
@@ -1096,11 +789,6 @@ if (is_main_thread && enable_watchdog) {
 }
 
     uint64_t result = fex_thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RAX];
-
-    std::printf("[FexGuestEngine] Thread execution returned with RAX=0x%016llx (RIP=0x%016llx)\n",
-                (unsigned long long)result,
-                (unsigned long long)fex_thread->CurrentFrame->State.rip);
-    std::fflush(stdout);
     return result;
 #else
     LOGF("FexGuestEngine: Cannot run guest without KYTY_ENABLE_FEX_GUEST_CPU\n");
@@ -1205,74 +893,6 @@ static inline std::mutex& GetAtomicLockForAddress(uintptr_t addr) {
 
 bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU) && (defined(__arm64__) || defined(__aarch64__)) && defined(__APPLE__)
-    if ((sig == SIGSEGV || sig == SIGBUS || sig == SIGTRAP) && s_tls_current_fex_thread != nullptr &&
-        Instance().m_fex_context != nullptr) {
-        auto* dbg_thread = s_tls_current_fex_thread;
-        auto* dbg_ctx = static_cast<FEXCore::Context::Context*>(Instance().m_fex_context);
-        auto* dbg_uc = static_cast<ucontext_t*>(ucontext);
-        const auto* dbg_si = static_cast<const siginfo_t*>(si_ptr);
-        const bool unaligned = (sig == SIGBUS && dbg_si != nullptr && dbg_si->si_code == BUS_ADRALN);
-        if (!unaligned && dbg_uc != nullptr && dbg_uc->uc_mcontext != nullptr &&
-            dbg_thread->CurrentFrame != nullptr) {
-            const uintptr_t dbg_pc = arm_thread_state64_get_pc(dbg_uc->uc_mcontext->__ss);
-            if (dbg_ctx->IsAddressInCodeBuffer(dbg_thread, dbg_pc)) {
-                const auto& st = dbg_thread->CurrentFrame->State;
-                std::printf("[GuestFault] sig=%d fault_addr=0x%llx host_pc=0x%llx guest_rip=0x%llx\n", sig,
-                            (unsigned long long)(dbg_si ? reinterpret_cast<uintptr_t>(dbg_si->si_addr) : 0),
-                            (unsigned long long)dbg_pc, (unsigned long long)st.rip);
-                std::printf("[GuestFault] RAX=%llx RBX=%llx RCX=%llx RDX=%llx RSI=%llx RDI=%llx RBP=%llx RSP=%llx\n",
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RAX],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RBX],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RCX],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RDX],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RSI],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RDI],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RBP],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_RSP]);
-                std::printf("[GuestFault] R8=%llx R9=%llx R10=%llx R11=%llx R12=%llx R13=%llx R14=%llx R15=%llx\n",
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_R8],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_R9],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_R10],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_R11],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_R12],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_R13],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_R14],
-                            (unsigned long long)st.gregs[FEXCore::X86State::REG_R15]);
-                const uint64_t grsp = st.gregs[FEXCore::X86State::REG_RSP];
-                if (grsp >= 0x10000000 && Libs::Graphics::HostMemoryIsReadable(grsp) &&
-                    Libs::Graphics::HostMemoryIsReadable(grsp + 0x7f)) {
-                    const auto* gs = reinterpret_cast<const uint64_t*>(grsp);
-                    for (int i = 0; i < 16; i += 4) {
-                        std::printf("[GuestFault] [rsp+%02x] %llx %llx %llx %llx\n", i * 8,
-                                    (unsigned long long)gs[i], (unsigned long long)gs[i + 1],
-                                    (unsigned long long)gs[i + 2], (unsigned long long)gs[i + 3]);
-                    }
-                }
-                if (st.rip >= 0x10000000 && Libs::Graphics::HostMemoryIsReadable(st.rip) &&
-                    Libs::Graphics::HostMemoryIsReadable(st.rip + 0x3f)) {
-                    ZydisDecoder dec;
-                    ZydisFormatter fmt;
-                    if (ZYAN_SUCCESS(ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64))) {
-                        ZydisFormatterInit(&fmt, ZYDIS_FORMATTER_STYLE_INTEL);
-                        uint64_t rip = st.rip;
-                        for (int i = 0; i < 10; ++i) {
-                            ZydisDecodedInstruction insn;
-                            ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
-                            char text[160];
-                            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, reinterpret_cast<const void*>(rip), 15, &insn, ops))) {
-                                break;
-                            }
-                            ZydisFormatterFormatInstruction(&fmt, &insn, ops, insn.operand_count_visible, text,
-                                                            sizeof(text), rip, nullptr);
-                            std::printf("[GuestFault]   0x%llx: %s\n", (unsigned long long)rip, text);
-                            rip += insn.length;
-                        }
-                    }
-                }
-                std::fflush(stdout);
-            }
-        }
-    }
     auto* thread = s_tls_current_fex_thread;
     auto* engine_instance = &Instance();
     if (thread == nullptr || engine_instance->m_fex_context == nullptr) {
@@ -1309,9 +929,6 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
                 }
             }
             if (caller_rip != 0 && loop_top != 0) {
-                std::printf("[FexHostSignal] Recovered thunk return to NULL: thunk RIP=0x%016llx -> caller RIP=0x%016llx\n",
-                            (unsigned long long)cur_rip, (unsigned long long)caller_rip);
-                std::fflush(stdout);
                 thread->CurrentFrame->State.rip = caller_rip;
                 arm_thread_state64_set_pc_fptr(ss, reinterpret_cast<void*>(loop_top));
                 return true;
@@ -1325,15 +942,9 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
             s_null_branch_count = 1;
         }
         if (s_null_branch_count > 3) {
-            std::printf("[FexHostSignal] Repeated branch to NULL detected at Guest RIP=0x%016llx (%d times)! Breaking recovery to avoid infinite loop.\n",
-                        (unsigned long long)cur_rip, s_null_branch_count);
-            std::fflush(stdout);
             return false;
         }
         if (loop_top != 0) {
-            std::printf("[FexHostSignal] Recovered from branch to NULL (PC=0, Guest RIP=0x%016llx) -> DispatcherLoopTop=0x%016llx\n",
-                        (unsigned long long)cur_rip, (unsigned long long)loop_top);
-            std::fflush(stdout);
             arm_thread_state64_set_pc_fptr(ss, reinterpret_cast<void*>(loop_top));
             return true;
         }
@@ -1352,19 +963,11 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
             return false;
         }
         uint64_t cur_rip = thread->CurrentFrame->State.rip;
-        std::printf("[FexHostSignal] SIGILL at host PC=0x%016llx, Guest RIP=0x%016llx\n",
-                    (unsigned long long)pc, (unsigned long long)cur_rip);
         if (cur_rip != 0) {
             const auto* code = reinterpret_cast<const uint8_t*>(cur_rip);
-            std::printf("[FexHostSignal] Guest code bytes at RIP: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                        code[0], code[1], code[2], code[3], code[4], code[5], code[6], code[7]);
-            std::fflush(stdout);
 
             // If UD2 (0x0F 0x0B), skip 2 bytes and continue execution at next guest instruction
             if (code[0] == 0x0F && code[1] == 0x0B) {
-                std::printf("[FexHostSignal] Skipping guest UD2 at RIP=0x%016llx to continue...\n",
-                            (unsigned long long)cur_rip);
-                std::fflush(stdout);
                 thread->CurrentFrame->State.rip += 2;
                 uintptr_t loop_top = thread->CurrentFrame->Pointers.DispatcherLoopTop;
                 if (loop_top != 0) {
@@ -1373,12 +976,6 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
                 }
             }
         }
-
-        uintptr_t write_pc = reinterpret_cast<uintptr_t>(FEXCore::Allocator::GetWritableAddress(reinterpret_cast<void*>(pc)));
-        uint32_t host_instr = write_pc ? *reinterpret_cast<const uint32_t*>(write_pc) : 0;
-        std::printf("[FexHostSignal] Host instr at PC=0x%016llx: 0x%08x\n",
-                    (unsigned long long)pc, host_instr);
-        std::fflush(stdout);
 
         // Trap recovery (UDF #0 from unlinked thunks, HLT #0 from dispatcher fault dance, etc.)
         static thread_local uintptr_t s_last_trap_pc = 0;
@@ -1396,9 +993,6 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
         if (s_trap_repeat_count <= 5 && thread->CurrentFrame != nullptr) {
             uintptr_t loop_top = thread->CurrentFrame->Pointers.DispatcherLoopTop;
             if (loop_top != 0) {
-                std::printf("[FexHostSignal] Recovering from SIGILL at host PC=0x%016llx (host instr=0x%08x, guest RIP=0x%016llx, attempt %d/5) -> DispatcherLoopTop=0x%016llx\n",
-                            (unsigned long long)pc, host_instr, (unsigned long long)cur_rip, s_trap_repeat_count, (unsigned long long)loop_top);
-                std::fflush(stdout);
                 arm_thread_state64_set_pc_fptr(ss, reinterpret_cast<void*>(loop_top));
                 return true;
             }
@@ -1948,33 +1542,8 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
     }
 
     if (emulated) {
-        static std::atomic<uint32_t> s_emulated_count{0};
-        uint32_t count = ++s_emulated_count;
-        if (count <= 10 || (count % 100000) == 0) {
-            char emu_msg[128];
-            int len = std::snprintf(emu_msg, sizeof(emu_msg),
-                "[FexGuestEngine] Emulated unaligned JIT memory access #%u at PC=0x%llx (instr=0x%08x)\n",
-                count, static_cast<unsigned long long>(pc), instr);
-            if (len > 0) {
-                write(STDOUT_FILENO, emu_msg, len);
-            }
-        }
         arm_thread_state64_set_pc_fptr(ss, reinterpret_cast<void*>(pc + 4));
         return true;
-    }
-
-
-    static std::atomic<uint32_t> s_unhandled_count{0};
-    uint32_t unhandled = ++s_unhandled_count;
-    if (unhandled <= 10) {
-        char unhandled_msg[256];
-        int len = std::snprintf(unhandled_msg, sizeof(unhandled_msg),
-            "[FexHostSignal] Unhandled JIT SIGBUS #%u at PC=0x%llx (instr=0x%08x) RIP=0x%llx\n",
-            unhandled, static_cast<unsigned long long>(pc), instr,
-            thread->CurrentFrame ? static_cast<unsigned long long>(thread->CurrentFrame->State.rip) : 0ULL);
-        if (len > 0) {
-            write(STDOUT_FILENO, unhandled_msg, len);
-        }
     }
 #endif
     return false;
