@@ -616,7 +616,26 @@ static void KytyFatalExitCallback(int status, const char *message) {
 
             options.config.printf_direction = Config::LogDirection::Console;
             
-            NSString *res = [[NSUserDefaults standardUserDefaults] stringForKey:@"resolutionScale"];
+            auto getStringSetting = ^NSString *(NSString *key, NSString *defaultVal) {
+                NSString *val = [[NSUserDefaults standardUserDefaults] stringForKey:key];
+                return val ? val : defaultVal;
+            };
+
+            auto getBoolSetting = ^BOOL(NSString *key, BOOL defaultVal) {
+                if ([[NSUserDefaults standardUserDefaults] objectForKey:key] != nil) {
+                    return [[NSUserDefaults standardUserDefaults] boolForKey:key];
+                }
+                return defaultVal;
+            };
+
+            auto getIntSetting = ^NSInteger(NSString *key, NSInteger defaultVal) {
+                if ([[NSUserDefaults standardUserDefaults] objectForKey:key] != nil) {
+                    return [[NSUserDefaults standardUserDefaults] integerForKey:key];
+                }
+                return defaultVal;
+            };
+            
+            NSString *res = getStringSetting(@"resolutionScale", @"720p");
             if ([res isEqualToString:@"480p"]) {
                 options.config.screen_width = 854;
                 options.config.screen_height = 480;
@@ -628,7 +647,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
                 options.config.screen_height = 720;
             }
 
-            NSString *present = [[NSUserDefaults standardUserDefaults] stringForKey:@"presentMode"];
+            NSString *present = getStringSetting(@"presentMode", @"Mailbox");
             if ([present isEqualToString:@"Fifo"]) {
                 options.config.present_mode = Config::PresentMode::Fifo;
             } else if ([present isEqualToString:@"Immediate"]) {
@@ -637,18 +656,47 @@ static void KytyFatalExitCallback(int status, const char *message) {
                 options.config.present_mode = Config::PresentMode::Mailbox;
             }
 
+            options.config.user_name = [getStringSetting(@"userName", @"Kyty") UTF8String];
+            options.config.user_id = (int32_t)getIntSetting(@"userId", Config::DEFAULT_USER_ID);
+            options.config.console_language = (uint32_t)getIntSetting(@"consoleLanguage", Config::DEFAULT_CONSOLE_LANGUAGE);
+
+            options.config.tessellation_enabled = getBoolSetting(@"tessellationEnabled", false);
+            options.config.readback_linear_images = getBoolSetting(@"readbackLinearImages", false);
+            options.config.sync_raw_image_buffers = getBoolSetting(@"syncRawImageBuffers", false);
+            options.config.hdr_enabled = getBoolSetting(@"hdrEnabled", false);
+            options.config.fullscreen_enabled = getBoolSetting(@"fullscreenEnabled", false);
+
+            options.config.skip_notice_screen = getBoolSetting(@"skipNoticeScreen", false);
+            options.config.network_connected = getBoolSetting(@"networkConnected", false);
+
+            options.config.command_buffer_dump_enabled = getBoolSetting(@"commandBufferDumpEnabled", false);
+            options.config.profiler_enabled = getBoolSetting(@"profilerEnabled", false);
+            options.config.renderdoc_enabled = getBoolSetting(@"renderdocEnabled", false);
+
+            NSArray<NSString *> *keymapList = [[NSUserDefaults standardUserDefaults] stringArrayForKey:@"keymapBindings"];
+            if (keymapList && keymapList.count > 0) {
+                for (NSString *binding in keymapList) {
+                    options.config.keymap.push_back([binding UTF8String]);
+                }
+            }
+
             if ([KytyBridge isMetalHudEnabled]) {
                 setenv("MTL_HUD_ENABLED", "1", 1);
             } else {
                 unsetenv("MTL_HUD_ENABLED");
             }
 
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
             NSString *memoryBacking = [[NSUserDefaults standardUserDefaults] stringForKey:@"memoryBackingMode"];
             if ([memoryBacking isEqualToString:@"file"]) {
                 setenv("KYTY_DIRECT_MEMORY_BACKING", "file", 1);
             } else {
                 setenv("KYTY_DIRECT_MEMORY_BACKING", "ram", 1);
             }
+#else
+            setenv("KYTY_DIRECT_MEMORY_BACKING", "ram", 1);
+            NSString *memoryBacking = @"ram";
+#endif
             
             std::printf("[KytyBridge] Configured app0_dir: %s, elf: %s\n",
                         options.app0_dir.string().c_str(), options.elf.string().c_str());
@@ -657,6 +705,11 @@ static void KytyFatalExitCallback(int status, const char *message) {
                         present ? [present UTF8String] : "Mailbox",
                         [KytyBridge isMetalHudEnabled] ? "ENABLED" : "DISABLED",
                         [memoryBacking isEqualToString:@"file"] ? "Disk-Backed (APFS)" : "RAM (Mach VM)");
+            std::printf("[KytyBridge] User: %s (ID: %d), Lang: %u, VBlank: %u Hz, Patch: %s\n",
+                        options.config.user_name.c_str(), options.config.user_id,
+                        options.config.console_language, options.config.vblank_frequency,
+                        options.game_patch.empty() ? "None" : options.game_patch.string().c_str());
+            std::fflush(stdout);
             std::fflush(stdout);
 
             if (completion) {
@@ -1236,6 +1289,72 @@ static NSString *g_last_memory_warning_level = nil;
                          level, usedMB, limitMB, availMB]
         }];
     });
+}
+
++ (BOOL)hasSaveDataForTitleId:(NSString *)titleId {
+    if (titleId.length == 0) return NO;
+    NSString *cleanId = [titleId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    
+    NSArray<NSURL *> *paths = [fm URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask];
+    NSURL *docDir = paths.firstObject;
+    if (docDir) {
+        NSString *docPath = [[docDir path] stringByAppendingPathComponent:[NSString stringWithFormat:@"_SaveData/%@", cleanId]];
+        if ([fm fileExistsAtPath:docPath]) return YES;
+    }
+    NSString *localPath = [NSString stringWithFormat:@"_SaveData/%@", cleanId];
+    return [fm fileExistsAtPath:localPath];
+}
+
++ (BOOL)deleteSaveDataForTitleId:(NSString *)titleId {
+    if (titleId.length == 0) return NO;
+    NSString *cleanId = [titleId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    BOOL removed = NO;
+    
+    NSArray<NSURL *> *paths = [fm URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask];
+    NSURL *docDir = paths.firstObject;
+    if (docDir) {
+        NSString *docPath = [[docDir path] stringByAppendingPathComponent:[NSString stringWithFormat:@"_SaveData/%@", cleanId]];
+        if ([fm fileExistsAtPath:docPath]) {
+            if ([fm removeItemAtPath:docPath error:nil]) removed = YES;
+        }
+    }
+    NSString *localPath = [NSString stringWithFormat:@"_SaveData/%@", cleanId];
+    if ([fm fileExistsAtPath:localPath]) {
+        if ([fm removeItemAtPath:localPath error:nil]) removed = YES;
+    }
+    return removed;
+}
+
++ (NSArray<NSString *> *)defaultKeymapBindings {
+    return @[
+        @"Up=Up",
+        @"Down=Down",
+        @"Left=Left",
+        @"Right=Right",
+        @"LeftStickUp=W",
+        @"LeftStickDown=S",
+        @"LeftStickLeft=A",
+        @"LeftStickRight=D",
+        @"L3=Left Shift",
+        @"RightStickUp=T",
+        @"RightStickDown=G",
+        @"RightStickLeft=F",
+        @"RightStickRight=H",
+        @"R3=Left Ctrl",
+        @"Triangle=I",
+        @"Circle=L",
+        @"Cross=J",
+        @"Square=K",
+        @"L1=Q",
+        @"R1=E",
+        @"L2=Z",
+        @"R2=C",
+        @"Options=Return",
+        @"Touchpad=Space",
+        @"Share=Tab"
+    ];
 }
 
 @end

@@ -29,6 +29,7 @@ struct LibraryView: View {
     @State private var showImporter = false
     @State private var showLogSheet = false
     @State private var showSettingsSheet = false
+    @State private var showTrophyOverview = false
     @State private var selectedGameForDetails: GameItem? = nil
     @State private var selectedGameForTrophies: GameItem? = nil
     @State private var gameToRemove: GameItem? = nil
@@ -36,6 +37,9 @@ struct LibraryView: View {
     @State private var showJitWarning = false
     @State private var pendingLaunchGame: GameItem? = nil
     @State private var isRefreshing = false
+    
+    @AppStorage("libraryViewMode") private var libraryViewMode = "grid"
+    @State private var searchText = ""
     
 #if os(iOS)
     let columns = [
@@ -47,126 +51,41 @@ struct LibraryView: View {
     ]
 #endif
     
+    var filteredGames: [GameItem] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return games }
+        return games.filter {
+            $0.title.localizedCaseInsensitiveContains(query) ||
+            $0.titleId.localizedCaseInsensitiveContains(query) ||
+            $0.rawVersion.localizedCaseInsensitiveContains(query)
+        }
+    }
+    
     var body: some View {
-        NavigationStack {
-            ZStack {
-#if os(iOS)
-                Color(UIColor.systemGroupedBackground)
-                    .edgesIgnoringSafeArea(.all)
-#else
-                Color(NSColor.windowBackgroundColor)
-                    .edgesIgnoringSafeArea(.all)
-#endif
-                
-                if games.isEmpty {
-                    VStack(spacing: 16) {
-                        Image(systemName: "gamecontroller")
-                            .font(.system(size: 64))
-                            .foregroundColor(.secondary)
-                        
-                        Text("No Games Found")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                        
-                        Text("Copy PS5 game folders or ELFs into the KytyPS5 folder in Files app, or tap '+' to import.")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
-                        
-                        Button(action: { showImporter = true }) {
-                            Label("Import Game / Folder", systemImage: "plus.circle.fill")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 24)
-                                .padding(.vertical, 12)
-                                .background(Color.blue)
-                                .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.top, 8)
-                    }
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 18) {
-                            ForEach(games) { game in
-                                GameCardView(
-                                    game: game,
-                                    onLaunch: { handleGameLaunchRequest(game) },
-                                    onShowDetails: {
-                                        selectedGameForDetails = game
-                                    },
-                                    onShowTrophies: {
-                                        selectedGameForTrophies = game
-                                    },
-                                    onRemove: {
-                                        gameToRemove = game
-                                        showRemoveConfirmation = true
-                                    }
-                                )
-                            }
-                        }
-                        .padding(18)
-                    }
-                }
-                
 #if os(macOS)
-                if isEmulating, let game = selectedGame {
-                    EmulationView(
-                        game: game,
-                        isEmulating: $isEmulating
-                    )
-                    .transition(.opacity)
-                }
-#endif
-            }
-            .navigationTitle(isEmulating ? (selectedGame?.title ?? "Game") : "Library")
-            .toolbar {
-#if os(iOS)
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button(action: loadGames) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 15))
-                    }
-                }
-                
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    Button(action: { showLogSheet = true }) {
-                        Image(systemName: "terminal.fill")
-                            .font(.system(size: 15))
+        if isEmulating, let game = selectedGame {
+            NavigationStack {
+                EmulationView(
+                    game: game,
+                    isEmulating: $isEmulating
+                )
+                .navigationTitle(game.title)
+                .toolbar {
+                    ToolbarItem(placement: .automatic) {
+                        Button(action: { showLogSheet = true }) {
+                            Label("Logs", systemImage: "terminal.fill")
+                        }
+                        .help("View Logs & Diagnostics")
                     }
                     
-                    Button(action: { showImporter = true }) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 17, weight: .semibold))
-                    }
-                }
-#else
-                if !isEmulating {
                     ToolbarItem(placement: .automatic) {
-                        Button(action: loadGames) {
-                            Label("Refresh", systemImage: "arrow.clockwise")
+                        Button(action: { showSettingsSheet = true }) {
+                            Label("Settings", systemImage: "gearshape")
                         }
-                        .help("Refresh Library")
+                        .help("Settings (⌘,)")
+                        .keyboardShortcut(",", modifiers: .command)
                     }
-                }
-                
-                ToolbarItem(placement: .automatic) {
-                    Button(action: { showLogSheet = true }) {
-                        Label("Logs", systemImage: "terminal.fill")
-                    }
-                    .help("View Logs & Diagnostics")
-                }
-                
-                ToolbarItem(placement: .automatic) {
-                    Button(action: { showSettingsSheet = true }) {
-                        Label("Settings", systemImage: "gearshape")
-                    }
-                    .help("Settings (⌘,)")
-                    .keyboardShortcut(",", modifiers: .command)
-                }
-                
-                if isEmulating {
+                    
                     ToolbarItem(placement: .primaryAction) {
                         Button(action: {
                             KytyBridge.stopEmulation()
@@ -177,15 +96,7 @@ struct LibraryView: View {
                         .tint(.red)
                         .help("Stop Emulation")
                     }
-                } else {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button(action: { showImporter = true }) {
-                            Label("Import Game", systemImage: "plus")
-                        }
-                        .help("Import Game or Directory")
-                    }
                 }
-#endif
             }
             .sheet(isPresented: $showLogSheet) {
                 LogView()
@@ -193,68 +104,258 @@ struct LibraryView: View {
             .sheet(isPresented: $showSettingsSheet) {
                 SettingsView()
             }
-            .sheet(item: $selectedGameForDetails) { game in
-                GameDetailsView(
-                    game: game,
-                    onLaunch: { handleGameLaunchRequest(game) },
-                    onViewTrophies: {
-                        selectedGameForTrophies = game
+        } else {
+            NavigationStack {
+                libraryMainContent
+                    .searchable(text: $searchText, prompt: "Search games, Title IDs...")
+            }
+        }
+#else
+        NavigationStack {
+            libraryMainContent
+                .searchable(text: $searchText, prompt: "Search games, Title IDs...")
+        }
+#endif
+    }
+    
+    private var libraryMainContent: some View {
+        ZStack {
+            if games.isEmpty {
+                VStack(spacing: 16) {
+                    Image(systemName: "gamecontroller")
+                        .font(.system(size: 64))
+                        .foregroundColor(.secondary)
+                    
+                    Text("No Games Found")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    
+                    Text("Copy PS5 game folders or ELFs into the KytyPS5 folder in Files app, or tap '+' to import.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                    
+                    Button(action: { showImporter = true }) {
+                        Label("Import Game / Folder", systemImage: "plus.circle.fill")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 12)
+                            .background(Color.blue)
+                            .clipShape(Capsule())
                     }
-                )
-            }
-            .sheet(item: $selectedGameForTrophies) { game in
-                TrophiesView(game: game)
-            }
-            .fileImporter(
-                isPresented: $showImporter,
-                allowedContentTypes: [.item, .folder, .data],
-                allowsMultipleSelection: false
-            ) { result in
-                handleImport(result: result)
-            }
-            .alert(isPresented: $showRemoveConfirmation) {
-                Alert(
-                    title: Text("Remove from Library"),
-                    message: Text("Remove '\(gameToRemove?.title ?? "this game")' from your library? Game files will NOT be deleted from your device."),
-                    primaryButton: .destructive(Text("Remove")) {
-                        if let target = gameToRemove {
-                            removeFromLibrary(target)
-                        }
-                    },
-                    secondaryButton: .cancel()
-                )
-            }
-            .alert("JIT Not Enabled", isPresented: $showJitWarning, presenting: pendingLaunchGame) { game in
-                Button("Open StikDebug") {
-                    KytyBridge.openStikDebug()
+                    .buttonStyle(.plain)
+                    .padding(.top, 8)
                 }
-                Button("Try Anyway") {
-                    handleConfirmedLaunch(game)
+            } else if filteredGames.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 48))
+                        .foregroundColor(.secondary)
+                    Text("No Matching Games")
+                        .font(.headline)
+                    Text("No titles match '\(searchText)'.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
                 }
-                Button("Cancel", role: .cancel) {
-                    pendingLaunchGame = nil
-                }
-            } message: { _ in
-                Text("KytyPS5 requires JIT compilation to emulate games smoothly. JIT is currently not active.\n\nOpen StikDebug to enable JIT for this process (PID: \(KytyBridge.processId())), or try launching anyway?")
-            }
-            .onAppear {
-                loadGames()
-                if KytyBridge.isProcessDebugged() {
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        _ = KytyBridge.refreshJitStatus()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if libraryViewMode == "list" {
+                List {
+                    ForEach(filteredGames) { game in
+                        GameListRowView(
+                            game: game,
+                            onLaunch: { handleGameLaunchRequest(game) },
+                            onShowDetails: { selectedGameForDetails = game },
+                            onShowTrophies: { selectedGameForTrophies = game },
+                            onRemove: {
+                                gameToRemove = game
+                                showRemoveConfirmation = true
+                            }
+                        )
                     }
                 }
-            }
 #if os(iOS)
-            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.UIApplicationWillEnterForeground)) { _ in
-                handleAppActivation()
+                .listStyle(.insetGrouped)
+#else
+                .listStyle(.inset(alternatesRowBackgrounds: true))
+#endif
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 18) {
+                        ForEach(filteredGames) { game in
+                            GameCardView(
+                                game: game,
+                                onLaunch: { handleGameLaunchRequest(game) },
+                                onShowDetails: {
+                                    selectedGameForDetails = game
+                                },
+                                onShowTrophies: {
+                                    selectedGameForTrophies = game
+                                },
+                                onRemove: {
+                                    gameToRemove = game
+                                    showRemoveConfirmation = true
+                                }
+                            )
+                        }
+                    }
+                    .padding(18)
+                }
+            }
+        }
+#if os(iOS)
+        .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
+#else
+        .background(Color(NSColor.windowBackgroundColor))
+#endif
+        .navigationTitle("Library")
+        .toolbar {
+#if os(iOS)
+            ToolbarItemGroup(placement: .navigationBarLeading) {
+                Button(action: loadGames) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                
+                Button(action: {
+                    libraryViewMode = (libraryViewMode == "grid" ? "list" : "grid")
+                }) {
+                    Image(systemName: libraryViewMode == "grid" ? "list.bullet" : "square.grid.2x2")
+                }
+                
+                Button(action: { showTrophyOverview = true }) {
+                    Image(systemName: "trophy")
+                }
+            }
+            
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                Button(action: { showLogSheet = true }) {
+                    Image(systemName: "terminal.fill")
+                        .font(.system(size: 15))
+                }
+                
+                Button(action: { showImporter = true }) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 17, weight: .semibold))
+                }
             }
 #else
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willBecomeActiveNotification)) { _ in
-                handleAppActivation()
+            ToolbarItem(placement: .automatic) {
+                Button(action: loadGames) {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .help("Refresh Library")
+            }
+            
+            ToolbarItem(placement: .automatic) {
+                Picker("View Mode", selection: $libraryViewMode) {
+                    Image(systemName: "square.grid.2x2").tag("grid")
+                    Image(systemName: "list.bullet").tag("list")
+                }
+                .pickerStyle(.segmented)
+                .help("Toggle Grid / List View")
+            }
+            
+            ToolbarItem(placement: .automatic) {
+                Button(action: { showTrophyOverview = true }) {
+                    Label("Trophies", systemImage: "trophy")
+                }
+                .help("Library Trophy Overview")
+            }
+            
+            ToolbarItem(placement: .automatic) {
+                Button(action: { showLogSheet = true }) {
+                    Label("Logs", systemImage: "terminal.fill")
+                }
+                .help("View Logs & Diagnostics")
+            }
+            
+            ToolbarItem(placement: .automatic) {
+                Button(action: { showSettingsSheet = true }) {
+                    Label("Settings", systemImage: "gearshape")
+                }
+                .help("Settings (⌘,)")
+                .keyboardShortcut(",", modifiers: .command)
+            }
+            
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: { showImporter = true }) {
+                    Label("Import Game", systemImage: "plus")
+                }
+                .help("Import Game or Directory")
             }
 #endif
         }
+        .sheet(isPresented: $showTrophyOverview) {
+            TrophyOverviewView(games: games)
+        }
+        .sheet(isPresented: $showLogSheet) {
+            LogView()
+        }
+        .sheet(isPresented: $showSettingsSheet) {
+            SettingsView()
+        }
+        .sheet(item: $selectedGameForDetails) { game in
+            GameDetailsView(
+                game: game,
+                onLaunch: { handleGameLaunchRequest(game) },
+                onViewTrophies: {
+                    selectedGameForTrophies = game
+                }
+            )
+        }
+        .sheet(item: $selectedGameForTrophies) { game in
+            TrophiesView(game: game)
+        }
+        .fileImporter(
+            isPresented: $showImporter,
+            allowedContentTypes: [.item, .folder, .data],
+            allowsMultipleSelection: false
+        ) { result in
+            handleImport(result: result)
+        }
+        .alert(isPresented: $showRemoveConfirmation) {
+            Alert(
+                title: Text("Remove from Library"),
+                message: Text("Remove '\(gameToRemove?.title ?? "this game")' from your library? Game files will NOT be deleted from your device."),
+                primaryButton: .destructive(Text("Remove")) {
+                    if let target = gameToRemove {
+                        removeFromLibrary(target)
+                    }
+                },
+                secondaryButton: .cancel()
+            )
+        }
+        .alert("JIT Not Enabled", isPresented: $showJitWarning, presenting: pendingLaunchGame) { game in
+            Button("Open StikDebug") {
+                KytyBridge.openStikDebug()
+            }
+            Button("Try Anyway") {
+                handleConfirmedLaunch(game)
+            }
+            Button("Cancel", role: .cancel) {
+                pendingLaunchGame = nil
+            }
+        } message: { _ in
+            Text("KytyPS5 requires JIT compilation to emulate games smoothly. JIT is currently not active.\n\nOpen StikDebug to enable JIT for this process (PID: \(KytyBridge.processId())), or try launching anyway?")
+        }
+        .onAppear {
+            loadGames()
+            if KytyBridge.isProcessDebugged() {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    _ = KytyBridge.refreshJitStatus()
+                }
+            }
+        }
+#if os(iOS)
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.UIApplicationWillEnterForeground)) { _ in
+            handleAppActivation()
+        }
+#else
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willBecomeActiveNotification)) { _ in
+            handleAppActivation()
+        }
+#endif
     }
     
     private func handleAppActivation() {
@@ -860,6 +961,100 @@ struct GameCardView: View {
             
             Divider()
             
+            Button(role: .destructive, action: onRemove) {
+                Label("Remove from Library", systemImage: "minus.circle")
+            }
+        }
+    }
+}
+
+// MARK: - Game List Row View
+
+struct GameListRowView: View {
+    let game: GameItem
+    let onLaunch: () -> Void
+    let onShowDetails: () -> Void
+    let onShowTrophies: () -> Void
+    let onRemove: () -> Void
+    
+    var body: some View {
+        Button(action: onLaunch) {
+            HStack(spacing: 12) {
+                // Mini Artwork
+                Group {
+#if os(iOS)
+                    if let iconPath = game.iconPath, let uiImage = UIImage(contentsOfFile: iconPath) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 44, height: 44)
+                            .cornerRadius(8)
+                    } else {
+                        Image(systemName: "gamecontroller.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.blue)
+                            .frame(width: 44, height: 44)
+                    }
+#else
+                    if let iconPath = game.iconPath, let nsImage = NSImage(contentsOfFile: iconPath) {
+                        Image(nsImage: nsImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 44, height: 44)
+                            .cornerRadius(8)
+                    } else {
+                        Image(systemName: "gamecontroller.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.blue)
+                            .frame(width: 44, height: 44)
+                    }
+#endif
+                }
+                
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(game.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    
+                    HStack(spacing: 8) {
+                        Text(game.titleId)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.blue)
+                        
+                        Text("v\(game.rawVersion)")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                        
+                        Text(game.sizeString)
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                Spacer()
+                
+                Button(action: onShowDetails) {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 18))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(action: onLaunch) {
+                Label("Launch Game", systemImage: "play.fill")
+            }
+            Button(action: onShowDetails) {
+                Label("Game Details", systemImage: "info.circle")
+            }
+            Button(action: onShowTrophies) {
+                Label("View Trophies", systemImage: "trophy.fill")
+            }
+            Divider()
             Button(role: .destructive, action: onRemove) {
                 Label("Remove from Library", systemImage: "minus.circle")
             }

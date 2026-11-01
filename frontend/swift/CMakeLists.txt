@@ -15,10 +15,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(SWIFT_SOURCES
     KytyApp.swift
+    Services/CompatibilityService.swift
     Views/ContentView.swift
     Views/LibraryView.swift
     Views/GameDetailsView.swift
     Views/TrophiesView.swift
+    Views/TrophyOverviewView.swift
+    Views/InputMappingView.swift
     Views/AboutView.swift
     Views/EmulationView.swift
     Views/TouchControlsView.swift

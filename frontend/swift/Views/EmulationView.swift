@@ -30,11 +30,11 @@ struct EmulationView: View {
             
             // Core Metal rendering surface (16:9 aspect ratio on macOS, full-screen on iOS)
 #if os(macOS)
-            EmulatorMetalSurface(gamePath: game.path, resolution: resolutionScale)
+            EmulatorMetalSurface(game: game)
                 .aspectRatio(16.0 / 9.0, contentMode: .fit)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 #else
-            EmulatorMetalSurface(gamePath: game.path, resolution: resolutionScale)
+            EmulatorMetalSurface(game: game)
                 .edgesIgnoringSafeArea(.all)
 #endif
             
@@ -263,13 +263,11 @@ final class HostMetalView: UIView {
 }
 
 struct EmulatorMetalSurface: UIViewRepresentable {
-    let gamePath: String
-    var resolution: String = "720p"
+    let game: GameItem
 
     func makeUIView(context: Context) -> HostMetalView {
         let view = HostMetalView(frame: .zero)
-        // Start emulation on background thread via KytyBridge
-        KytyBridge.startEmulation(withGamePath: gamePath, in: view) { success, error in
+        KytyBridge.startEmulation(withGamePath: game.path, in: view) { success, error in
             if !success, let error = error {
                 NSLog("[EmulatorMetalSurface] Launch error: %@", error)
             }
@@ -310,13 +308,11 @@ final class HostMetalView: NSView {
 }
 
 struct EmulatorMetalSurface: NSViewRepresentable {
-    let gamePath: String
-    var resolution: String = "720p"
+    let game: GameItem
 
     func makeNSView(context: Context) -> HostMetalView {
         let view = HostMetalView(frame: .zero)
-        // Start emulation on background thread via KytyBridge
-        KytyBridge.startEmulation(withGamePath: gamePath, in: view) { success, error in
+        KytyBridge.startEmulation(withGamePath: game.path, in: view) { success, error in
             if !success, let error = error {
                 NSLog("[EmulatorMetalSurface] Launch error: %@", error)
             }

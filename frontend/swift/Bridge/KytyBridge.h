@@ -96,6 +96,13 @@ typedef NS_ENUM(NSInteger, KytyButton) {
                             inView:(PlatformView *)renderView
                         completion:(void (^)(BOOL success, NSString * _Nullable error))completion;
 
+/// Save Data Management
++ (BOOL)hasSaveDataForTitleId:(NSString *)titleId;
++ (BOOL)deleteSaveDataForTitleId:(NSString *)titleId;
+
+/// Default keyboard key mappings (for macOS desktop play)
++ (NSArray<NSString *> *)defaultKeymapBindings;
+
 /// Requests the running emulator to gracefully stop
 + (void)stopEmulation;
 
