@@ -88,6 +88,48 @@ static void ExitStaleGuestThreadNow() {
     Loader::Fex::FexGuestEngine::CleanupCurrentThreadBeforeExit();
     pthread_exit(nullptr);
 }
+
+struct SavedGuestThreadState {
+    uint64_t gregs[16];
+    uint64_t rip;
+    uint32_t pf_raw;
+    uint32_t af_raw;
+    uint32_t mxcsr;
+    uint64_t fs_cached;
+    uint64_t gs_cached;
+    uint64_t callret_sp;
+    uint8_t flags[48];
+    uint64_t avx_high[16][2];
+    decltype(FEXCore::Core::CPUState::xmm) xmm;
+};
+
+static inline void SaveCpuState(const FEXCore::Core::CPUState& src, SavedGuestThreadState* dst) {
+    std::memcpy(dst->gregs, src.gregs, sizeof(dst->gregs));
+    dst->rip = src.rip;
+    dst->pf_raw = src.pf_raw;
+    dst->af_raw = src.af_raw;
+    dst->mxcsr = src.mxcsr;
+    dst->fs_cached = src.fs_cached;
+    dst->gs_cached = src.gs_cached;
+    dst->callret_sp = src.callret_sp;
+    std::memcpy(dst->flags, src.flags, sizeof(dst->flags));
+    std::memcpy(dst->avx_high, src.avx_high, sizeof(dst->avx_high));
+    std::memcpy(&dst->xmm, &src.xmm, sizeof(dst->xmm));
+}
+
+static inline void RestoreCpuState(FEXCore::Core::CPUState* dst, const SavedGuestThreadState& src) {
+    std::memcpy(dst->gregs, src.gregs, sizeof(dst->gregs));
+    dst->rip = src.rip;
+    dst->pf_raw = src.pf_raw;
+    dst->af_raw = src.af_raw;
+    dst->mxcsr = src.mxcsr;
+    dst->fs_cached = src.fs_cached;
+    dst->gs_cached = src.gs_cached;
+    dst->callret_sp = src.callret_sp;
+    std::memcpy(dst->flags, src.flags, sizeof(dst->flags));
+    std::memcpy(dst->avx_high, src.avx_high, sizeof(dst->avx_high));
+    std::memcpy(&dst->xmm, &src.xmm, sizeof(dst->xmm));
+}
 #endif
 
 class KytySyscallHandler final : public FEXCore::HLE::SyscallHandler {
@@ -1070,12 +1112,8 @@ uint64_t FexGuestEngine::CallGuestFunction(uint64_t rip,
     auto* current_fex_thread = s_tls_current_fex_thread;
     if (current_fex_thread != nullptr && current_fex_thread->CurrentFrame != nullptr && m_fex_context != nullptr) {
         auto* frame = current_fex_thread->CurrentFrame;
-        uint64_t saved_rdi = frame->State.gregs[FEXCore::X86State::REG_RDI];
-        uint64_t saved_rsi = frame->State.gregs[FEXCore::X86State::REG_RSI];
-        uint64_t saved_rdx = frame->State.gregs[FEXCore::X86State::REG_RDX];
-        uint64_t saved_rcx = frame->State.gregs[FEXCore::X86State::REG_RCX];
-        uint64_t saved_r8  = frame->State.gregs[FEXCore::X86State::REG_R8];
-        uint64_t saved_r9  = frame->State.gregs[FEXCore::X86State::REG_R9];
+        SavedGuestThreadState saved_state{};
+        SaveCpuState(frame->State, &saved_state);
 
         frame->State.gregs[FEXCore::X86State::REG_RDI] = arg0;
         frame->State.gregs[FEXCore::X86State::REG_RSI] = arg1;
@@ -1089,12 +1127,8 @@ uint64_t FexGuestEngine::CallGuestFunction(uint64_t rip,
 
         uint64_t ret = frame->State.gregs[FEXCore::X86State::REG_RAX];
 
-        frame->State.gregs[FEXCore::X86State::REG_RDI] = saved_rdi;
-        frame->State.gregs[FEXCore::X86State::REG_RSI] = saved_rsi;
-        frame->State.gregs[FEXCore::X86State::REG_RDX] = saved_rdx;
-        frame->State.gregs[FEXCore::X86State::REG_RCX] = saved_rcx;
-        frame->State.gregs[FEXCore::X86State::REG_R8]  = saved_r8;
-        frame->State.gregs[FEXCore::X86State::REG_R9]  = saved_r9;
+        // Restore caller CPU register state so nested callbacks cannot corrupt caller registers (rbp, rbx, rsp, xmm, flags)
+        RestoreCpuState(&frame->State, saved_state);
 
         return ret;
     }
@@ -1358,9 +1392,12 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
     }
 
     uintptr_t write_pc = reinterpret_cast<uintptr_t>(FEXCore::Allocator::GetWritableAddress(reinterpret_cast<void*>(pc)));
+    if (write_pc == 0) {
+        write_pc = pc;
+    }
 
-    // Attempt FEXCore's atomic/HalfBarrier unaligned access handler first (LDAR/STLR/CASAL/LDAPR/etc.)
-    // to backpatch atomic instructions with HalfBarriers so subsequent executions never trap again.
+    // Attempt FEXCore's unaligned access handler (NonAtomic)
+    // to backpatch atomic instructions so subsequent executions never trap again.
     uint64_t gprs[31];
     for (int i = 0; i < 29; ++i) {
         gprs[i] = ss.__x[i];
@@ -1373,7 +1410,7 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
 #endif
 
     auto result = FEXCore::ArchHelpers::Arm64::HandleUnalignedAccess(
-        thread, FEXCore::ArchHelpers::Arm64::UnalignedHandlerType::HalfBarrier,
+        thread, FEXCore::ArchHelpers::Arm64::UnalignedHandlerType::NonAtomic,
         write_pc, gprs, true);
 
 #if defined(__APPLE__) && !TARGET_OS_IPHONE

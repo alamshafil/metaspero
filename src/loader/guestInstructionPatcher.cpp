@@ -1501,12 +1501,73 @@ GuestInstructionHostFeatures GetGuestInstructionHostFeatures() {
 #endif
 }
 
+uint64_t PatchFexUnsupportedInstructions(uint64_t segment_addr, uint64_t segment_size,
+                                         std::span<const uintptr_t> function_starts) {
+	if (segment_size == 0 || function_starts.empty()) {
+		return 0;
+	}
+	const uint64_t segment_end = segment_addr + segment_size;
+	std::vector<uintptr_t> starts;
+	starts.reserve(function_starts.size());
+	for (const auto start: function_starts) {
+		if (start >= segment_addr && start < segment_end) {
+			starts.push_back(start);
+		}
+	}
+	if (starts.empty()) {
+		return 0;
+	}
+	std::ranges::sort(starts);
+	const auto unique_end = std::ranges::unique(starts).begin();
+	starts.erase(unique_end, starts.end());
+
+	ZydisDecoder decoder {};
+	if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64))) {
+		return 0;
+	}
+
+	Common::VirtualMemory::Protect(segment_addr, segment_size, Common::VirtualMemory::Mode::ExecuteReadWrite);
+
+	uint64_t patched = 0;
+	for (size_t i = 0; i < starts.size(); ++i) {
+		const uint64_t end = i + 1 < starts.size() ? starts[i + 1] : segment_end;
+		for (uint64_t address = starts[i]; address < end;) {
+			ZydisDecodedInstruction instruction {};
+			ZydisDecoderContext context {};
+			if (!ZYAN_SUCCESS(ZydisDecoderDecodeInstruction(&decoder, &context,
+			                                                reinterpret_cast<const void*>(address),
+			                                                end - address, &instruction))) {
+				break;
+			}
+			if ((instruction.mnemonic == ZYDIS_MNEMONIC_MONITORX ||
+			     instruction.mnemonic == ZYDIS_MNEMONIC_MWAITX) &&
+			    instruction.length == 3) {
+				auto* bytes = reinterpret_cast<uint8_t*>(address);
+				bytes[0]    = 0x0f; // nop dword ptr [rax] (0x0F 0x1F 0x00)
+				bytes[1]    = 0x1f;
+				bytes[2]    = 0x00;
+				patched++;
+			}
+			address += instruction.length;
+		}
+	}
+
+	Common::VirtualMemory::Protect(segment_addr, segment_size, Common::VirtualMemory::Mode::ExecuteRead);
+	if (patched > 0) {
+		Common::VirtualMemory::FlushInstructionCache(segment_addr, segment_size);
+		LOGF("[InstructionPatcher] Patched %" PRIu64 " unsupported AMD instructions (MONITORX/MWAITX)\n",
+		     patched);
+	}
+	return patched;
+}
+
 GuestInstructionPatchResult PatchGuestInstructions(u64 segment_addr, u64 segment_size,
                                                    std::span<const uintptr_t> function_starts,
                                                    bool protect_memory, bool emulate_amd,
                                                    GuestInstructionHostFeatures host_features) {
 	GuestInstructionPatchResult result {};
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU) || defined(__arm64__) || defined(__aarch64__)
+	PatchFexUnsupportedInstructions(segment_addr, segment_size, function_starts);
 	return result;
 #else
 	if (!protect_memory && !emulate_amd) {

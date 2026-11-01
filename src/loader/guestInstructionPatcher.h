@@ -63,6 +63,10 @@ GuestInstructionPatchResult PatchGuestInstructions(
     bool protect_memory, bool emulate_amd,
     GuestInstructionHostFeatures host_features = GetGuestInstructionHostFeatures());
 
+// Scan and patch unsupported AMD Zen 2 instructions (e.g. MONITORX, MWAITX) into NOPs for FEX JIT compatibility.
+uint64_t PatchFexUnsupportedInstructions(uint64_t segment_addr, uint64_t segment_size,
+                                         std::span<const uintptr_t> function_starts);
+
 bool DecodeEhFrameFunctionStarts(uint64_t eh_frame_header_addr, uint64_t eh_frame_header_size,
                                  std::vector<uintptr_t>* function_starts);
 

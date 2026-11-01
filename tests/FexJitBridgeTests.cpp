@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "loader/fex/fexGuestEngine.h"
 #include "loader/fex/fexHleBridge.h"
+#include "loader/guestInstructionPatcher.h"
 #include "kernel/memory.h"
 #include "common/threads.h"
 #include "common/virtualMemory.h"
@@ -347,6 +348,40 @@ void TestCallbackReentrancy() {
                 static_cast<unsigned long long>(final_res));
 }
 
+void TestZen2InstructionPatching() {
+    std::printf("[TEST] Running Zen2_UnsupportedInstructions_MonitorxMwaitx...\n");
+    uint64_t code_addr = AllocateGuestCodePage();
+    uint64_t stack_addr = AllocateGuestStack();
+
+    auto* p = reinterpret_cast<uint8_t*>(code_addr);
+    size_t idx = 0;
+
+    // mov eax, 42 (0xb8 0x2a 0x00 0x00 0x00)
+    p[idx++] = 0xb8; p[idx++] = 0x2a; p[idx++] = 0x00; p[idx++] = 0x00; p[idx++] = 0x00;
+
+    // MONITORX: 0x0f 0x01 0xfa
+    p[idx++] = 0x0f; p[idx++] = 0x01; p[idx++] = 0xfa;
+
+    // MWAITX: 0x0f 0x01 0xfb
+    p[idx++] = 0x0f; p[idx++] = 0x01; p[idx++] = 0xfb;
+
+    // ret (0xc3)
+    p[idx++] = 0xc3;
+
+    uintptr_t fn_starts[] = { static_cast<uintptr_t>(code_addr) };
+    uint64_t patched = Loader::PatchFexUnsupportedInstructions(code_addr, 0x1000, fn_starts);
+    Check(patched == 2, "Expected 2 instructions to be patched");
+
+    // Verify bytes were replaced with NOPs: 0x0f 0x1f 0x00
+    Check(p[5] == 0x0f && p[6] == 0x1f && p[7] == 0x00, "MONITORX was not replaced with NOP");
+    Check(p[8] == 0x0f && p[9] == 0x1f && p[10] == 0x00, "MWAITX was not replaced with NOP");
+
+    // Run the patched guest snippet under FEX JIT
+    uint64_t res = RunGuestSnippet(code_addr, stack_addr);
+    Check(res == 42, "Patched Zen 2 instructions executed with expected RAX=42");
+    std::printf("  -> [PASS] Zen 2 MONITORX and MWAITX successfully patched and executed under FEX JIT!\n");
+}
+
 } // namespace
 
 int main() {
@@ -364,6 +399,7 @@ int main() {
     TestAbiFloatArgsAndReturn();
     TestUnalignedAtomics();
     TestCallbackReentrancy();
+    TestZen2InstructionPatching();
 
     std::printf("\n>>> ALL FEX JIT BRIDGE TESTS PASSED SUCCESSFULLY! <<<\n");
     return 0;
