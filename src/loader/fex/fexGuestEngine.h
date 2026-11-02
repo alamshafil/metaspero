@@ -37,6 +37,7 @@ public:
     void InvalidateCodeRange(uint64_t start, uint64_t length);
 
     static bool IsCurrentThreadFromStaleSession() noexcept;
+    static void BindCurrentThreadToActiveSession() noexcept;
     static void CleanupCurrentThreadBeforeExit() noexcept;
     // Captures the guest CPU registers of the innermost guest thread running on the calling host thread.
     static bool GetCurrentThreadRegisters(GuestRegisterSnapshot* out) noexcept;

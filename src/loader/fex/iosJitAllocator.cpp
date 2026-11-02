@@ -461,11 +461,13 @@ const char* KytyGetJitPoolStatus() noexcept {
 
 void KytyResetJitPoolForNewSession() noexcept {
     std::lock_guard<std::mutex> lock(g_pool.mutex);
-    constexpr size_t kDispatcherReservedBytes = 16 * 1024 * 1024;
-    if (g_pool.is_ready && g_pool.allocated_offset > kDispatcherReservedBytes) {
-        g_pool.allocated_offset = kDispatcherReservedBytes;
-        std::printf("[Kyty JIT] Reset JIT pool offset to %zu MB for new session\n",
-                    kDispatcherReservedBytes / (1024 * 1024));
+    if (g_pool.is_ready) {
+        g_pool.allocated_offset = 0;
+        if (g_pool.rx_base && g_pool.total_size > 0) {
+            sys_icache_invalidate(g_pool.rx_base, g_pool.total_size);
+        }
+        std::printf("[Kyty JIT] Reset JIT pool offset to 0 MB for new session (cleared %zu MB)\n",
+                    g_pool.total_size / (1024 * 1024));
         std::fflush(stdout);
     }
 }

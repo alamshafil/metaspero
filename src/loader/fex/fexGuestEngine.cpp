@@ -85,6 +85,9 @@ static thread_local void (*s_tls_cleanup_before_exit)(void*){nullptr};
 static thread_local void* s_tls_cleanup_arg{nullptr};
 
 static void ExitStaleGuestThreadNow() {
+    if (Common::Thread::IsMainThread()) {
+        return;
+    }
     Loader::Fex::FexGuestEngine::CleanupCurrentThreadBeforeExit();
     pthread_exit(nullptr);
 }
@@ -141,6 +144,12 @@ public:
     uint64_t HandleSyscall(FEXCore::Core::CpuStateFrame* frame, FEXCore::HLE::SyscallArguments* args) override {
         if (Common::HostException::IsEmulationShuttingDown() ||
             Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()) {
+            if (Common::Thread::IsMainThread()) {
+                if (frame != nullptr) {
+                    frame->State.rip = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
+                }
+                return 0;
+            }
             ExitStaleGuestThreadNow();
         }
         if (frame == nullptr) {
@@ -179,6 +188,12 @@ public:
         }
         if (Common::HostException::IsEmulationShuttingDown() ||
             Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()) {
+            if (Common::Thread::IsMainThread()) {
+                if (frame != nullptr) {
+                    frame->State.rip = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
+                }
+                return 0;
+            }
             ExitStaleGuestThreadNow();
         }
         Loader::Fex::FexHleBridge::Instance().RecordHleCall(thunk_id, args_array, guest_rsp, result);
@@ -396,6 +411,9 @@ void FexGuestEngine::Shutdown() {
         m_syscall_handler = nullptr;
     }
     FEXCore::Config::Shutdown();
+#if defined(__APPLE__)
+    Loader::Fex::KytyResetJitPoolForNewSession();
+#endif
 #endif
     m_initialized = false;
 }
@@ -406,6 +424,12 @@ bool FexGuestEngine::IsCurrentThreadFromStaleSession() noexcept {
     return my_session != 0 && my_session != s_current_session_id.load(std::memory_order_acquire);
 #else
     return false;
+#endif
+}
+
+void FexGuestEngine::BindCurrentThreadToActiveSession() noexcept {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+    s_tls_guest_session_id = s_current_session_id.load(std::memory_order_acquire);
 #endif
 }
 
@@ -464,7 +488,7 @@ void FexGuestEngine::StopAllThreads() {
     const uint64_t finished_session = s_current_session_id.fetch_add(1, std::memory_order_seq_cst);
 
     // Give active threads in syscalls or condvar waits a cooperative window to notice shutdown and exit cleanly
-    for (int i = 0; i < 60; ++i) {
+    for (int i = 0; i < 20; ++i) {
         bool any_running = false;
         {
             std::lock_guard<std::mutex> lock(s_active_threads_mutex);
@@ -482,53 +506,19 @@ void FexGuestEngine::StopAllThreads() {
     }
 
 #if defined(__APPLE__)
-    // Inspect remaining threads. Threads actively executing host code (or in a syscall) must never
-    // be terminated mid-execution because they may hold internal locks or OS state.
-    // Threads confirmed to be executing purely inside translated guest JIT code can be safely terminated.
     mach_port_t self_mach = mach_thread_self();
-    for (int i = 0; i < 200; ++i) {
-        bool any_running = false;
-        {
-            std::lock_guard<std::mutex> lock(s_active_threads_mutex);
-            for (auto& entry : s_active_guest_threads) {
-                if (!entry || entry->session_id > finished_session || entry->exited.load(std::memory_order_acquire)) {
-                    continue;
-                }
-                any_running = true;
-                if (entry->mach_port == MACH_PORT_NULL || entry->mach_port == self_mach) {
-                    continue;
-                }
-                if (entry->in_syscall.load(std::memory_order_acquire)) {
-                    continue;
-                }
-
-                if (thread_suspend(entry->mach_port) == KERN_SUCCESS) {
-                    bool in_host_image = false;
-                    arm_thread_state64_t reg_state;
-                    mach_msg_type_number_t reg_count = ARM_THREAD_STATE64_COUNT;
-                    if (thread_get_state(entry->mach_port, ARM_THREAD_STATE64,
-                                         reinterpret_cast<thread_state_t>(&reg_state),
-                                         &reg_count) == KERN_SUCCESS) {
-                        uint64_t pc = arm_thread_state64_get_pc(reg_state);
-                        Dl_info info{};
-                        if (pc != 0 && dladdr(reinterpret_cast<void*>(pc), &info) != 0 && info.dli_fname != nullptr) {
-                            in_host_image = true;
-                        }
-                    }
-
-                    if (in_host_image || entry->in_syscall.load(std::memory_order_acquire)) {
-                        thread_resume(entry->mach_port);
-                    } else {
-                        thread_terminate(entry->mach_port);
-                        entry->exited.store(true, std::memory_order_release);
-                    }
-                }
+    {
+        std::lock_guard<std::mutex> lock(s_active_threads_mutex);
+        for (auto& entry : s_active_guest_threads) {
+            if (!entry || entry->session_id > finished_session || entry->exited.load(std::memory_order_acquire)) {
+                continue;
+            }
+            if (entry->mach_port != MACH_PORT_NULL && entry->mach_port != self_mach) {
+                thread_abort(entry->mach_port);
+                thread_terminate(entry->mach_port);
+                entry->exited.store(true, std::memory_order_release);
             }
         }
-        if (!any_running) {
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     mach_port_deallocate(mach_task_self(), self_mach);
 #endif
@@ -537,6 +527,9 @@ void FexGuestEngine::StopAllThreads() {
         std::lock_guard<std::mutex> lock(s_active_threads_mutex);
         for (auto& entry : s_active_guest_threads) {
             if (entry && entry->session_id <= finished_session) {
+                if (entry->pthread_handle != 0 && entry->pthread_handle != pthread_self()) {
+                    pthread_cancel(entry->pthread_handle);
+                }
                 entry->exited.store(true, std::memory_order_release);
             }
         }
@@ -545,18 +538,20 @@ void FexGuestEngine::StopAllThreads() {
         });
     }
 
-#if defined(__APPLE__) && TARGET_OS_IPHONE
+#if defined(__APPLE__)
     Loader::Fex::KytyResetJitPoolForNewSession();
 #endif
 
-    InvalidateCodeRange(0, ~0ULL);
     s_tls_guest_session_id = 0;
 #endif
 }
 
 void FexGuestEngine::InvalidateCodeRange(uint64_t start, uint64_t length) {
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
-    if (m_fex_context != nullptr && length != 0) {
+    if (Common::HostException::IsEmulationShuttingDown() || length == ~0ULL || length == 0) {
+        return;
+    }
+    if (m_fex_context != nullptr) {
         if (start + length < start) {
             length = ~0ULL - start;
         }
@@ -737,9 +732,8 @@ uint64_t FexGuestEngine::Run(GuestThreadState* thread, bool enable_watchdog) {
         void*              prev_arg;
     } cleanup_ctx{&thread_running, &watchdog, thread, s_tls_cleanup_before_exit, s_tls_cleanup_arg};
 
-    if (s_tls_guest_session_id == 0) {
-        s_tls_guest_session_id = s_current_session_id.load(std::memory_order_acquire);
-    }
+    auto prev_session_id = s_tls_guest_session_id;
+    s_tls_guest_session_id = s_current_session_id.load(std::memory_order_acquire);
     auto prev_active_entry = s_tls_active_entry;
     auto active_entry = std::make_shared<ActiveGuestThreadEntry>();
     active_entry->pthread_handle = runner_pthread;
@@ -785,6 +779,11 @@ s_tls_cleanup_before_exit = cleanup_ctx.prev_fn;
 s_tls_cleanup_arg = cleanup_ctx.prev_arg;
 active_entry->exited.store(true, std::memory_order_release);
 s_tls_active_entry = prev_active_entry;
+if (prev_active_entry == nullptr) {
+    s_tls_guest_session_id = 0;
+} else {
+    s_tls_guest_session_id = prev_session_id;
+}
 
 if (is_main_thread && enable_watchdog) {
     thread_running.store(false, std::memory_order_relaxed);

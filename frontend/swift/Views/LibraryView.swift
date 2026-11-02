@@ -70,6 +70,7 @@ struct LibraryView: View {
                     game: game,
                     isEmulating: $isEmulating
                 )
+                .id(game.id)
                 .navigationTitle(game.title)
                 .toolbar {
                     ToolbarItem(placement: .automatic) {
@@ -338,23 +339,31 @@ struct LibraryView: View {
                 pendingLaunchGame = nil
             }
         } message: { _ in
-            Text("KytyPS5 requires JIT compilation to emulate games smoothly. JIT is currently not active.\n\nOpen StikDebug to enable JIT for this process (PID: \(KytyBridge.processId())), or try launching anyway?")
+            Text(jitWarningMessage)
         }
         .alert("Game Still Closing", isPresented: $showSlowClosingAlert, presenting: pendingLaunchGame) { game in
+            Button("Force Close & Launch", role: .destructive) {
+                forceCloseAndLaunch(game)
+            }
             Button("Wait and Launch") {
-                KytyBridge.addLogMessage("[LibraryView] Queued '\(game.title)' to launch after shutdown.")
+                queueGameLaunch(game)
             }
             Button("Cancel", role: .cancel) {
                 pendingLaunchGame = nil
             }
         } message: { _ in
-            Text("The previous game is still closing. Please wait a moment.")
+            Text("The previous game is still closing. You can wait a moment or force close it to launch immediately.")
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.KytyEmulationStopped)) { _ in
-            if let queued = pendingLaunchGame, !isEmulating {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isEmulating = false
+            }
+            if let queued = pendingLaunchGame {
                 pendingLaunchGame = nil
                 showSlowClosingAlert = false
-                handleConfirmedLaunch(queued)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    handleConfirmedLaunch(queued)
+                }
             }
         }
         .onAppear {
@@ -405,6 +414,22 @@ struct LibraryView: View {
 #endif
     }
     
+    private var jitWarningMessage: String {
+        let pid = KytyBridge.processId()
+        return "KytyPS5 requires JIT compilation to emulate games smoothly. JIT is currently not active.\n\nOpen StikDebug to enable JIT for this process (PID: \(pid)), or try launching anyway?"
+    }
+
+    private func forceCloseAndLaunch(_ game: GameItem) {
+        KytyBridge.addLogMessage("[LibraryView] User selected force close for previous session to launch '\(game.title)'")
+        pendingLaunchGame = game
+        showSlowClosingAlert = false
+        KytyBridge.forceResetEmulationSession()
+    }
+    
+    private func queueGameLaunch(_ game: GameItem) {
+        KytyBridge.addLogMessage("[LibraryView] Queued '\(game.title)' to launch after shutdown.")
+    }
+
     private func handleConfirmedLaunch(_ game: GameItem) {
         if KytyBridge.isEmulationRunning() || KytyBridge.isStopping() {
             pendingLaunchGame = game

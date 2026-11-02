@@ -1,6 +1,7 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/threads.h"
@@ -543,7 +544,7 @@ void Swapchain::Destroy() {
 	}
 	auto& graphics = m_window.graphic_ctx;
 
-	{
+	if (!Common::HostException::IsEmulationShuttingDown()) {
 		Common::LockGuard queue_lock(graphics.queue_mutex);
 		RequireVulkanSuccess(graphics.queue.waitIdle(), "wait for swapchain queue");
 	}
@@ -613,11 +614,28 @@ bool Swapchain::NeedsResize() const {
 }
 
 Swapchain::Status Swapchain::AcquireNextImage() {
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		return Status::Recreate;
+	}
 	EXIT_IF(m_handle == nullptr || m_frame_index >= m_image_acquired.size());
-	m_image_index     = static_cast<uint32_t>(-1);
-	const auto result = m_window.graphic_ctx.device.acquireNextImageKHR(
-	    m_handle, std::numeric_limits<uint64_t>::max(), m_image_acquired[m_frame_index], nullptr,
-	    &m_image_index);
+	m_image_index = static_cast<uint32_t>(-1);
+	constexpr uint64_t ACQUIRE_TIMEOUT_NS = 50'000'000ULL; // 50ms bounded timeout to avoid hang on shutdown
+	vk::Result result = vk::Result::eTimeout;
+	while (true) {
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return Status::Recreate;
+		}
+		result = m_window.graphic_ctx.device.acquireNextImageKHR(
+		    m_handle, ACQUIRE_TIMEOUT_NS, m_image_acquired[m_frame_index], nullptr,
+		    &m_image_index);
+		if (result == vk::Result::eTimeout) {
+			if (Common::HostException::IsEmulationShuttingDown()) {
+				return Status::Recreate;
+			}
+			continue;
+		}
+		break;
+	}
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eSuboptimalKHR:
@@ -632,7 +650,11 @@ Swapchain::Status Swapchain::AcquireNextImage() {
 		case vk::Result::eErrorSurfaceLostKHR:
 			LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorSurfaceLostKHR\n");
 			return Status::SurfaceLost;
-		default: EXIT("vkAcquireNextImageKHR failed: %s\n", vk::to_string(result).c_str());
+		default:
+			if (Common::HostException::IsEmulationShuttingDown()) {
+				return Status::Recreate;
+			}
+			EXIT("vkAcquireNextImageKHR failed: %s\n", vk::to_string(result).c_str());
 	}
 	EXIT_IF(m_image_index >= m_images.size());
 	return Status::Success;
@@ -889,6 +911,9 @@ uint64_t Swapchain::Submit(CommandScheduler& scheduler) {
 }
 
 Swapchain::Status Swapchain::Present() {
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		return Status::Success;
+	}
 	EXIT_IF(m_image_index >= m_render_complete.size());
 	const auto         ready = m_render_complete[m_image_index];
 	vk::PresentInfoKHR present {};
@@ -902,6 +927,9 @@ Swapchain::Status Swapchain::Present() {
 	vk::Result result;
 	{
 		Common::LockGuard lock(m_window.graphic_ctx.queue_mutex);
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return Status::Success;
+		}
 		result = m_window.graphic_ctx.queue.presentKHR(&present);
 	}
 	switch (result) {
@@ -937,6 +965,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	auto* frame = m_impl->frames.Acquire({info.extent.width, info.extent.height}, frame_format);
 	frame->hdr   = hdr;
 	frame->blank = false;
+	HideSplashScreen();
 	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
 	auto&             image = m_impl->ResolveSurface(info);
 	if (image.backing.format == vk::Format::eUndefined) {
@@ -971,6 +1000,9 @@ Presenter::Frame& Presenter::PrepareBlankFrame(uint32_t width, uint32_t height, 
 }
 
 bool Presenter::PresentLastFrame() {
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		return false;
+	}
 	Common::LockGuard lock(m_impl->present_mutex);
 	if (m_impl->layers[0].frame == nullptr && m_impl->layers[1].frame == nullptr) {
 		return false;
@@ -1031,6 +1063,10 @@ void Presenter::ClearLayer(int bus) {
 void Presenter::Impl::Present() {
 	KYTY_PROFILER_FUNCTION();
 
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		return;
+	}
+
 	const auto overlay_visual = GetSystemOverlayVisualState();
 	// Keep black/blank flips in the current color space; only real main-bus frames switch it.
 	const auto* main_frame = layers[0].frame;
@@ -1038,13 +1074,25 @@ void Presenter::Impl::Present() {
 	                         swapchain.SetHdr(main_frame->hdr);
 	// Some window systems keep presenting an old swapchain after a resize.
 	if (hdr_changed || swapchain.NeedsResize()) {
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return;
+		}
 		RecoverSwapchain(Swapchain::Status::Recreate);
 	}
 	for (uint32_t attempt = 0; attempt < 2; attempt++) {
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return;
+		}
 		auto status = swapchain.AcquireNextImage();
 		if (status != Swapchain::Status::Success) {
+			if (Common::HostException::IsEmulationShuttingDown()) {
+				return;
+			}
 			RecoverSwapchain(status);
 			continue;
+		}
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return;
 		}
 		{
 			Common::LockGuard render_lock(renderer.GetMutex());
@@ -1060,8 +1108,14 @@ void Presenter::Impl::Present() {
 				}
 			}
 		}
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return;
+		}
 		status = swapchain.Present();
 		if (status != Swapchain::Status::Success) {
+			if (Common::HostException::IsEmulationShuttingDown()) {
+				return;
+			}
 			RecoverSwapchain(status);
 			continue;
 		}

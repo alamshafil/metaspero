@@ -41,6 +41,9 @@
 #include "emulator.h"
 #include "libs/controller.h"
 #include "common/trophies.h"
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU) && __has_include("loader/fex/fexGuestEngine.h")
+#include "loader/fex/fexGuestEngine.h"
+#endif
 #include <SDL3/SDL.h>
 #define SDL_MAIN_HANDLED 1
 #include <SDL3/SDL_main.h>
@@ -167,7 +170,7 @@ namespace {
 std::atomic<bool> g_is_running{false};
 std::atomic<bool> g_is_stopping{false};
 std::atomic<bool> g_crash_reported{false};
-std::mutex g_session_mutex;
+std::timed_mutex g_session_mutex;
 NSString *g_last_crash_error = nil;
 std::unique_ptr<std::thread> g_emulator_thread;
 
@@ -567,9 +570,9 @@ static void KytyFatalExitCallback(int status, const char *message) {
 + (void)startEmulationWithGamePath:(NSString *)gamePath
                             inView:(PlatformView *)renderView
                         completion:(void (^)(BOOL, NSString * _Nullable))completion {
-    if (g_is_running.load() || g_is_stopping.load()) {
+    if (g_is_running.load() && !g_is_stopping.load()) {
         if (completion) {
-            completion(NO, @"Emulation session is already active or shutting down.");
+            completion(NO, @"Emulation session is already active.");
         }
         return;
     }
@@ -579,10 +582,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
     void *targetView = (__bridge void *)renderView;
     g_crash_reported.store(false);
     g_last_crash_error = nil;
-    g_is_running.store(true);
-    g_is_stopping.store(false);
-    g_host_view = targetView;
-    g_host_layer = targetLayer;
 
     [KytyBridge applyGraphicsDebugSettings];
 
@@ -593,8 +592,21 @@ static void KytyFatalExitCallback(int status, const char *message) {
     std::fflush(stdout);
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        std::lock_guard<std::mutex> session_lock(g_session_mutex);
+        std::unique_lock<std::timed_mutex> session_lock(g_session_mutex, std::chrono::seconds(10));
+        if (!session_lock.owns_lock()) {
+            std::printf("[KytyBridge] Error: Previous emulation session did not release lock in time!\n");
+            std::fflush(stdout);
+            g_is_running.store(false);
+            g_is_stopping.store(false);
+            if (completion) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(NO, @"Previous emulation session did not release in time.");
+                });
+            }
+            return;
+        }
         g_is_running.store(true);
+        g_is_stopping.store(false);
         g_host_view = targetView;
         g_host_layer = targetLayer;
 #if HAS_KYTY_CORE
@@ -659,6 +671,11 @@ static void KytyFatalExitCallback(int status, const char *message) {
             options.config.user_name = [getStringSetting(@"userName", @"Kyty") UTF8String];
             options.config.user_id = (int32_t)getIntSetting(@"userId", Config::DEFAULT_USER_ID);
             options.config.console_language = (uint32_t)getIntSetting(@"consoleLanguage", Config::DEFAULT_CONSOLE_LANGUAGE);
+            NSInteger vblankFreq = getIntSetting(@"vblankFrequency", 60);
+            if (vblankFreq < 30 || vblankFreq > 360) {
+                vblankFreq = 60;
+            }
+            options.config.vblank_frequency = (uint32_t)vblankFreq;
 
             options.config.tessellation_enabled = getBoolSetting(@"tessellationEnabled", false);
             options.config.readback_linear_images = getBoolSetting(@"readbackLinearImages", false);
@@ -744,6 +761,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
         g_host_layer = nil;
         std::printf("[KytyBridge] Emulation thread ended.\n");
         std::fflush(stdout);
+        session_lock.unlock();
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter] postNotificationName:KytyEmulationStoppedNotification object:nil];
         });
@@ -771,6 +789,9 @@ static void KytyFatalExitCallback(int status, const char *message) {
     std::memset(&quit_ev, 0, sizeof(quit_ev));
     quit_ev.type = SDL_EVENT_QUIT;
     SDL_PushEvent(&quit_ev);
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+    Loader::Fex::FexGuestEngine::Instance().StopAllThreads();
+#endif
 #endif
 
     if (g_emulator_thread && g_emulator_thread->joinable()) {
@@ -780,6 +801,37 @@ static void KytyFatalExitCallback(int status, const char *message) {
             }
         }).detach();
     }
+}
+
++ (void)forceResetEmulationSession {
+    std::printf("[KytyBridge] Force resetting emulation session flags and halting threads...\n");
+    std::fflush(stdout);
+#if HAS_KYTY_CORE
+    Common::HostException::SetEmulationShuttingDown(true);
+    SDL_Event quit_ev;
+    std::memset(&quit_ev, 0, sizeof(quit_ev));
+    quit_ev.type = SDL_EVENT_QUIT;
+    SDL_PushEvent(&quit_ev);
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+    Loader::Fex::FexGuestEngine::Instance().StopAllThreads();
+#endif
+#endif
+    g_host_layer = nil;
+    g_host_view = nullptr;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        {
+            std::unique_lock<std::timed_mutex> lock(g_session_mutex, std::chrono::seconds(8));
+            if (!lock.owns_lock()) {
+                std::printf("[KytyBridge] Force reset warning: previous session did not release mutex within 8s\n");
+                std::fflush(stdout);
+            }
+            g_is_running.store(false);
+            g_is_stopping.store(false);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter] postNotificationName:KytyEmulationStoppedNotification object:nil];
+        });
+    });
 }
 
 + (void)setButton:(KytyButton)button pressed:(BOOL)pressed {

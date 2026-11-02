@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/file.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -95,7 +96,7 @@ static void MapGpuRange(uint64_t vaddr, uint64_t size) {
 }
 
 static void UnmapGpuRange(uint64_t vaddr, uint64_t size) {
-	if (g_gpu_resources == nullptr || !IsGpuAddressRange(vaddr, size)) {
+	if (Common::HostException::IsEmulationShuttingDown() || g_gpu_resources == nullptr || !IsGpuAddressRange(vaddr, size)) {
 		return;
 	}
 	GetGpuResources().UnmapMemory(vaddr, size);

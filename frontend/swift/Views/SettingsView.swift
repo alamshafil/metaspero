@@ -45,6 +45,7 @@ struct SettingsView: View {
     // Graphics
     @AppStorage("resolutionScale") private var resolutionScale = "720p"
     @AppStorage("presentMode") private var presentMode = "Mailbox"
+    @AppStorage("vblankFrequency") private var vblankFrequency = 60
     @AppStorage("enableMetalHud") private var enableMetalHud = false
     
     // Controllers & Input
@@ -200,6 +201,20 @@ struct SettingsView: View {
                             Text("Mailbox (Fast V-Sync, Lowest Latency)").tag("Mailbox")
                             Text("Fifo (Strict 60 FPS V-Sync)").tag("Fifo")
                             Text("Immediate (Uncapped Frame Rate)").tag("Immediate")
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                    
+                    Divider()
+                    
+                    HStack {
+                        Text("Vblank Frequency")
+                        Spacer()
+                        Picker("Vblank Frequency", selection: $vblankFrequency) {
+                            Text("30 Hz").tag(30)
+                            Text("60 Hz (Default)").tag(60)
+                            Text("120 Hz").tag(120)
                         }
                         .labelsHidden()
                         .fixedSize()
@@ -551,6 +566,12 @@ struct SettingsView: View {
                     Text("Mailbox").tag("Mailbox")
                     Text("Fifo").tag("Fifo")
                     Text("Immediate").tag("Immediate")
+                }
+                
+                Picker("Vblank Frequency", selection: $vblankFrequency) {
+                    Text("30 Hz").tag(30)
+                    Text("60 Hz (Default)").tag(60)
+                    Text("120 Hz").tag(120)
                 }
                 
                 Toggle("Metal Performance HUD", isOn: $enableMetalHud)

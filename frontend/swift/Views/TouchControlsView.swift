@@ -365,6 +365,12 @@ import AppKit
 typealias PlatformColor = NSColor
 typealias PlatformFont = NSFont
 
+#if swift(>=4.2)
+private let kEventTrackingRunLoopMode = RunLoop.Mode.eventTracking
+#else
+private let kEventTrackingRunLoopMode = RunLoopMode.eventTrackingRunLoopMode
+#endif
+
 // MARK: - Native macOS Press Button
 
 final class TouchButtonNSView: NSView {
@@ -458,7 +464,7 @@ final class TouchButtonNSView: NSView {
         isPressed = true
         guard let window = self.window else { return }
         
-        window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: NSEvent.foreverDuration, mode: .eventTrackingRunLoopMode) { [weak self] trackEvent, stop in
+        window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: NSEvent.foreverDuration, mode: kEventTrackingRunLoopMode) { [weak self] trackEvent, stop in
             guard let self = self, let trackEvent = trackEvent else { return }
             if trackEvent.type == .leftMouseUp {
                 self.isPressed = false
@@ -587,7 +593,7 @@ final class ThumbstickNSView: NSView {
         handleDrag(event: event)
         guard let window = self.window else { return }
         
-        window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: NSEvent.foreverDuration, mode: .eventTrackingRunLoopMode) { [weak self] trackEvent, stop in
+        window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: NSEvent.foreverDuration, mode: kEventTrackingRunLoopMode) { [weak self] trackEvent, stop in
             guard let self = self, let trackEvent = trackEvent else { return }
             if trackEvent.type == .leftMouseUp {
                 self.centerKnob(animated: true)

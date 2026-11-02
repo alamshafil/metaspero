@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
 
 #include "common/assert.h"
+#include "common/hostException.h"
 #include "graphics/host_gpu/graphicContext.h"
 
 namespace Libs::Graphics {
@@ -36,16 +37,19 @@ void MasterSemaphore::Refresh() {
 }
 
 void MasterSemaphore::Wait(uint64_t tick) {
-	if (IsFree(tick)) {
+	if (IsFree(tick) || Common::HostException::IsEmulationShuttingDown()) {
 		return;
 	}
 	Refresh();
-	if (IsFree(tick)) {
+	if (IsFree(tick) || Common::HostException::IsEmulationShuttingDown()) {
 		return;
 	}
 
 	constexpr uint64_t TIMEOUT_NS = 100000000ULL; // 100ms
 	while (!IsFree(tick)) {
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			break;
+		}
 		vk::SemaphoreWaitInfo wait_info {};
 		wait_info.semaphoreCount = 1;
 		wait_info.pSemaphores    = &m_semaphore;
@@ -57,7 +61,13 @@ void MasterSemaphore::Wait(uint64_t tick) {
 			break;
 		}
 		if (result == vk::Result::eTimeout) {
+			if (Common::HostException::IsEmulationShuttingDown()) {
+				break;
+			}
 			continue;
+		}
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			break;
 		}
 		EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 	}

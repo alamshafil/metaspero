@@ -117,6 +117,9 @@ typedef NS_ENUM(NSInteger, KytyButton) {
 /// Returns whether an emulation session is in the process of shutting down
 + (BOOL)isStopping;
 
+/// Forces reset of emulation session flags in case an earlier session encountered a deadlock
++ (void)forceResetEmulationSession;
+
 /// Dispatches a digital button press or release
 + (void)setButton:(KytyButton)button pressed:(BOOL)pressed;
 

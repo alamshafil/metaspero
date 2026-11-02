@@ -21,6 +21,7 @@ struct EmulationView: View {
     let game: GameItem
     @Binding var isEmulating: Bool
     @State private var isClosing: Bool = false
+    @State private var closingTimeoutTask: Task<Void, Never>? = nil
     @AppStorage("enableTouchOverlay") private var enableTouchOverlay = touchOverlayDefault
     @AppStorage("resolutionScale") private var resolutionScale = "720p"
     @ObservedObject private var physicalManager = PhysicalControllerManager.shared
@@ -50,7 +51,7 @@ struct EmulationView: View {
 #endif
 
             // Graceful "Closing Game..." toast overlay while teardown completes
-            if isClosing || KytyBridge.isStopping() {
+            if isClosing {
                 closingToastOverlay
             }
         }
@@ -60,18 +61,26 @@ struct EmulationView: View {
             #endif
         }
         .onDisappear {
+            closingTimeoutTask?.cancel()
+            closingTimeoutTask = nil
             #if os(iOS)
             OrientationManager.unlockOrientation()
             #endif
-            KytyBridge.stopEmulation()
+            if !isEmulating && KytyBridge.isEmulationRunning() && !KytyBridge.isStopping() {
+                KytyBridge.stopEmulation()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.KytyEmulationStopping)) { _ in
             withAnimation(.easeInOut(duration: 0.2)) {
                 isClosing = true
             }
-            // Safety timeout: transition back to library after 2.5s even if notification was delayed
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                if isEmulating {
+            closingTimeoutTask?.cancel()
+            closingTimeoutTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                guard !Task.isCancelled else { return }
+                if isClosing && KytyBridge.isStopping() {
+                    KytyBridge.addLogMessage("[EmulationView] Shutdown safety timeout reached (8.0s), forcing cleanup.")
+                    KytyBridge.forceResetEmulationSession()
                     withAnimation(.easeInOut(duration: 0.25)) {
                         isClosing = false
                         isEmulating = false
@@ -80,6 +89,8 @@ struct EmulationView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.KytyEmulationStopped)) { _ in
+            closingTimeoutTask?.cancel()
+            closingTimeoutTask = nil
             withAnimation(.easeInOut(duration: 0.25)) {
                 isClosing = false
                 isEmulating = false
@@ -130,7 +141,7 @@ struct EmulationView: View {
     }
 }
 
-// MARK: - In-Game Overlay (Controls & Top HUD)
+// MARK: - In-Game Overlay (Controls & Options Menu)
 
 struct InGameOverlayView: View {
     let game: GameItem
@@ -140,130 +151,83 @@ struct InGameOverlayView: View {
     @ObservedObject private var physicalManager = PhysicalControllerManager.shared
     @State private var showTouchOverlay = true
     @State private var showLogSheet = false
-    @State private var showHud = true
+    @State private var showSettingsSheet = false
     
     var body: some View {
         GeometryReader { geo in
-            let safeTop = max(geo.safeAreaInsets.top, 8)
+            let safeTop = max(geo.safeAreaInsets.top, 10)
             let safeRight = max(geo.safeAreaInsets.trailing, 20)
             
-            ZStack {
-                // Customizable On-Screen Touch Controls
+            ZStack(alignment: .topTrailing) {
+                Color.clear
+                
+                // Customizable On-Screen Touch Controls (independent from HUD button)
                 if enableTouchOverlay && showTouchOverlay && !physicalManager.hasPhysicalController {
                     TouchControlsView()
                         .edgesIgnoringSafeArea(.all)
                 }
                 
-                // Top HUD Bar
-                if showHud {
-                    VStack {
-                        HStack {
-                            Spacer()
-                            
-                            // Right-aligned Actions: Logs, Toggle Controls, Quit, Collapse
-                            HStack(spacing: 12) {
-                                // Diagnostics / Logs
-                                Button(action: {
-                                    showLogSheet = true
-                                }) {
-                                    Image(systemName: "terminal.fill")
-                                        .font(.system(size: 15))
-                                        .foregroundColor(.white)
-                                        .frame(width: 38, height: 38)
-                                        .background(Color.black.opacity(0.75))
-                                        .clipShape(Circle())
-                                }
-                                .contentShape(Rectangle())
-                                
-                                // Touch Overlay Toggle
-                                if enableTouchOverlay && !physicalManager.hasPhysicalController {
-                                Button(action: {
-                                    withAnimation {
-                                        showTouchOverlay.toggle()
-                                    }
-                                }) {
-                                    Image(systemName: showTouchOverlay ? "gamecontroller.fill" : "gamecontroller")
-                                        .font(.system(size: 15))
-                                        .foregroundColor(.white)
-                                        .frame(width: 38, height: 38)
-                                        .background(Color.black.opacity(0.75))
-                                        .clipShape(Circle())
-                                }
-                                .contentShape(Rectangle())
-                                }
-                                
-                                // Quit Button
-                                Button(action: {
-                                    onExit()
-                                }) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .font(.system(size: 15, weight: .bold))
-                                        Text("Quit")
-                                            .font(.system(size: 14, weight: .bold))
-                                    }
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 8)
-                                    .background(Color.red.opacity(0.85))
-                                    .clipShape(Capsule())
-                                }
-                                .contentShape(Rectangle())
-                                
-                                // Collapse HUD
-                                Button(action: {
-                                    withAnimation {
-                                        showHud = false
-                                    }
-                                }) {
-                                    Image(systemName: "chevron.up")
-                                        .font(.system(size: 15))
-                                        .foregroundColor(.white)
-                                        .frame(width: 38, height: 38)
-                                        .background(Color.black.opacity(0.75))
-                                        .clipShape(Circle())
-                                }
-                                .contentShape(Rectangle())
+                Menu {
+                    // Controller overlay toggle (only if virtual controls are enabled and no gamepad attached)
+                    if enableTouchOverlay && !physicalManager.hasPhysicalController {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showTouchOverlay.toggle()
                             }
+                        } label: {
+                            Label(
+                                showTouchOverlay ? "Hide On-Screen Controls" : "Show On-Screen Controls",
+                                systemImage: showTouchOverlay ? "gamecontroller.fill" : "gamecontroller"
+                            )
                         }
-                        .padding(.trailing, safeRight)
-                        .padding(.top, safeTop)
+                    }
+                    
+                    Button {
+                        showLogSheet = true
+                    } label: {
+                        Label("Logs & Diagnostics", systemImage: "terminal.fill")
+                    }
+                    
+                    Button {
+                        showSettingsSheet = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape.fill")
+                    }
+                    
+                    Divider()
+                    
+                    Button(role: .destructive) {
+                        onExit()
+                    } label: {
+                        Label("Quit Game", systemImage: "xmark.circle.fill")
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color.black.opacity(0.60))
+                            .frame(width: 34, height: 34)
+                            .overlay(
+                                Circle()
+                                    .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                            )
+                            .shadow(color: Color.black.opacity(0.35), radius: 6, x: 0, y: 2)
                         
-                        Spacer()
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white.opacity(0.95))
                     }
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                } else {
-                    // Discreet top handle to restore HUD
-                    VStack {
-                        HStack {
-                            Spacer()
-                            Button(action: {
-                                withAnimation {
-                                    showHud = true
-                                }
-                            }) {
-                                Image(systemName: "chevron.down")
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.9))
-                                    .frame(width: 54, height: 28)
-                                    .background(Color.black.opacity(0.7))
-                                    .clipShape(Capsule())
-                            }
-                            .contentShape(Rectangle())
-                            .padding(.top, safeTop)
-                            Spacer()
-                        }
-                        Spacer()
-                    }
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
                 }
+                .padding(.top, safeTop)
+                .padding(.trailing, safeRight)
             }
-        }
-        .onReceive(physicalManager.$hasPhysicalController) { connected in
-            // Collapse the HUD when a controller connects; restore it when disconnected
-            withAnimation { showHud = !connected }
         }
         .sheet(isPresented: $showLogSheet) {
             LogView()
+        }
+        .sheet(isPresented: $showSettingsSheet) {
+            SettingsView()
         }
     }
 }
@@ -340,6 +304,10 @@ struct EmulatorMetalSurface: UIViewRepresentable {
         let (w, h) = configureMetalLayerScale(uiView.metalLayer, hostBounds: uiView.bounds)
         KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
     }
+
+    static func dismantleUIView(_ uiView: HostMetalView, coordinator: ()) {
+        uiView.metalLayer.removeFromSuperlayer()
+    }
 }
 #elseif os(macOS)
 final class HostMetalView: NSView {
@@ -387,6 +355,10 @@ struct EmulatorMetalSurface: NSViewRepresentable {
         let (w, h) = configureMetalLayerScale(nsView.metalLayer, hostBounds: nsView.bounds)
         CATransaction.commit()
         KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
+    }
+
+    static func dismantleNSView(_ nsView: HostMetalView, coordinator: ()) {
+        nsView.metalLayer.removeFromSuperlayer()
     }
 }
 #endif

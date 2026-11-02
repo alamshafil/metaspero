@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
@@ -844,15 +845,15 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 	EXIT_IF(frequency == 0);
 
 	int64_t total_wait = 0;
-	while (!token.stop_requested()) {
+	while (!token.stop_requested() && !Common::HostException::IsEmulationShuttingDown()) {
 		const auto sleep_begin = Common::Timer::QueryPerformanceCounter();
 		if (total_wait > 0) {
 			const auto remaining_us =
 			    (static_cast<uint64_t>(total_wait) * 1000000u + frequency - 1) / frequency;
-			Common::Thread::SleepMicro(static_cast<uint32_t>(
-			    std::clamp<uint64_t>(remaining_us, 1, std::numeric_limits<uint32_t>::max())));
+			const auto chunk_us = std::min<uint64_t>(remaining_us, 5000);
+			Common::Thread::SleepMicro(static_cast<uint32_t>(chunk_us));
 		}
-		if (token.stop_requested()) {
+		if (token.stop_requested() || Common::HostException::IsEmulationShuttingDown()) {
 			break;
 		}
 		const auto frame_begin = Common::Timer::QueryPerformanceCounter();
@@ -870,11 +871,17 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		}
 
 		VblankBegin();
+		if (token.stop_requested() || Common::HostException::IsEmulationShuttingDown()) {
+			break;
+		}
 		bool presented = m_flip_queue.Flip(0);
-		if (!presented && m_presenter.NeedsSystemOverlayRefresh()) {
+		if (token.stop_requested() || Common::HostException::IsEmulationShuttingDown()) {
+			break;
+		}
+		if (!presented && m_presenter.NeedsSystemOverlayRefresh() && !Common::HostException::IsEmulationShuttingDown()) {
 			if (m_presenter.PresentLastFrame()) {
 				presented = true;
-			} else {
+			} else if (!Common::HostException::IsEmulationShuttingDown()) {
 				uint32_t width  = 0;
 				uint32_t height = 0;
 				{
@@ -887,7 +894,7 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 				presented = true;
 			}
 		}
-		if (!presented && total_wait < 0) {
+		if (!presented && total_wait < 0 && !Common::HostException::IsEmulationShuttingDown()) {
 			bool     any_open = false;
 			uint32_t width    = 0;
 			uint32_t height   = 0;
@@ -899,7 +906,7 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 					any_open |= m_video_out_ctx[handle].opened;
 				}
 			}
-			if (!any_open) {
+			if (!any_open && !Common::HostException::IsEmulationShuttingDown()) {
 				auto& blank = m_presenter.PrepareBlankFrame(width, height, true);
 				m_presenter.Present(blank);
 			}
@@ -1171,10 +1178,13 @@ void FlipQueue::WaitForSubmitSlot(VideoOutConfig& cfg) {
 	while (std::count_if(m_requests.begin(), m_requests.end(), belongs_to_port) +
 	           std::count_if(m_cpu_requests.begin(), m_cpu_requests.end(), belongs_to_port) >=
 	       VIDEO_OUT_FLIP_QUEUE_CAPACITY) {
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			break;
+		}
 		if (m_requests.empty()) {
 			EXIT("video-out queue is saturated by CPU flips queued behind the current EOP\n");
 		}
-		m_submit_slot_cond_var.Wait(&m_mutex);
+		m_submit_slot_cond_var.WaitFor(&m_mutex, 10);
 	}
 }
 
@@ -1186,17 +1196,25 @@ void FlipQueue::Wait(VideoOutConfig& cfg, int index) {
 		return std::any_of(m_requests.begin(), m_requests.end(), matches) ||
 		       std::any_of(m_cpu_requests.begin(), m_cpu_requests.end(), matches);
 	};
-	while (has_request()) {
-		m_done_cond_var.Wait(&m_mutex);
+	while (has_request() && !Common::HostException::IsEmulationShuttingDown()) {
+		m_done_cond_var.WaitFor(&m_mutex, 10);
 	}
 }
 
 bool FlipQueue::Flip(uint32_t micros) {
 	KYTY_PROFILER_BLOCK("FlipQueue::Flip");
 
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		return false;
+	}
+
 	m_mutex.Lock();
 	if (m_requests.empty()) {
 		m_submit_cond_var.WaitFor(&m_mutex, micros);
+	}
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		m_mutex.Unlock();
+		return false;
 	}
 	EXIT_IF(m_processing);
 	const auto owner = std::find_if(m_requests.begin(), m_requests.end(),

@@ -5,6 +5,7 @@
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
@@ -1193,7 +1194,9 @@ WindowContext::~WindowContext() {
 	render_context.reset();
 
 	if (graphic_ctx.device != nullptr) {
-		RequireVulkanSuccess(graphic_ctx.device.waitIdle(), "wait for Vulkan device shutdown");
+		if (!Common::HostException::IsEmulationShuttingDown()) {
+			RequireVulkanSuccess(graphic_ctx.device.waitIdle(), "wait for Vulkan device shutdown");
+		}
 		graphic_ctx.DestroyAllocator();
 		graphic_ctx.device.destroy(nullptr);
 		graphic_ctx.device = nullptr;
@@ -1216,7 +1219,17 @@ WindowContext::~WindowContext() {
 		SDL_DestroyWindow(window);
 		window = nullptr;
 	}
+#if defined(__APPLE__)
+	if (!pthread_main_np()) {
+		dispatch_sync(dispatch_get_main_queue(), ^{
+			SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
+		});
+	} else {
+		SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
+	}
+#else
 	SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
+#endif
 }
 
 } // namespace Libs::Graphics

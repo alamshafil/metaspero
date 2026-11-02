@@ -27,6 +27,7 @@ struct ContentView: View {
             // Fullscreen active game emulation overlay on iOS
             if isEmulating, let game = selectedGame {
                 EmulationView(game: game, isEmulating: $isEmulating)
+                    .id(game.id)
                     .transition(.opacity)
                     .zIndex(1)
             }
@@ -84,7 +85,7 @@ struct ContentView: View {
                 object: nil,
                 queue: .main
             ) { _ in
-                if isEmulating {
+                if isEmulating && KytyBridge.isEmulationRunning() && !KytyBridge.isStopping() {
                     withAnimation {
                         isEmulating = false
                     }

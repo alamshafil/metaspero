@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 
 #include "common/assert.h"
+#include "common/hostException.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -519,6 +520,8 @@ void InitializeSystemOverlayInput(SDL_Window* window) {
 
 void ShutdownSystemOverlayInput() {
 	g_splash_active.store(false, std::memory_order_release);
+	g_splash_hidden_at.store(0, std::memory_order_release);
+	g_splash_paths = {};
 	CoreIme::SetVisibilityCallback(nullptr);
 	DialogIme::SetVisibilityCallback(nullptr);
 	SystemDialog::SetVisibilityCallback(nullptr);
@@ -817,8 +820,10 @@ struct SystemOverlay::Impl {
 	void FinishSplash() {
 		g_splash_active.store(false, std::memory_order_release);
 		if (splash_dds[0] || splash_dds[1]) {
-			Common::LockGuard lock(graphics.queue_mutex);
-			RequireVulkanSuccess(graphics.queue.waitIdle(), "retire splash images");
+			if (!Common::HostException::IsEmulationShuttingDown()) {
+				Common::LockGuard lock(graphics.queue_mutex);
+				RequireVulkanSuccess(graphics.queue.waitIdle(), "retire splash images");
+			}
 			splash_dds = {};
 		}
 	}

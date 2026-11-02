@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 
 #include "common/assert.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
 
@@ -182,7 +183,7 @@ void CommandScheduler::FlushAndWait() {
 }
 
 void CommandScheduler::Finish() {
-	if (!Active()) {
+	if (!Active() || Common::HostException::IsEmulationShuttingDown()) {
 		return;
 	}
 	if (!m_command.IsInvalid()) {
@@ -294,15 +295,27 @@ void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
 
 void CommandScheduler::DrainPriorityOperations() {
 	EXIT_IF(g_deferred_callback_scheduler == this);
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		return;
+	}
 	std::unique_lock lock(m_operation_mutex);
-	m_operation_available.wait(
-	    lock, [this] { return m_priority_operations.empty() && !m_priority_active; });
+	m_operation_available.wait_for(
+	    lock, std::chrono::milliseconds(200), [this] {
+		    return Common::HostException::IsEmulationShuttingDown() ||
+		           (m_priority_operations.empty() && !m_priority_active);
+	    });
 }
 
 void CommandScheduler::WaitPriorityOperations(uint64_t tick) {
 	EXIT_IF(g_deferred_callback_scheduler == this);
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		return;
+	}
 	std::unique_lock lock(m_operation_mutex);
-	m_operation_available.wait(lock, [this, tick] {
+	m_operation_available.wait_for(lock, std::chrono::milliseconds(200), [this, tick] {
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return true;
+		}
 		const bool active_before_or_at = m_priority_active && m_priority_active_tick <= tick;
 		const bool queued_before_or_at =
 		    !m_priority_operations.empty() && m_priority_operations.front().tick <= tick;

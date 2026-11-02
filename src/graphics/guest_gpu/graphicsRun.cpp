@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
@@ -461,12 +462,14 @@ void GuestGpu::ThreadRun(void* data) {
 		bool                         should_stop    = false;
 		{
 			Common::LockGuard lock(gpu->m_queue_mutex);
-			while (gpu->m_commands.empty() && gpu->m_submission_count == 0 && !gpu->m_stopping) {
+			while (gpu->m_commands.empty() && gpu->m_submission_count == 0 && !gpu->m_stopping &&
+			       !Common::HostException::IsEmulationShuttingDown()) {
 				gpu->m_processing = false;
 				gpu->m_idle.Signal();
-				gpu->m_work_available.Wait(&gpu->m_queue_mutex);
+				gpu->m_work_available.WaitFor(&gpu->m_queue_mutex, 50);
 			}
-			if (gpu->m_stopping && gpu->m_commands.empty() && gpu->m_submission_count == 0) {
+			if ((gpu->m_stopping || Common::HostException::IsEmulationShuttingDown()) &&
+			    (gpu->m_commands.empty() || Common::HostException::IsEmulationShuttingDown())) {
 				gpu->m_processing = false;
 				gpu->m_idle.SignalAll();
 				should_stop = true;
@@ -485,8 +488,14 @@ void GuestGpu::ThreadRun(void* data) {
 					}
 				}
 				if (selected_queue < 0) {
+					if (gpu->m_stopping || Common::HostException::IsEmulationShuttingDown()) {
+						gpu->m_processing = false;
+						gpu->m_idle.SignalAll();
+						should_stop = true;
+						break;
+					}
 					gpu->m_processing = false;
-					gpu->m_work_available.WaitFor(&gpu->m_queue_mutex, 100);
+					gpu->m_work_available.WaitFor(&gpu->m_queue_mutex, 50);
 					for (auto& queue: gpu->m_queues) {
 						if (!queue.empty()) {
 							queue.front().blocked = false;
@@ -504,7 +513,9 @@ void GuestGpu::ThreadRun(void* data) {
 			}
 		}
 		if (should_stop) {
-			gpu->m_gfx_cp->BufferWait();
+			if (!Common::HostException::IsEmulationShuttingDown()) {
+				gpu->m_gfx_cp->BufferWait();
+			}
 			g_gpu_state  = nullptr;
 			g_gpu_thread = false;
 			return;

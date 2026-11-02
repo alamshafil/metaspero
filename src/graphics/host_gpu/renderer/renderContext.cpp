@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 
 #include "common/assert.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/presentation/videoOut.h"
@@ -97,6 +98,9 @@ void RenderContext::MapMemory(uint64_t vaddr, uint64_t size) {
 }
 
 void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		return;
+	}
 	if (CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported memory unmap from an asynchronous GPU completion, "
 		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",

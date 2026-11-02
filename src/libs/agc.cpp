@@ -100,9 +100,9 @@ void Shutdown() {
 		return;
 	}
 	ShaderShutdown();
-	g_renderer->ShutdownGpu();
-	Gen5Driver::ReleaseDmem();
 	VideoOut::VideoOutShutdown();
+	Gen5Driver::ReleaseDmem();
+	g_renderer->ShutdownGpu();
 	WindowShutdown();
 	g_renderer = nullptr;
 }
@@ -4451,8 +4451,8 @@ int Initialize() {
 static void ReleaseDmem() {
 	std::scoped_lock lock {g_driver_dmem.mutex};
 	if (g_driver_dmem.physical_offset >= 0) {
-		EXIT_IF(LibKernel::Memory::KernelCheckedReleaseDirectMemory(
-		            g_driver_dmem.physical_offset, DriverDmemSize) != OK);
+		(void)LibKernel::Memory::KernelCheckedReleaseDirectMemory(
+		    g_driver_dmem.physical_offset, DriverDmemSize);
 		g_driver_dmem.physical_offset = -1;
 		g_driver_dmem.virtual_base    = 0;
 	}

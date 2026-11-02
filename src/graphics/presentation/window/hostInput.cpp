@@ -8,6 +8,7 @@
 #endif
 
 #include "common/assert.h"
+#include "common/hostException.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "libs/controller.h"
@@ -460,6 +461,9 @@ void HostInputToggleMouseToJoystick() {
 }
 
 bool HostInputWaitEvent(SDL_Event* event, int max_wait_ms) {
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		return false;
+	}
 	int timeout = -1;
 	if (!g_mouse.enabled || SDL_GetKeyboardFocus() != g_mouse_window) {
 		g_mouse.next_poll = 0;

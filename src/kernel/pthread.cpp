@@ -1075,6 +1075,9 @@ void PthreadDeleteStaticObjects(Loader::Program* program) {
 }
 
 void PthreadInitSelfForMainThread() {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	Loader::Fex::FexGuestEngine::BindCurrentThreadToActiveSession();
+#endif
 	if (g_pthread_self != nullptr) {
 		if (g_pthread_self->attr != nullptr) {
 			PthreadAttrDestroy(&g_pthread_self->attr);
@@ -3331,6 +3334,9 @@ static void CleanupThread(void* arg) {
 }
 
 static void* RunThread(void* arg) {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	Loader::Fex::FexGuestEngine::BindCurrentThreadToActiveSession();
+#endif
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 	if (!Common::HostException::InitializeThreadSignalStack()) {

@@ -17,6 +17,7 @@
 #include "common/file.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
+#include "common/hostException.h"
 #include "common/systemInfo.h"
 #include "common/threads.h"
 #include "common/timer.h"
@@ -764,7 +765,7 @@ void WindowContext::Run() {
 	auto               title_time        = SDL_GetTicks();
 	auto               title_frames      = loop.presented_frames.load(std::memory_order_relaxed);
 
-	while (!loop.need_exit) {
+	while (!loop.need_exit && !Common::HostException::IsEmulationShuttingDown()) {
 		if (loop.paused.load(std::memory_order_acquire)) {
 			if (!timer.IsPaused()) {
 				timer.Pause();
@@ -949,8 +950,10 @@ void WindowRun() {
 	EXIT_IF(g_window == nullptr);
 
 	g_window->Run();
-	Common::LockGuard lock(g_window->render_context->GetMutex());
-	g_window->render_context->GetPipelineCache().Save();
+	if (!Common::HostException::IsEmulationShuttingDown()) {
+		Common::LockGuard lock(g_window->render_context->GetMutex());
+		g_window->render_context->GetPipelineCache().Save();
+	}
 }
 
 void WindowShutdown() {
@@ -961,13 +964,15 @@ void WindowShutdown() {
 		if (g_window_destroyed_cb != nullptr) {
 			g_window_destroyed_cb();
 		}
-		if (pthread_main_np() == 0) {
+		if (g_window->window != nullptr && pthread_main_np() == 0) {
 			dispatch_sync(dispatch_get_main_queue(), ^{
-				g_window.reset();
+				if (g_window != nullptr && g_window->window != nullptr) {
+					SDL_DestroyWindow(g_window->window);
+					g_window->window = nullptr;
+				}
 			});
-		} else {
-			g_window.reset();
 		}
+		g_window.reset();
 #else
 		g_window.reset();
 #endif
