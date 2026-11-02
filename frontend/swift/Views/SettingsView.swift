@@ -53,7 +53,6 @@ struct SettingsView: View {
     @AppStorage("enableTouchOverlay") private var enableTouchOverlay = touchOverlayDefault
     
     // JIT & Memory
-    @AppStorage("memoryBackingMode") private var memoryBackingMode = "ram"
     @AppStorage("skipMeshShaders") private var skipMeshShaders = false
     
     // Advanced Settings
@@ -664,30 +663,6 @@ struct SettingsView: View {
                     }
                 }) {
                     Label("Refresh Status", systemImage: "arrow.clockwise")
-                }
-            }
-            
-            Section(
-                header: Text("Direct Memory Backing"),
-                footer: Text(memoryBackingMode == "file"
-                    ? "Disk-Backed (APFS) creates sparse swap files on internal storage. Warning: increases NAND storage writes."
-                    : "RAM (Mach VM) stores direct memory entirely in RAM for highest performance with zero storage writes. Recommended.")
-            ) {
-                Picker("Backing Mode", selection: $memoryBackingMode) {
-                    Text("RAM (Mach VM)").tag("ram")
-                    Text("Disk-Backed (APFS)").tag("file")
-                }
-                .pickerStyle(.segmented)
-                
-                if memoryBackingMode == "file" {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.orange)
-                        Text("Warning: Disk-backed memory increases internal storage writes. Not recommended, only use for testing.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.vertical, 2)
                 }
             }
             

@@ -32,6 +32,11 @@
 
 // IWYU pragma: no_include <intrin.h>
 
+#if defined(__APPLE__)
+extern "C" void* objc_autoreleasePoolPush(void);
+extern "C" void  objc_autoreleasePoolPop(void*);
+#endif
+
 namespace Libs::Graphics {
 
 struct Presenter::Frame {
@@ -930,7 +935,13 @@ Swapchain::Status Swapchain::Present() {
 		if (Common::HostException::IsEmulationShuttingDown()) {
 			return Status::Success;
 		}
+#if defined(__APPLE__)
+		void* pool = objc_autoreleasePoolPush();
 		result = m_window.graphic_ctx.queue.presentKHR(&present);
+		objc_autoreleasePoolPop(pool);
+#else
+		result = m_window.graphic_ctx.queue.presentKHR(&present);
+#endif
 	}
 	switch (result) {
 		case vk::Result::eSuccess: break;

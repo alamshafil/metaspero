@@ -2952,6 +2952,9 @@ static int ReleaseDirectMemoryInternal(int64_t start, size_t len) {
 		GpuAccessMode unused_gpu   = GpuAccessMode::NoAccess;
 		EXIT_IF(!g_physical_memory->Release(block.start_addr, block.size, &unused_vaddr,
 		                                    &unused_size, &unused_gpu));
+		if (g_guest_address_space != nullptr) {
+			g_guest_address_space->DiscardPhysicalBacking(block.start_addr, block.size);
+		}
 	}
 
 	if (g_free_callback != nullptr) {

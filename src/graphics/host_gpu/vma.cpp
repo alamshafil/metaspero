@@ -1,5 +1,14 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#if __has_include(<os/proc.h>)
+#include <os/proc.h>
+#endif
+#endif
+#endif
+
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wnullability-completeness"
@@ -101,6 +110,22 @@ uint64_t GraphicContext::GetTotalMemoryBudget() const {
 	if (allocator == nullptr) {
 		return 0;
 	}
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	// Query Darwin's os_proc_available_memory() to get the real-time available budget
+	size_t avail = 0;
+#if __has_include(<os/proc.h>)
+	if (&os_proc_available_memory != nullptr) {
+		avail = os_proc_available_memory();
+	}
+#endif
+	if (avail > 0) {
+		// Dedicate at most 45% of the remaining app budget to graphics caches,
+		// clamped between 256 MB and 1024 MB.
+		const uint64_t gfx_budget = static_cast<uint64_t>(avail * 0.45);
+		return std::clamp<uint64_t>(gfx_budget, 256ull * 1024 * 1024, 1024ull * 1024 * 1024);
+	}
+	return 768ull * 1024 * 1024;
+#else
 	VmaBudget budgets[VK_MAX_MEMORY_HEAPS] {};
 	vmaGetHeapBudgets(allocator, budgets);
 	const bool discrete =
@@ -123,9 +148,18 @@ uint64_t GraphicContext::GetTotalMemoryBudget() const {
 	if (discrete) {
 		return budget - std::min<uint64_t>(budget / 8, 1024ull * 1024 * 1024);
 	}
+#if defined(KYTY_ARM64_APPLE) || (defined(__APPLE__) && defined(__arm64__))
+	// On Apple Silicon Mac (integrated unified memory), dynamic reserve scaled to total memory:
+	// For 8 GB Macs, reserve 2.5 GB. For 16 GB Macs, reserve 4 GB. For 24+ GB, reserve up to 8 GB.
+	const uint64_t system_reserve = std::min<uint64_t>(budget / 4, 8ull * 1024 * 1024 * 1024);
+	const auto     available      = budget > usage ? budget - usage : uint64_t {0};
+	return available > system_reserve ? available - system_reserve : std::max<uint64_t>(budget / 4, 1024ull * 1024 * 1024);
+#else
 	constexpr uint64_t system_reserve = 8ull * 1024 * 1024 * 1024;
 	const auto         available      = budget > usage ? budget - usage : uint64_t {0};
 	return std::max(local, available > system_reserve ? available - system_reserve : uint64_t {0});
+#endif
+#endif
 }
 
 bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanImage& image) {

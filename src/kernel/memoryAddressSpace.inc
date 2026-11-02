@@ -85,44 +85,14 @@ public:
 			m_handle = nullptr;
 		}
 #elif defined(__APPLE__)
-		bool use_file_backing = false;
-#if TARGET_OS_IPHONE
-		const char* env_backing = std::getenv("KYTY_DIRECT_MEMORY_BACKING");
-		use_file_backing = (env_backing != nullptr && std::strcmp(env_backing, "file") == 0);
-#endif
-
-		if (use_file_backing) {
-			char tmp_path[256];
-			snprintf(tmp_path, sizeof(tmp_path), "_TempData/kyty-dm-%d-%llx.tmp", static_cast<int>(getpid()),
-			         static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(this)));
-			Common::File::CreateDirectories("_TempData");
-			m_fd = open(tmp_path, O_RDWR | O_CREAT | O_EXCL, 0600);
-			if (m_fd >= 0) {
-				unlink(tmp_path);
-				if (ftruncate(m_fd, static_cast<off_t>(m_size)) != 0) {
-					std::fprintf(stderr, "[GuestBackingStore] ftruncate failed (size=%llu MB): %d\n",
-					             (unsigned long long)(m_size / (1024 * 1024)), errno);
-					close(m_fd);
-					m_fd = -1;
-				}
-			}
-			if (m_fd >= 0) {
-				m_backing_base = nullptr;
-			} else {
-				std::fprintf(stderr, "[GuestBackingStore] APFS file backing failed, falling back to RAM\n");
-			}
+		auto* backing = mmap(nullptr, m_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_SHARED, -1, 0);
+		if (backing == MAP_FAILED) {
+			std::fprintf(stderr, "[GuestBackingStore] anonymous shared memory allocation failed (size=%llu MB): %d\n",
+			             (unsigned long long)(m_size / (1024 * 1024)), errno);
+			LOGF_COLOR(Log::Color::Red, "\t direct-memory backing: anonymous shared memory failed: %d\n", errno);
+			return;
 		}
-
-		if (m_fd < 0) {
-			auto* backing = mmap(nullptr, m_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_SHARED, -1, 0);
-			if (backing == MAP_FAILED) {
-				std::fprintf(stderr, "[GuestBackingStore] anonymous shared memory allocation failed (size=%llu MB): %d\n",
-				             (unsigned long long)(m_size / (1024 * 1024)), errno);
-				LOGF_COLOR(Log::Color::Red, "\t direct-memory backing: anonymous shared memory failed: %d\n", errno);
-				return;
-			}
-			m_backing_base = static_cast<uint8_t*>(backing);
-		}
+		m_backing_base = static_cast<uint8_t*>(backing);
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 		m_fd = static_cast<int>(syscall(SYS_memfd_create, "KytyDirectMemory", 0));
 		if (m_fd < 0) {
@@ -165,7 +135,7 @@ public:
 		if (m_handle != nullptr) {
 			CloseHandle(m_handle);
 		}
-#elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+#elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX || defined(__APPLE__)
 		for (const auto& [_, entry]: m_maps) {
 			EXIT_IF(
 			    !UnmapViewPreservePlaceholder(reinterpret_cast<void*>(entry.vaddr), entry.size));
@@ -177,6 +147,24 @@ public:
 		if (m_fd >= 0) {
 			close(m_fd);
 		}
+#endif
+	}
+
+	void DiscardPhysicalBacking(uint64_t offset, uint64_t size) {
+		if (m_backing_base == nullptr || offset >= m_size || size == 0) {
+			return;
+		}
+		const auto safe_size = std::min(size, m_size - offset);
+#if defined(__APPLE__)
+#if defined(MADV_FREE_REUSABLE)
+		madvise(m_backing_base + offset, safe_size, MADV_FREE_REUSABLE);
+#elif defined(MADV_DONTNEED)
+		madvise(m_backing_base + offset, safe_size, MADV_DONTNEED);
+#endif
+#elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+#if defined(MADV_DONTNEED)
+		madvise(m_backing_base + offset, safe_size, MADV_DONTNEED);
+#endif
 #endif
 	}
 
@@ -993,6 +981,13 @@ public:
 		EXIT_IF(!RemoveMappedUnlocked(vaddr, size, MappingType::Backing));
 		AddFreeUnlocked(vaddr, size);
 		return true;
+	}
+
+	void DiscardPhysicalBacking(uint64_t offset, uint64_t size) {
+		std::lock_guard lock(m_mutex);
+		if (m_backing != nullptr) {
+			m_backing->DiscardPhysicalBacking(offset, size);
+		}
 	}
 
 	uint64_t ReserveAligned(uint64_t search_addr, uint64_t size, uint64_t alignment) {

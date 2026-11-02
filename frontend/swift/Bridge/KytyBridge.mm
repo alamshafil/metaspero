@@ -532,11 +532,10 @@ static void KytyFatalExitCallback(int status, const char *message) {
     if (skipMesh) {
         setenv("KYTY_SKIP_MESH_SHADERS", "1", 1);
         std::printf("[KytyBridge] Graphics Debug: Skip Mesh Shaders ENABLED\n");
+        std::fflush(stdout);
     } else {
         unsetenv("KYTY_SKIP_MESH_SHADERS");
-        std::printf("[KytyBridge] Graphics Debug: Skip Mesh Shaders DISABLED\n");
     }
-    std::fflush(stdout);
 }
 
 + (void)setMetalHudEnabled:(BOOL)enabled {
@@ -729,24 +728,23 @@ static void KytyFatalExitCallback(int status, const char *message) {
             }
 
 #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-            NSString *memoryBacking = [[NSUserDefaults standardUserDefaults] stringForKey:@"memoryBackingMode"];
-            if ([memoryBacking isEqualToString:@"file"]) {
-                setenv("KYTY_DIRECT_MEMORY_BACKING", "file", 1);
-            } else {
-                setenv("KYTY_DIRECT_MEMORY_BACKING", "ram", 1);
-            }
-#else
-            setenv("KYTY_DIRECT_MEMORY_BACKING", "ram", 1);
-            NSString *memoryBacking = @"ram";
+            // MoltenVK Metal optimizations for iOS
+            // Keep prefilling at 0 to prevent MVKCommandEncoder pipeline barrier crashes
+            setenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS", "0", 1);
+            // Compress cached MSL shaders in memory with Apple LZFSE
+            setenv("MVK_CONFIG_SHADER_COMPRESSION_ALGORITHM", "1", 1);
+#elif TARGET_OS_OSX
+            // MoltenVK Metal optimizations for macOS
+            setenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS", "0", 1);
+            setenv("MVK_CONFIG_SHADER_COMPRESSION_ALGORITHM", "1", 1);
 #endif
             
             std::printf("[KytyBridge] Configured app0_dir: %s, elf: %s\n",
                         options.app0_dir.string().c_str(), options.elf.string().c_str());
-            std::printf("[KytyBridge] Graphics: %ux%u, Present Mode: %s, Metal HUD: %s, Memory Backing: %s\n",
+            std::printf("[KytyBridge] Graphics: %ux%u, Present Mode: %s, Metal HUD: %s\n",
                         options.config.screen_width, options.config.screen_height,
                         present ? [present UTF8String] : "Mailbox",
-                        [KytyBridge isMetalHudEnabled] ? "ENABLED" : "DISABLED",
-                        [memoryBacking isEqualToString:@"file"] ? "Disk-Backed (APFS)" : "RAM (Mach VM)");
+                        [KytyBridge isMetalHudEnabled] ? "ENABLED" : "DISABLED");
             std::printf("[KytyBridge] User: %s (ID: %d), Lang: %u, VBlank: %u Hz, Patch: %s\n",
                         options.config.user_name.c_str(), options.config.user_id,
                         options.config.console_language, options.config.vblank_frequency,
@@ -1347,7 +1345,7 @@ static NSString *g_last_memory_warning_level = nil;
             [g_log_entries removeObjectsInRange:NSMakeRange(0, g_log_entries.count - 150)];
         }
     }
-    
+
     NSDictionary *stats = [self currentMemoryStats];
     double usedMB = [stats[KytyMemoryUsedMBKey] doubleValue];
     double availMB = [stats[KytyMemoryAvailMBKey] doubleValue];
