@@ -266,10 +266,6 @@ SDL_AudioFormat Audio::SdlFormat(Format format) {
 bool Audio::OpenSdlDevice(PortOut* port) {
 	EXIT_IF(port == nullptr);
 
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-	port->stream = nullptr;
-	return true;
-#else
 	if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
 		LOGF("AudioOut: SDL audio init failed: %s\n", SDL_GetError());
 		return false;
@@ -296,7 +292,6 @@ bool Audio::OpenSdlDevice(PortOut* port) {
 	LOGF("AudioOut: opened SDL stream (%d Hz, %d ch, format 0x%04x)\n", desired.freq,
 	     desired.channels, static_cast<unsigned>(desired.format));
 	return true;
-#endif
 }
 
 void Audio::CloseSdlDevice(PortOut* port) {

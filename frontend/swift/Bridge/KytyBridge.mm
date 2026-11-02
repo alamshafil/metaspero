@@ -55,6 +55,7 @@
 #include <mach/mach_time.h>
 #include <mach/mach.h>
 #if TARGET_OS_IPHONE
+#import <AVFoundation/AVFoundation.h>
 #if __has_include(<os/proc.h>)
 #import <os/proc.h>
 #endif
@@ -400,6 +401,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
     Common::SetFatalHandler(KytyFatalExitCallback);
     KytySetWindowCallbacks(KytyNotifyWindowCreated, KytyNotifyWindowDestroyed);
 #endif
+    [KytyBridge configureAudioSession];
     if ([[NSUserDefaults standardUserDefaults] boolForKey:@"enableMetalHud"]) {
         setenv("MTL_HUD_ENABLED", "1", 1);
     }
@@ -551,6 +553,28 @@ static void KytyFatalExitCallback(int status, const char *message) {
     return [[NSUserDefaults standardUserDefaults] boolForKey:@"enableMetalHud"];
 }
 
++ (void)configureAudioSession {
+#if TARGET_OS_IPHONE
+    @autoreleasepool {
+        AVAudioSession *session = [AVAudioSession sharedInstance];
+        NSError *error = nil;
+        [session setCategory:AVAudioSessionCategoryPlayback
+                 withOptions:AVAudioSessionCategoryOptionMixWithOthers
+                       error:&error];
+        if (error) {
+            std::printf("[KytyBridge] Failed to set AVAudioSession category: %s\n",
+                        error.localizedDescription.UTF8String);
+        }
+        error = nil;
+        [session setActive:YES error:&error];
+        if (error) {
+            std::printf("[KytyBridge] Failed to activate AVAudioSession: %s\n",
+                        error.localizedDescription.UTF8String);
+        }
+    }
+#endif
+}
+
 + (void)hostViewDidResizeToPixelWidth:(int)width height:(int)height {
     g_host_pixel_w.store(width);
     g_host_pixel_h.store(height);
@@ -583,6 +607,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
     g_crash_reported.store(false);
     g_last_crash_error = nil;
 
+    [KytyBridge configureAudioSession];
     [KytyBridge applyGraphicsDebugSettings];
 
     std::printf("[KytyBridge] ---\n");

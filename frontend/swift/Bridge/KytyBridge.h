@@ -93,6 +93,9 @@ typedef NS_ENUM(NSInteger, KytyButton) {
 + (void)setMetalHudEnabled:(BOOL)enabled;
 + (BOOL)isMetalHudEnabled;
 
+/// Configures host audio session for playback
++ (void)configureAudioSession;
+
 /// Starts emulator execution with the specified game ELF, ZAR, or directory path
 + (void)startEmulationWithGamePath:(NSString *)gamePath
                             inView:(PlatformView *)renderView
