@@ -375,7 +375,7 @@ struct LibraryView: View {
             }
         }
 #if os(iOS)
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.UIApplicationWillEnterForeground)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             handleAppActivation()
         }
 #else
