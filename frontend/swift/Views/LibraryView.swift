@@ -24,6 +24,8 @@ struct GameItem: Identifiable, Hashable {
 struct LibraryView: View {
     @Binding var selectedGame: GameItem?
     @Binding var isEmulating: Bool
+
+    @Environment(\.scenePhase) var scenePhase
     
     @State private var games: [GameItem] = []
     @State private var showImporter = false
@@ -374,15 +376,11 @@ struct LibraryView: View {
                 }
             }
         }
-#if os(iOS)
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
-            handleAppActivation()
+        .onChange(of: scenePhase) { newPhase in
+            if newPhase == .active {
+                handleAppActivation()
+            }
         }
-#else
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willBecomeActiveNotification)) { _ in
-            handleAppActivation()
-        }
-#endif
     }
     
     private func handleAppActivation() {
