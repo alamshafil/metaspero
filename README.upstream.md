@@ -330,38 +330,6 @@ codesign --force --sign - _Build/macos/install/KytyPS5.app
 
 Release archives already include a signed `libMoltenVK.dylib` (both flat and inside the bundle).
 
-### Building on iOS (ARM64)
-
-iOS builds target ARM64 devices (iOS 16.0+) with native FEXCore guest CPU execution and a SwiftUI frontend. The official MoltenVK iOS framework (v1.4.2) is fetched automatically at configure time.
-
-Requirements:
-- macOS with Xcode 15 or newer (with iOS SDK installed)
-- Homebrew packages: `brew install cmake ninja glslang python`
-
-1. **Build and package the IPA**:
-   ```bash
-   ./scripts/build_ios_core.sh
-   ```
-   Or via CMake Presets directly:
-   ```bash
-   cmake --preset ios
-   cmake --build --preset ios
-   ```
-   The compiled application bundle is generated at `_Build/ios/frontend/swift/Release-iphoneos/KytyPS5.app` and packaged into `_Build/ios/KytyPS5.ipa`.
-
-2. **Open in Xcode**:
-   ```bash
-   ./scripts/open_in_xcode.sh
-   ```
-
-3. **Install to connected device**:
-   ```bash
-   ./scripts/install_to_phone.sh
-   ```
-
-> [!TIP]
-> Signing credentials can be placed in `scripts/ios_local.env` (untracked) or exported as environment variables (`KYTY_IOS_TEAM_ID`, `KYTY_IOS_BUNDLE_ID`, `KYTY_IOS_SIGN_ID`) without editing tracked files.
-
 ### Regression tests
 
 Build every regression executable and run the registered tests with:
