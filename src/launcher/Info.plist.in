@@ -11,6 +11,9 @@
 	<key>CFBundleSignature</key><string>????</string>
 	<key>CFBundleExecutable</key><string>KytyPS5</string>
 	<key>LSMinimumSystemVersion</key><string>13.0</string>
+	<key>LSApplicationCategoryType</key><string>public.app-category.games</string>
+	<key>LSSupportsGameMode</key><true/>
+	<key>GCSupportsGameMode</key><true/>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSRequiresAquaSystemAppearance</key><false/>
 </dict>
