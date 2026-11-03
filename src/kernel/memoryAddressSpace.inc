@@ -14,14 +14,7 @@ static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x03ffffffffull; // 16 GB -
 static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x07ffffffffull; // 32 GB - 1
 static constexpr uint64_t HOST_USER_MIN            = 0x0800000000ull; // 32 GB
 static constexpr uint64_t HOST_USER_MAX            = 0x0fffffffe0ull; // 64 GB - 32
-#elif defined(KYTY_ARM64_APPLE)
-// macOS Apple Silicon (ARM64): 47-bit VA (128 TB), full user space supported
-static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = 0x0200000000ull; // 8 GB (above __PAGEZERO & frameworks)
-static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x03ffffffffull; // 16 GB - 1
-static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x07ffffffffull; // 32 GB - 1
-static constexpr uint64_t HOST_USER_MIN            = 0x0800000000ull; // 32 GB
-static constexpr uint64_t HOST_USER_MAX            = 0xfbffffffffull;
-#elif defined(__APPLE__) && (defined(__x86_64__) || defined(_M_X64))
+#elif (defined(KYTY_ARM64_APPLE) && !TARGET_OS_IPHONE) || (defined(__APPLE__) && (defined(__x86_64__) || defined(_M_X64)))
 static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = 0x0000040000ull;
 static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x07ffffbfffull;
 static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x0fbfffffffull;

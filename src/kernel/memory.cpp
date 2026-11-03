@@ -836,7 +836,11 @@ static std::recursive_mutex g_memory_operation_mutex;
 // The base address the PS5 kernel hands out for hint-less user mappings. Guest code can
 // assume mappings it did not place explicitly are at or above this (Sony's libc rejects a
 // heap below it), so hint-less searches must not fall back to the low system-managed range.
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+static constexpr uint64_t GUEST_DEFAULT_MAP_BASE = 0x7000000000ull;
+#else
 static constexpr uint64_t GUEST_DEFAULT_MAP_BASE = 0x200000000ull;
+#endif
 
 static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t alignment) {
 	EXIT_IF(g_guest_address_space == nullptr || g_virtual_ranges == nullptr);
@@ -863,12 +867,21 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 	};
 
 	if (search_addr != 0) {
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+		const auto effective_search = (search_addr < HOST_USER_MIN) ? HOST_USER_MIN : search_addr;
+		auto addr = find_in(effective_search, HOST_USER_MAX + 1u);
+#else
 		auto addr = find_in(search_addr, HOST_USER_MAX + 1u);
+#endif
 		if (addr != 0) {
 			return addr;
 		}
 	}
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+	auto addr = find_in(GUEST_DEFAULT_MAP_BASE, HOST_USER_MAX + 1u);
+#else
 	auto addr = find_in(GUEST_DEFAULT_MAP_BASE, HOST_SYSTEM_MANAGED_MAX + 1u);
+#endif
 	if (addr == 0) {
 		addr = find_in(HOST_USER_MIN, HOST_USER_MAX + 1u);
 	}
@@ -2292,7 +2305,11 @@ static int MapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags
 
 	constexpr size_t   PAGE_SIZE                = 0x4000;
 	constexpr size_t   MAXIMUM_NAME_SIZE        = 32;
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+	constexpr uint64_t DEFAULT_PS5_BASE         = 0x7000000000ull;
+#else
 	constexpr uint64_t DEFAULT_PS5_BASE         = 0x200000000;
+#endif
 	constexpr uint32_t GUEST_MAP_FIXED          = 0x10;
 	constexpr uint32_t GUEST_MAP_NO_OVERWRITE   = 0x80;
 	constexpr uint32_t GUEST_MAP_DMEM_COMPAT    = 0x400;
@@ -2357,6 +2374,14 @@ static int MapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags
 			reserved_target = true;
 			out_addr        = in_addr;
 		}
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+		if (out_addr == 0 && in_addr < HOST_USER_MIN) {
+			out_addr = FindGuestFreeRange(HOST_USER_MIN, len, map_alignment);
+			if (out_addr != 0) {
+				UnmapGpuRange(out_addr, len);
+			}
+		}
+#endif
 	} else {
 		const auto search_addr = (in_addr != 0 ? in_addr : DEFAULT_PS5_BASE);
 		out_addr               = FindGuestFreeRange(search_addr, len, map_alignment);
@@ -3131,10 +3156,19 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 			if (!reserved_target && ReplaceFixedRangeWithReserved(in_addr, len)) {
 				reserved_target = true;
 			}
-			if (!reserved_target) {
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+			if (!reserved_target && in_addr < HOST_USER_MIN) {
+				const auto relocated = FindGuestFreeRange(HOST_USER_MIN, len, alignment != 0 ? alignment : PAGE_SIZE);
+				if (relocated != 0 && map_shared_fixed(relocated)) {
+					out_addr       = relocated;
+					shared_backing = true;
+				}
+			}
+#endif
+			if (!reserved_target && !shared_backing) {
 				return KERNEL_ERROR_ENOMEM;
 			}
-			if (map_shared_fixed(in_addr)) {
+			if (!shared_backing && map_shared_fixed(in_addr)) {
 				out_addr       = in_addr;
 				shared_backing = true;
 			}
@@ -3567,6 +3601,14 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 			out_addr            = in_addr;
 			range_already_added = true;
 		}
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+		else if (in_addr < HOST_USER_MIN) {
+			out_addr = FindGuestFreeRange(HOST_USER_MIN, len, alignment != 0 ? alignment : PAGE_SIZE);
+			if (out_addr != 0) {
+				UnmapGpuRange(out_addr, len);
+			}
+		}
+#endif
 	} else {
 		alignment = (alignment != 0 ? alignment : PAGE_SIZE);
 		out_addr  = FindGuestFreeRange(in_addr, len, alignment);
