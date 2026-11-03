@@ -132,7 +132,7 @@ struct LibraryView: View {
                         .font(.title2)
                         .fontWeight(.bold)
                     
-                    Text("Copy PS5 game folders or ELFs into the KytyPS5 folder in Files app, or tap '+' to import.")
+                    Text("Copy PS5 game folders or ELFs into the Metaspero folder in Files app, or tap '+' to import.")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -416,7 +416,7 @@ struct LibraryView: View {
     
     private var jitWarningMessage: String {
         let pid = KytyBridge.processId()
-        return "KytyPS5 requires JIT compilation to emulate games smoothly. JIT is currently not active.\n\nOpen StikDebug to enable JIT for this process (PID: \(pid)), or try launching anyway?"
+        return "Metaspero requires JIT compilation to emulate games smoothly. JIT is currently not active.\n\nOpen StikDebug to enable JIT for this process (PID: \(pid)), or try launching anyway?"
     }
 
     private func forceCloseAndLaunch(_ game: GameItem) {
@@ -557,7 +557,7 @@ struct LibraryView: View {
             UserDefaults.standard.set(validSavedPaths, forKey: "KytyImportedGamePaths")
         }
 
-        if let appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("KytyPS5") {
+        if let appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("Metaspero") {
             try? fileManager.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
             do {
                 let files = try fileManager.contentsOfDirectory(at: appSupportURL, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey])

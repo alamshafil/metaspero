@@ -239,7 +239,7 @@ void SetupLogRedirection() {
             if (shouldWriteLog) {
                 g_persistent_log_file = fopen([g_persistent_log_path UTF8String], "w");
                 if (g_persistent_log_file) {
-                    std::fprintf(g_persistent_log_file, "--- KytyPS5 Session Log [%s] ---\n",
+                    std::fprintf(g_persistent_log_file, "--- Metaspero Session Log [%s] ---\n",
                                  [[NSDate date] description].UTF8String);
                     std::fflush(g_persistent_log_file);
                 }
@@ -408,7 +408,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
 #if TARGET_OS_OSX
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
     if (paths.count > 0) {
-        NSString *appSupportDir = [paths[0] stringByAppendingPathComponent:@"KytyPS5"];
+        NSString *appSupportDir = [paths[0] stringByAppendingPathComponent:@"Metaspero"];
         [[NSFileManager defaultManager] createDirectoryAtPath:appSupportDir
                                   withIntermediateDirectories:YES
                                                    attributes:nil
@@ -1005,7 +1005,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
 #if TARGET_OS_OSX
         NSArray *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
         if (paths.count > 0) {
-            NSString *appSupportDir = [paths[0] stringByAppendingPathComponent:@"KytyPS5"];
+            NSString *appSupportDir = [paths[0] stringByAppendingPathComponent:@"Metaspero"];
             [[NSFileManager defaultManager] createDirectoryAtPath:appSupportDir
                                       withIntermediateDirectories:YES
                                                        attributes:nil

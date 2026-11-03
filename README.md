@@ -1,6 +1,6 @@
-# KytyPS5-Apple
+# Metaspero
 
-KytyPS5-Apple is an experimental PlayStation 5 emulator and dynamic translation layer for Apple Silicon, with iOS as the primary target platform and support for native macOS (ARM64).
+Metaspero is an experimental PlayStation 5 emulator and dynamic translation layer for Apple Silicon, with iOS as the primary target platform and support for native macOS (ARM64).
 
 The project is forked from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (which is based on [Kyty](https://github.com/InoriRus/Kyty)), adapting the codebase for ARM64 Darwin. Base documentation, system requirements, and PC architecture notes are in [README.upstream.md](README.upstream.md).
 
@@ -91,9 +91,9 @@ Package into an IPA:
 
 ```bash
 mkdir -p _Build/ios/Payload
-cp -R _Build/ios/frontend/swift/Release-iphoneos/KytyPS5.app _Build/ios/Payload/
+cp -R _Build/ios/frontend/swift/Release-iphoneos/Metaspero.app _Build/ios/Payload/
 cd _Build/ios
-zip -r -q KytyPS5.ipa Payload
+zip -r -q Metaspero.ipa Payload
 rm -rf Payload
 ```
 
@@ -125,7 +125,7 @@ cmake --preset ios
 open _Build/ios/Kyty.xcodeproj
 ```
 
-Select the KytyPS5 scheme, choose your connected iOS device, and press Cmd+R to build and run.
+Select the Metaspero scheme, choose your connected iOS device, and press Cmd+R to build and run.
 
 For macOS:
 
@@ -134,7 +134,7 @@ cmake --preset macos-swiftui
 open _Build/mac/Kyty.xcodeproj
 ```
 
-Select the KytyPS5 scheme, choose My Mac, and press Cmd+R to build and run.
+Select the Metaspero scheme, choose My Mac, and press Cmd+R to build and run.
 
 ### 5. Release Builds
 
@@ -145,8 +145,8 @@ For instructions on bumping version numbers, building release binaries, and pack
 iOS requires an attached debugger for JIT permissions:
 
 1. Connect LocalDevVPN on your device.
-2. Open StikDebug, select KytyPS5, and run the `universal.js` script.
-3. Return to KytyPS5. Once JIT status shows Active, launch a game.
+2. Open StikDebug, select Metaspero, and run the `universal.js` script.
+3. Return to Metaspero. Once JIT status shows Active, launch a game.
 
 ## Website and Compatibility Reports
 
@@ -174,6 +174,6 @@ Status ratings:
 
 ## Disclaimer and Licenses
 
-KytyPS5-Apple is an independent open-source research project and is not affiliated with or endorsed by Sony Interactive Entertainment Inc. PlayStation and related marks are trademarks of their respective owners. No copyrighted BIOS, firmware, or game assets are included.
+Metaspero is an independent open-source research project and is not affiliated with or endorsed by Sony Interactive Entertainment Inc. PlayStation and related marks are trademarks of their respective owners. No copyrighted BIOS, firmware, or game assets are included.
 
-KytyPS5-Apple is licensed under the GNU General Public License version 2 (GPL-2.0-only). Upstream Kyty copyright notices are in `LICENSES/Kyty-MIT.txt`.
+Metaspero is licensed under the GNU General Public License version 2 (GPL-2.0-only). Upstream Kyty copyright notices are in `LICENSES/Kyty-MIT.txt`.

@@ -63,9 +63,9 @@
   ],
   "buildPresets": [
     { "name": "macos", "configurePreset": "macos", "targets": ["kyty_emulator"] },
-    { "name": "macos-swiftui", "configurePreset": "macos-swiftui", "configuration": "Debug", "targets": ["KytyPS5"] },
-    { "name": "macos-arm64-fex", "configurePreset": "macos-arm64-fex", "targets": ["KytyPS5"] },
-    { "name": "ios", "configurePreset": "ios", "configuration": "Release", "targets": ["KytyPS5"] },
-    { "name": "ios-debug", "configurePreset": "ios", "configuration": "Debug", "targets": ["KytyPS5"] }
+    { "name": "macos-swiftui", "configurePreset": "macos-swiftui", "configuration": "Debug", "targets": ["Metaspero"] },
+    { "name": "macos-arm64-fex", "configurePreset": "macos-arm64-fex", "targets": ["Metaspero"] },
+    { "name": "ios", "configurePreset": "ios", "configuration": "Release", "targets": ["Metaspero"] },
+    { "name": "ios-debug", "configurePreset": "ios", "configuration": "Debug", "targets": ["Metaspero"] }
   ]
 }

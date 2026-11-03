@@ -40,7 +40,7 @@ Configure and compile the release binary:
 
 ```bash
 cmake --preset ios
-cmake --build --preset ios --config Release --target KytyPS5 -- \
+cmake --build --preset ios --config Release --target Metaspero -- \
   CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
 ```
 
@@ -48,13 +48,13 @@ Package the app bundle into an IPA file:
 
 ```bash
 mkdir -p _Build/ios/Payload
-cp -R _Build/ios/frontend/swift/Release-iphoneos/KytyPS5.app _Build/ios/Payload/
+cp -R _Build/ios/frontend/swift/Release-iphoneos/Metaspero.app _Build/ios/Payload/
 cd _Build/ios
-zip -r -q KytyPS5-iOS-arm64.ipa Payload
+zip -r -q Metaspero-iOS-arm64.ipa Payload
 rm -rf Payload
 ```
 
-Output: `_Build/ios/KytyPS5-iOS-arm64.ipa`
+Output: `_Build/ios/Metaspero-iOS-arm64.ipa`
 
 This package can be installed directly with TrollStore, AltStore, or SideStore.
 
@@ -64,14 +64,14 @@ Configure and build the native macOS application:
 
 ```bash
 cmake --preset macos-swiftui -DCMAKE_BUILD_TYPE=Release
-cmake --build --preset macos-swiftui --config Release --target KytyPS5
+cmake --build --preset macos-swiftui --config Release --target Metaspero
 ```
 
 Package the application bundle into a zip archive:
 
 ```bash
 cd _Build/mac/frontend/swift/Release
-zip -r -q KytyPS5-macOS-arm64.zip KytyPS5.app
+zip -r -q Metaspero-macOS-arm64.zip Metaspero.app
 ```
 
-Output: `_Build/mac/frontend/swift/Release/KytyPS5-macOS-arm64.zip`
+Output: `_Build/mac/frontend/swift/Release/Metaspero-macOS-arm64.zip`

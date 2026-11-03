@@ -57,7 +57,7 @@ struct AboutKytyContentView: View {
                     appIconView
                     
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("KytyPS5")
+                        Text("Metaspero")
                             .font(.title2)
                             .fontWeight(.bold)
                         Text(appVersion)
@@ -100,14 +100,14 @@ struct AboutKytyContentView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("License")
                         .font(.headline)
-                    Text("KytyPS5-Apple is licensed under the GNU General Public License version 2 (GPL-2.0-only).")
+                    Text("Metaspero is licensed under the GNU General Public License version 2 (GPL-2.0-only).")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
             .padding(20)
         }
-        .navigationTitle("About KytyPS5")
+        .navigationTitle("About Metaspero")
     }
 }
 

@@ -1,4 +1,4 @@
-name: Build and Release KytyPS5
+name: Build and Release Metaspero
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
         id: release_tag
         shell: bash
         run: |
-          echo "value=KytyPS5-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "value=Metaspero-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
   windows:
     name: Build KytyPS5 (Windows)
@@ -292,7 +292,7 @@ jobs:
           if-no-files-found: error
 
   ios:
-    name: Build KytyPS5 (iOS)
+    name: Build Metaspero (iOS)
     needs: metadata
     runs-on: macos-15
 
@@ -326,27 +326,27 @@ jobs:
       - name: Build iOS Application
         shell: bash
         run: |
-          cmake --build --preset ios --config Release --target KytyPS5 -- \
+          cmake --build --preset ios --config Release --target Metaspero -- \
             CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
 
       - name: Package IPA
         shell: bash
         run: |
           mkdir -p _Build/ios/Payload
-          cp -R _Build/ios/frontend/swift/Release-iphoneos/KytyPS5.app _Build/ios/Payload/
+          cp -R _Build/ios/frontend/swift/Release-iphoneos/Metaspero.app _Build/ios/Payload/
           cd _Build/ios
-          zip -r -q KytyPS5-iOS-arm64.ipa Payload
+          zip -r -q Metaspero-iOS-arm64.ipa Payload
           rm -rf Payload
 
       - name: Upload iOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-iOS-arm64
-          path: _Build/ios/KytyPS5-iOS-arm64.ipa
+          name: Metaspero-iOS-arm64
+          path: _Build/ios/Metaspero-iOS-arm64.ipa
           if-no-files-found: error
 
   macos-swiftui:
-    name: Build KytyPS5 (macOS ARM64 + FEX)
+    name: Build Metaspero (macOS ARM64 + FEX)
     needs: metadata
     runs-on: macos-15
 
@@ -379,7 +379,7 @@ jobs:
 
       - name: Build macOS SwiftUI
         shell: bash
-        run: cmake --build --preset macos-swiftui --config Release --target KytyPS5
+        run: cmake --build --preset macos-swiftui --config Release --target Metaspero
 
       - name: Build and Run FEX JIT Tests
         shell: bash
@@ -391,13 +391,13 @@ jobs:
         shell: bash
         run: |
           cd _Build/mac/frontend/swift/Release
-          zip -r -q KytyPS5-macOS-arm64.zip KytyPS5.app
+          zip -r -q Metaspero-macOS-arm64.zip Metaspero.app
 
       - name: Upload macOS ARM64 artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-macOS-arm64
-          path: _Build/mac/frontend/swift/Release/KytyPS5-macOS-arm64.zip
+          name: Metaspero-macOS-arm64
+          path: _Build/mac/frontend/swift/Release/Metaspero-macOS-arm64.zip
           if-no-files-found: error
 
   linux:

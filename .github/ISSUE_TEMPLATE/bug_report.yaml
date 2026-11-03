@@ -34,7 +34,7 @@ body:
   - type: input
     id: app-version
     attributes:
-      label: KytyPS5 Version or Commit Hash
+      label: Metaspero Version or Commit Hash
       description: The version or commit hash shown in the About screen.
       placeholder: "Example: v0.1.0 (1) or commit"
     validations:
@@ -55,7 +55,7 @@ body:
       label: Steps to Reproduce
       description: How to reproduce the bug.
       placeholder: |
-        1. Launch KytyPS5.
+        1. Launch Metaspero.
         2. Tap / click on ...
         3. Observe crash / glitch.
     validations:

@@ -41,18 +41,18 @@ if(IOS)
     list(APPEND SWIFT_SOURCES LaunchScreen.storyboard)
 endif()
 
-add_executable(KytyPS5
+add_executable(Metaspero
     ${SWIFT_SOURCES}
 )
-set_target_properties(KytyPS5 PROPERTIES FOLDER "Application")
+set_target_properties(Metaspero PROPERTIES FOLDER "Application")
 
-target_compile_options(KytyPS5 PRIVATE
+target_compile_options(Metaspero PRIVATE
     "$<$<COMPILE_LANGUAGE:Swift>:-import-objc-header;${CMAKE_CURRENT_SOURCE_DIR}/Bridge/KytyBridge.h>"
 )
 
 set(KYTY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 
-target_include_directories(KytyPS5 PRIVATE
+target_include_directories(Metaspero PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/Bridge"
     "${KYTY_ROOT}/3rdparty/magic_enum/include/magic_enum"
     "${KYTY_ROOT}/3rdparty/magic_enum/include"
@@ -62,7 +62,7 @@ target_include_directories(KytyPS5 PRIVATE
     "${KYTY_ROOT}/3rdparty/stb"
 )
 
-target_compile_definitions(KytyPS5 PRIVATE
+target_compile_definitions(Metaspero PRIVATE
     HAS_KYTY_CORE=1
 )
 
@@ -90,22 +90,25 @@ set(COMMON_FRAMEWORKS
 )
 
 if(IOS)
-    target_link_libraries(KytyPS5 PRIVATE
+    target_link_libraries(Metaspero PRIVATE
         kyty_core
         ${COMMON_FRAMEWORKS}
         "-framework UIKit"
         "-framework CoreMotion"
         "-framework OpenGLES"
     )
-    set_target_properties(KytyPS5 PROPERTIES
+    set_target_properties(Metaspero PROPERTIES
         XCODE_GENERATE_SCHEME ON
+        OUTPUT_NAME "Metaspero"
         MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "Metaspero"
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${KYTY_APP_VERSION}"
         MACOSX_BUNDLE_BUNDLE_VERSION "${KYTY_APP_BUILD}"
         XCODE_ATTRIBUTE_MARKETING_VERSION "${KYTY_APP_VERSION}"
         XCODE_ATTRIBUTE_CURRENT_PROJECT_VERSION "${KYTY_APP_BUILD}"
         XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${KYTY_APP_BUNDLE_ID}"
+        XCODE_ATTRIBUTE_PRODUCT_NAME "Metaspero"
         XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "Icon"
         XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
         XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/Bridge/KytyBridge.h"
@@ -119,24 +122,27 @@ if(IOS)
         XCODE_EMBED_FRAMEWORKS_REMOVE_HEADERS_ON_COPY ON
     )
     if(KYTY_IOS_TEAM_ID)
-        set_target_properties(KytyPS5 PROPERTIES XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${KYTY_IOS_TEAM_ID}")
+        set_target_properties(Metaspero PROPERTIES XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${KYTY_IOS_TEAM_ID}")
     endif()
 else()
     include("${CMAKE_SOURCE_DIR}/cmake/MoltenVKMacOS.cmake")
-    target_link_libraries(KytyPS5 PRIVATE
+    target_link_libraries(Metaspero PRIVATE
         kyty_core
         ${COMMON_FRAMEWORKS}
         "-framework AppKit"
     )
-    set_target_properties(KytyPS5 PROPERTIES
+    set_target_properties(Metaspero PROPERTIES
         XCODE_GENERATE_SCHEME ON
+        OUTPUT_NAME "Metaspero"
         MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "Metaspero"
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${KYTY_APP_VERSION}"
         MACOSX_BUNDLE_BUNDLE_VERSION "${KYTY_APP_BUILD}"
         XCODE_ATTRIBUTE_MARKETING_VERSION "${KYTY_APP_VERSION}"
         XCODE_ATTRIBUTE_CURRENT_PROJECT_VERSION "${KYTY_APP_BUILD}"
         XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${KYTY_APP_BUNDLE_ID}"
+        XCODE_ATTRIBUTE_PRODUCT_NAME "Metaspero"
         XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "Icon"
         XCODE_ATTRIBUTE_SWIFT_VERSION "5.0"
         XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/Bridge/KytyBridge.h"
@@ -149,13 +155,13 @@ else()
         XCODE_EMBED_FRAMEWORKS_REMOVE_HEADERS_ON_COPY ON
     )
     if(KYTY_MOLTENVK_DYLIB)
-        add_custom_command(TARGET KytyPS5 POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:KytyPS5>/../Frameworks"
+        add_custom_command(TARGET Metaspero POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Metaspero>/../Frameworks"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${KYTY_MOLTENVK_DYLIB}"
-                "$<TARGET_FILE_DIR:KytyPS5>/../Frameworks/libMoltenVK.dylib"
-            COMMAND codesign -s - --force "$<TARGET_FILE_DIR:KytyPS5>/../Frameworks/libMoltenVK.dylib"
-            COMMENT "Copy and codesign libMoltenVK.dylib into KytyPS5.app/Contents/Frameworks"
+                "$<TARGET_FILE_DIR:Metaspero>/../Frameworks/libMoltenVK.dylib"
+            COMMAND codesign -s - --force "$<TARGET_FILE_DIR:Metaspero>/../Frameworks/libMoltenVK.dylib"
+            COMMENT "Copy and codesign libMoltenVK.dylib into Metaspero.app/Contents/Frameworks"
         )
     endif()
 endif()
@@ -167,14 +173,14 @@ if(NOT CMAKE_GENERATOR MATCHES "Xcode")
             set(ACTOOL_PLATFORM "iphoneos")
             set(ACTOOL_TARGET "iphone")
             set(ACTOOL_MIN_VER "${KYTY_IOS_MIN_VERSION}")
-            set(ACTOOL_OUT_DIR "$<TARGET_FILE_DIR:KytyPS5>")
+            set(ACTOOL_OUT_DIR "$<TARGET_FILE_DIR:Metaspero>")
         else()
             set(ACTOOL_PLATFORM "macosx")
             set(ACTOOL_TARGET "mac")
             set(ACTOOL_MIN_VER "15.0")
-            set(ACTOOL_OUT_DIR "$<TARGET_FILE_DIR:KytyPS5>/../Resources")
+            set(ACTOOL_OUT_DIR "$<TARGET_FILE_DIR:Metaspero>/../Resources")
         endif()
-        add_custom_command(TARGET KytyPS5 POST_BUILD
+        add_custom_command(TARGET Metaspero POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory "${ACTOOL_OUT_DIR}"
             COMMAND ${ACTOOL_EXECUTABLE}
                 --output-format human-readable-text

@@ -16,7 +16,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 endif()
 
 if(CMAKE_GENERATOR MATCHES "Xcode")
-	# Suppress automatic Xcode schemes for all internal 3rd-party libraries so only KytyPS5 gets a scheme.
+	# Suppress automatic Xcode schemes for all internal 3rd-party libraries so only Metaspero gets a scheme.
 	set(CMAKE_XCODE_GENERATE_SCHEME OFF)
 endif()
 
@@ -168,7 +168,7 @@ if (KYTY_LINKER STREQUAL LD AND NOT LINUX)
 endif()
 
 if(APPLE OR IOS OR KYTY_BUILD_SWIFTUI_APP)
-	project(Kyty VERSION 0.3.0)
+	project(Metaspero VERSION 0.3.0)
 else()
 	project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 0.3.0)
 endif()

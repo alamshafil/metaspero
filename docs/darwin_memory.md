@@ -1,12 +1,12 @@
 # Darwin Virtual and Direct Memory Architecture
 
-This doc describes the design and runtime memory architecture of KytyPS5 on Apple Silicon (macOS and iOS), detailing direct memory aliasing, host memory footprint considerations, graphics cache lifecycles, and platform differences between macOS and iOS.
+This doc describes the design and runtime memory architecture of Metaspero on Apple Silicon (macOS and iOS), detailing direct memory aliasing, host memory footprint considerations, graphics cache lifecycles, and platform differences between macOS and iOS.
 
 ## 1. Architecture Overview
 
 The PS5 uses a unified memory architecture where the CPU and GPU share a single 16 GB physical address space (with ~13.8 GB available to userland games). Games allocate "direct memory" (`sceKernelAllocateDirectMemory`) and map it into arbitrary virtual addresses (`sceKernelMapDirectMemory`). Multiple virtual ranges can alias the exact same physical memory block simultaneously.
 
-On Darwin (macOS and iOS), KytyPS5 models this unified memory using Mach VM primitives:
+On Darwin (macOS and iOS), Metaspero models this unified memory using Mach VM primitives:
 
 - Backing store: Single shared anonymous Mach VM allocation (`MAP_ANON | MAP_SHARED`) representing the 13.8 GB guest physical address space.
 - Guest mappings: Views remapped into guest virtual address space using Mach `vm_remap` (`VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE`).
@@ -78,7 +78,7 @@ if (m_backing_base != nullptr) {
 
 Darwin Solution:
 
-KytyPS5 dynamically scales the system reserve proportionally to actual installed unified memory:
+Metaspero dynamically scales the system reserve proportionally to actual installed unified memory:
 
 ```cpp
 #if defined(KYTY_ARM64_APPLE) || (defined(__APPLE__) && defined(__arm64__))

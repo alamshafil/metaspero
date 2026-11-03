@@ -11,9 +11,9 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>Metaspero</string>
 	<key>CFBundleDisplayName</key>
-	<string>KytyPS5</string>
+	<string>Metaspero</string>
 	<key>CFBundleIconName</key>
 	<string>Icon</string>
 	<key>CFBundleIconFile</key>

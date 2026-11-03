@@ -1,10 +1,10 @@
 # Darwin ARM64 JIT and Runtime Architecture
 
-This document describes the design and runtime architecture of KytyPS5 on Apple Silicon (macOS and iOS) using the custom FEXCore JIT engine.
+This document describes the design and runtime architecture of Metaspero on Apple Silicon (macOS and iOS) using the custom FEXCore JIT engine.
 
 ## 1. Architecture Overview
 
-KytyPS5 on Darwin separates UI from core emulation:
+Metaspero on Darwin separates UI from core emulation:
 
 - Frontend: SwiftUI app on iOS and macOS (`frontend/swift/`), with an optional CLI binary on macOS (`kyty_emulator`).
 - Bridge: Objective-C++ bridge (`frontend/swift/Bridge/KytyBridge.mm`) connects Swift UI to the C++ core and pipes standard output to the UI log viewer.

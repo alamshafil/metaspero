@@ -56,7 +56,7 @@ struct SettingsView: View {
     @AppStorage("skipMeshShaders") private var skipMeshShaders = false
     
     // Advanced Settings
-    @AppStorage("userName") private var userName = "Kyty"
+    @AppStorage("userName") private var userName = "Metaspero"
     @AppStorage("userId") private var userId = 1000
     @AppStorage("consoleLanguage") private var consoleLanguage = 1
     @AppStorage("networkConnected") private var networkConnected = false
@@ -400,7 +400,7 @@ struct SettingsView: View {
                     HStack {
                         Text("User Name")
                         Spacer()
-                        TextField("Kyty", text: $userName)
+                        TextField("Metaspero", text: $userName)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 180)
                     }
@@ -691,7 +691,7 @@ struct SettingsView: View {
                 HStack {
                     Text("User Name")
                     Spacer()
-                    TextField("Kyty", text: $userName)
+                    TextField("Metaspero", text: $userName)
                         .multilineTextAlignment(.trailing)
                 }
                 
