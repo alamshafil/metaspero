@@ -332,9 +332,9 @@ jobs:
       - name: Package IPA
         shell: bash
         run: |
-          mkdir -p _Build/xcode/Payload
-          cp -R _Build/xcode/frontend/swift/Release-iphoneos/KytyPS5.app _Build/xcode/Payload/
-          cd _Build/xcode
+          mkdir -p _Build/ios/Payload
+          cp -R _Build/ios/frontend/swift/Release-iphoneos/KytyPS5.app _Build/ios/Payload/
+          cd _Build/ios
           zip -r -q KytyPS5-iOS-arm64.ipa Payload
           rm -rf Payload
 
@@ -342,7 +342,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: KytyPS5-iOS-arm64
-          path: _Build/xcode/KytyPS5-iOS-arm64.ipa
+          path: _Build/ios/KytyPS5-iOS-arm64.ipa
           if-no-files-found: error
 
   macos-swiftui:
@@ -385,19 +385,19 @@ jobs:
         shell: bash
         run: |
           cmake --build --preset macos-swiftui --config Release --target fex_jit_bridge_tests
-          _Build/xcode-mac/tests/Release/fex_jit_bridge_tests
+          _Build/mac/tests/Release/fex_jit_bridge_tests
 
       - name: Package macOS App
         shell: bash
         run: |
-          cd _Build/xcode-mac/frontend/swift/Release
+          cd _Build/mac/frontend/swift/Release
           zip -r -q KytyPS5-macOS-arm64.zip KytyPS5.app
 
       - name: Upload macOS ARM64 artifacts
         uses: actions/upload-artifact@v4
         with:
           name: KytyPS5-macOS-arm64
-          path: _Build/xcode-mac/frontend/swift/Release/KytyPS5-macOS-arm64.zip
+          path: _Build/mac/frontend/swift/Release/KytyPS5-macOS-arm64.zip
           if-no-files-found: error
 
   linux:

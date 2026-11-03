@@ -13,12 +13,16 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/cmake/ios_min_version.txt" KYTY_IOS_MIN_VERSION LIMIT_COUNT 1)
 	set(CMAKE_OSX_DEPLOYMENT_TARGET "${KYTY_IOS_MIN_VERSION}" CACHE STRING "Minimum iOS version" FORCE)
+endif()
+
+if(CMAKE_GENERATOR MATCHES "Xcode")
 	# Suppress automatic Xcode schemes for all internal 3rd-party libraries so only KytyPS5 gets a scheme.
 	set(CMAKE_XCODE_GENERATE_SCHEME OFF)
 endif()
 
 # Organize targets into folders in IDEs (Xcode / Visual Studio)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "CMake")
 
 project(Kyty)
 
@@ -163,7 +167,7 @@ if (KYTY_LINKER STREQUAL LD AND NOT LINUX)
 	set(KYTY_LD_OPTIONS "-Wl,--image-base=0x100000000000")
 endif()
 
-if(IOS)
+if(APPLE OR IOS OR KYTY_BUILD_SWIFTUI_APP)
 	project(Kyty VERSION 0.3.0)
 else()
 	project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 0.3.0)
@@ -230,7 +234,9 @@ if(KYTY_ENABLE_FEX_GUEST_CPU)
 	add_compile_definitions(KYTY_ENABLE_FEX_GUEST_CPU=1 ARCHITECTURE_arm64=1)
 endif()
 
+set(CMAKE_FOLDER "3rdparty")
 add_subdirectory("${KYTY_THIRD_PARTY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/3rdparty")
+unset(CMAKE_FOLDER)
 add_subdirectory("${KYTY_SOURCE_DIR}/common" "${CMAKE_CURRENT_BINARY_DIR}/common")
 
 file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
@@ -470,12 +476,15 @@ function(configure_macos_guest_address_space target)
 	endif()
 endfunction()
 
-if(NOT IOS)
-	add_kyty_full_emulator_test(shader_cfg_tests "${KYTY_TESTS_DIR}/shaderCfgTests.cpp")
-	if(APPLE)
-		add_kyty_full_emulator_test(macos_ngg_vertex_tests "${KYTY_TESTS_DIR}/MacosNggVertexTests.cpp")
+if(BUILD_TESTING)
+	set(CMAKE_FOLDER "Tests")
+
+	if(NOT IOS)
+		add_kyty_full_emulator_test(shader_cfg_tests "${KYTY_TESTS_DIR}/shaderCfgTests.cpp")
+		if(APPLE)
+			add_kyty_full_emulator_test(macos_ngg_vertex_tests "${KYTY_TESTS_DIR}/MacosNggVertexTests.cpp")
+		endif()
 	endif()
-endif()
 
 add_executable(push_descriptor_policy_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/PushDescriptorPolicyTests.cpp"
@@ -709,7 +718,6 @@ if(NOT KYTY_CLANG_CL)
 	endforeach()
 endif()
 
-if(BUILD_TESTING)
 	add_test(NAME emulator_user_name_cli
 	         COMMAND $<TARGET_FILE:kyty_emulator> --help --user-name 1234567890123456)
 	add_test(NAME emulator_user_name_too_long
@@ -869,7 +877,7 @@ if(BUILD_TESTING)
 endif()
 
 # Test Darwin signal-context restoration for SSE4a instructions.
-if(APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
+if(BUILD_TESTING AND APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
 		(NOT CMAKE_OSX_ARCHITECTURES AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")))
 	add_executable(macos_sse4a_tests EXCLUDE_FROM_ALL
 		"${KYTY_TESTS_DIR}/macosSse4aTests.cpp"
@@ -878,12 +886,13 @@ if(APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
 	)
 	target_link_libraries(macos_sse4a_tests common fmt::fmt Zydis::Zydis xbyak::xbyak)
 	target_include_directories(macos_sse4a_tests PRIVATE ${inc_headers})
-	if(BUILD_TESTING)
-		add_test(NAME macos_sse4a COMMAND $<TARGET_FILE:macos_sse4a_tests>)
-		set_tests_properties(macos_sse4a PROPERTIES TIMEOUT 15)
-		add_dependencies(kyty_tests macos_sse4a_tests)
-	endif()
+	set_target_properties(macos_sse4a_tests PROPERTIES FOLDER "Tests")
+	add_test(NAME macos_sse4a COMMAND $<TARGET_FILE:macos_sse4a_tests>)
+	set_tests_properties(macos_sse4a PROPERTIES TIMEOUT 15)
+	add_dependencies(kyty_tests macos_sse4a_tests)
 endif()
+
+unset(CMAKE_FOLDER)
 
 if(IOS OR KYTY_BUILD_SWIFTUI_APP)
 	# The emulator core is a library target so the SwiftUI app (frontend/swift) links it with all of its
@@ -895,6 +904,10 @@ if(IOS OR KYTY_BUILD_SWIFTUI_APP)
 	target_link_libraries(kyty_emulator kyty_core)
 else()
 	add_executable(kyty_emulator "${KYTY_SOURCE_DIR}/main.cpp" ${kyty_emulator_src})
+endif()
+set_target_properties(kyty_emulator PROPERTIES FOLDER "Core")
+if(TARGET kyty_core)
+	set_target_properties(kyty_core PROPERTIES FOLDER "Core")
 endif()
 add_dependencies(kyty_emulator kyty_generated_shader_headers)
 if(TARGET kyty_core)
@@ -908,6 +921,7 @@ if(KYTY_ENABLE_FEX_GUEST_CPU AND TARGET kyty_core)
 	)
 	target_link_libraries(fex_jit_bridge_tests PRIVATE kyty_core fmt::fmt Zydis::Zydis)
 	target_include_directories(fex_jit_bridge_tests PRIVATE ${inc_headers})
+	set_target_properties(fex_jit_bridge_tests PROPERTIES FOLDER "Tests")
 	if(BUILD_TESTING)
 		add_test(NAME fex_jit_bridge COMMAND $<TARGET_FILE:fex_jit_bridge_tests>)
 		set_tests_properties(fex_jit_bridge PROPERTIES TIMEOUT 60)
@@ -923,6 +937,15 @@ add_custom_target(kyty_trophy_sound
 		"$<TARGET_FILE_DIR:kyty_emulator>/assets/sounds/trophy-unlock.wav"
 	VERBATIM)
 add_dependencies(kyty_emulator kyty_trophy_sound)
+if(TARGET kyty_trophy_sound)
+	set_target_properties(kyty_trophy_sound PROPERTIES FOLDER "Core")
+endif()
+if(TARGET kyty_generated_shader_headers)
+	set_target_properties(kyty_generated_shader_headers PROPERTIES FOLDER "Core")
+endif()
+if(TARGET KytyGitVersion)
+	set_target_properties(KytyGitVersion PROPERTIES FOLDER "Core")
+endif()
 install(FILES "${KYTY_TROPHY_UNLOCK_SOUND}" DESTINATION assets/sounds)
 
 target_link_libraries(kyty_emulator ${kyty_emulator_link_libraries})

@@ -1,5 +1,6 @@
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set_property(DIRECTORY PROPERTY FOLDER "3rdparty")
+set(CMAKE_FOLDER "3rdparty")
 
 add_subdirectory(cpuinfo)
 
@@ -95,6 +96,8 @@ else()
 endif()
 
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
 if(APPLE)
 	# SDL's built-in iconv fallback does not support CP932.
 	set(SDL_SYSTEM_ICONV ON CACHE BOOL "Use system iconv for CP932 conversion" FORCE)
@@ -136,6 +139,7 @@ add_subdirectory(SPIRV-Tools)
 add_library(spirv-tools ALIAS SPIRV-Tools-static)
 add_library(spirv-tools-opt ALIAS SPIRV-Tools-opt)
 
+set(XXHASH_BUILD_XXHSUM OFF CACHE BOOL "" FORCE)
 add_subdirectory(xxHash/build/cmake)
 
 set(FMT_DOC OFF CACHE BOOL "" FORCE)
@@ -270,5 +274,12 @@ if(KYTY_ENABLE_FEX_GUEST_CPU)
 	target_compile_definitions(FEXCore INTERFACE
 		META_NO_STD_FORWARD_DECLARATIONS
 	)
+endif()
+
+if(TARGET clean-all)
+	set_target_properties(clean-all PROPERTIES FOLDER "CMake")
+endif()
+if(TARGET uninstall)
+	set_target_properties(uninstall PROPERTIES FOLDER "CMake")
 endif()
 

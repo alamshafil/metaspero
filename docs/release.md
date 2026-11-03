@@ -47,14 +47,14 @@ cmake --build --preset ios --config Release --target KytyPS5 -- \
 Package the app bundle into an IPA file:
 
 ```bash
-mkdir -p _Build/xcode/Payload
-cp -R _Build/xcode/frontend/swift/Release-iphoneos/KytyPS5.app _Build/xcode/Payload/
-cd _Build/xcode
+mkdir -p _Build/ios/Payload
+cp -R _Build/ios/frontend/swift/Release-iphoneos/KytyPS5.app _Build/ios/Payload/
+cd _Build/ios
 zip -r -q KytyPS5-iOS-arm64.ipa Payload
 rm -rf Payload
 ```
 
-Output: `_Build/xcode/KytyPS5-iOS-arm64.ipa`
+Output: `_Build/ios/KytyPS5-iOS-arm64.ipa`
 
 This package can be installed directly with TrollStore, AltStore, or SideStore.
 
@@ -70,8 +70,8 @@ cmake --build --preset macos-swiftui --config Release --target KytyPS5
 Package the application bundle into a zip archive:
 
 ```bash
-cd _Build/xcode-mac/frontend/swift/Release
+cd _Build/mac/frontend/swift/Release
 zip -r -q KytyPS5-macOS-arm64.zip KytyPS5.app
 ```
 
-Output: `_Build/xcode-mac/frontend/swift/Release/KytyPS5-macOS-arm64.zip`
+Output: `_Build/mac/frontend/swift/Release/KytyPS5-macOS-arm64.zip`

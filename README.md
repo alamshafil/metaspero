@@ -90,9 +90,9 @@ cmake --build --preset ios -- \
 Package into an IPA:
 
 ```bash
-mkdir -p _Build/xcode/Payload
-cp -R _Build/xcode/frontend/swift/Release-iphoneos/KytyPS5.app _Build/xcode/Payload/
-cd _Build/xcode
+mkdir -p _Build/ios/Payload
+cp -R _Build/ios/frontend/swift/Release-iphoneos/KytyPS5.app _Build/ios/Payload/
+cd _Build/ios
 zip -r -q KytyPS5.ipa Payload
 rm -rf Payload
 ```
@@ -122,7 +122,7 @@ For iOS:
 
 ```bash
 cmake --preset ios
-open _Build/xcode/Kyty.xcodeproj
+open _Build/ios/Kyty.xcodeproj
 ```
 
 Select the KytyPS5 scheme, choose your connected iOS device, and press Cmd+R to build and run.
@@ -131,7 +131,7 @@ For macOS:
 
 ```bash
 cmake --preset macos-swiftui
-open _Build/xcode-mac/KytyEmulatorCLANG.xcodeproj
+open _Build/mac/Kyty.xcodeproj
 ```
 
 Select the KytyPS5 scheme, choose My Mac, and press Cmd+R to build and run.

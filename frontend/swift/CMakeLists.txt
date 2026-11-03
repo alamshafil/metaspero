@@ -44,6 +44,7 @@ endif()
 add_executable(KytyPS5
     ${SWIFT_SOURCES}
 )
+set_target_properties(KytyPS5 PROPERTIES FOLDER "Application")
 
 target_compile_options(KytyPS5 PRIVATE
     "$<$<COMPILE_LANGUAGE:Swift>:-import-objc-header;${CMAKE_CURRENT_SOURCE_DIR}/Bridge/KytyBridge.h>"

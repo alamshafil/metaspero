@@ -19,7 +19,7 @@
       "name": "macos-swiftui",
       "displayName": "macOS Native SwiftUI App (arm64 + FEX, Xcode)",
       "generator": "Xcode",
-      "binaryDir": "${sourceDir}/_Build/xcode-mac",
+      "binaryDir": "${sourceDir}/_Build/mac",
       "cacheVariables": {
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "KYTY_ENABLE_FEX_GUEST_CPU": "ON",
@@ -49,7 +49,7 @@
       "displayName": "iOS device (arm64) + SwiftUI app, Xcode generator",
       "description": "Minimum iOS version comes from cmake/ios_min_version.txt. Set KYTY_IOS_TEAM_ID for signing.",
       "generator": "Xcode",
-      "binaryDir": "${sourceDir}/_Build/xcode",
+      "binaryDir": "${sourceDir}/_Build/ios",
       "cacheVariables": {
         "CMAKE_SYSTEM_NAME": "iOS",
         "CMAKE_OSX_SYSROOT": "iphoneos",
