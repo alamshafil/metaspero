@@ -86,7 +86,7 @@ void* PthreadCreateMainGuestStack();
 void  PthreadDeleteStaticObjects(Loader::Program* program);
 
 KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func, void* stack_top);
-void               PthreadCallGuestDestructor(void (*func)(void*), void* arg);
+void               PthreadCallGuestDestructor(void (* __attribute__((sysv_abi)) func)(void*), void* arg);
 
 int KYTY_SYSV_ABI PthreadMutexattrInit(PthreadMutexattr* attr);
 int KYTY_SYSV_ABI PthreadMutexattrDestroy(PthreadMutexattr* attr);

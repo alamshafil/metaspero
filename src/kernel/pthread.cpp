@@ -979,7 +979,7 @@ KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func, void* 
 #endif
 }
 
-void PthreadCallGuestDestructor(void (*func)(void*), void* arg) {
+void PthreadCallGuestDestructor(void (* __attribute__((sysv_abi)) func)(void*), void* arg) {
 	if (func == nullptr) {
 		return;
 	}
