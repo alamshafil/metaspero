@@ -9,7 +9,9 @@
 #include <dlfcn.h>
 #endif
 
+#ifdef KYTY_ENABLE_FEX_GUEST_CPU
 #include "loader/fex/fexHleBridge.h"
+#endif
 
 namespace Loader {
 
@@ -35,9 +37,9 @@ void SymbolDatabase::Add(const SymbolResolve& s, uint64_t vaddr) {
 	m_symbols.push_back(r);
 }
 
+#ifdef KYTY_ENABLE_FEX_GUEST_CPU
 void SymbolDatabase::Add(const SymbolResolve& s, uint64_t vaddr, const std::string& dbg_name,
                          Fex::HleDescriptor desc) {
-#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
 	if (s.type == SymbolType::Func && vaddr != 0) {
 #if defined(__APPLE__)
 		Dl_info dli {};
@@ -50,7 +52,16 @@ void SymbolDatabase::Add(const SymbolResolve& s, uint64_t vaddr, const std::stri
 		    vaddr, dbg_name.empty() ? s.name : dbg_name, Fex::ThunkSignature::Auto, desc);
 #endif
 	}
-#endif
+
+    SymbolRecord r {};
+    r.name     = GenerateName(s);
+    r.vaddr    = vaddr;
+    r.dbg_name = dbg_name;
+    m_map.insert_or_assign(r.name, m_symbols.size());
+    m_symbols.push_back(r);
+}
+#else
+void SymbolDatabase::Add(const SymbolResolve& s, uint64_t vaddr, const std::string& dbg_name) {
 	SymbolRecord r {};
 	r.name     = GenerateName(s);
 	r.vaddr    = vaddr;
@@ -58,6 +69,7 @@ void SymbolDatabase::Add(const SymbolResolve& s, uint64_t vaddr, const std::stri
 	m_map.insert_or_assign(r.name, m_symbols.size());
 	m_symbols.push_back(r);
 }
+#endif
 
 void SymbolDatabase::DbgDump(const std::string& folder, const std::string& file_name) {
 	auto folder_str = Common::FixDirectorySlash(folder);

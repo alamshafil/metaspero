@@ -23,8 +23,10 @@
 #include "loader/symbolDatabase.h"
 #include "loader/systemContent.h"
 #include "loader/x64InstructionEmulator.h"
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
 #include "loader/fex/fexGuestEngine.h"
 #include "loader/fex/fexHleBridge.h"
+#endif
 
 #include <algorithm>
 #include <atomic>

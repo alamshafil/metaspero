@@ -9,7 +9,9 @@
 #include "common/timer.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
 #include "loader/fex/fexHleBridge.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
