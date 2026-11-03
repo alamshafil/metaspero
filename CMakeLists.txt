@@ -231,7 +231,12 @@ endif()
 config_compiler_and_linker()
 
 if(KYTY_ENABLE_FEX_GUEST_CPU)
-	add_compile_definitions(KYTY_ENABLE_FEX_GUEST_CPU=1 ARCHITECTURE_arm64=1)
+	add_compile_definitions(KYTY_ENABLE_FEX_GUEST_CPU=1 ARCHITECTURE_arm64=1)	
+	
+	file(GLOB kyty_fex_src CONFIGURE_DEPENDS
+		"${KYTY_SOURCE_DIR}/loader/fex/*.cpp"
+		"${KYTY_SOURCE_DIR}/loader/fex/*.h"
+	)
 endif()
 
 set(CMAKE_FOLDER "3rdparty")
@@ -285,9 +290,12 @@ file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
 	"${KYTY_SOURCE_DIR}/kernel/*.h"
 	"${KYTY_SOURCE_DIR}/loader/*.cpp"
 	"${KYTY_SOURCE_DIR}/loader/*.h"
-	"${KYTY_SOURCE_DIR}/loader/fex/*.cpp"
-	"${KYTY_SOURCE_DIR}/loader/fex/*.h"
 )
+
+# Append the FEX sources to the main list if FEX is enabled
+if(KYTY_ENABLE_FEX_GUEST_CPU)
+	list(APPEND kyty_emulator_src ${kyty_fex_src})
+endif()
 
 find_program(KYTY_GLSLANG_VALIDATOR NAMES glslangValidator glslang REQUIRED)
 set(gpu_tiler_shader_dir "${KYTY_SOURCE_DIR}/graphics/host_gpu/shaders")

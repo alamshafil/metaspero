@@ -385,7 +385,7 @@ jobs:
         shell: bash
         run: |
           cmake --build --preset macos-swiftui --config Release --target fex_jit_bridge_tests
-          _Build/mac/tests/Release/fex_jit_bridge_tests
+          _Build/mac/Release/fex_jit_bridge_tests
 
       - name: Package macOS App
         shell: bash

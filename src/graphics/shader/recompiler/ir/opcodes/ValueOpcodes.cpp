@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/ir/opcodes/ValueOpcodes.h"
 
 #include <array>
+#include <limits>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 namespace {
