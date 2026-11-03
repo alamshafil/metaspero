@@ -136,9 +136,9 @@ jobs:
           if-no-files-found: error
 
   macos:
-    name: Build KytyPS5 (macOS)
+    name: Build KytyPS5 (macOS x86_64)
     needs: metadata
-    runs-on: macos-15
+    runs-on: macos-latest
 
     steps:
       - name: Checkout repository
@@ -314,6 +314,22 @@ jobs:
         shell: bash
         run: brew install glslang
 
+      - name: Cache CMake Dependencies
+        uses: actions/cache@v4
+        with:
+          path: _Build/ios/_deps
+          key: ${{ runner.os }}-ios-deps-${{ hashFiles('**/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-ios-deps-
+
+      - name: Cache Xcode Derived Data
+        uses: actions/cache@v4
+        with:
+          path: _Build/ios/DerivedData
+          key: ${{ runner.os }}-ios-deriveddata-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ios-deriveddata-
+
       - name: Configure iOS
         shell: bash
         run: |
@@ -327,6 +343,7 @@ jobs:
         shell: bash
         run: |
           cmake --build --preset ios --config Release --target Metaspero -- \
+            -derivedDataPath _Build/ios/DerivedData \
             CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
 
       - name: Package IPA
@@ -368,6 +385,22 @@ jobs:
         shell: bash
         run: brew install glslang
 
+      - name: Cache CMake Dependencies
+        uses: actions/cache@v4
+        with:
+          path: _Build/mac/_deps
+          key: ${{ runner.os }}-mac-deps-${{ hashFiles('**/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-mac-deps-
+
+      - name: Cache Xcode Derived Data
+        uses: actions/cache@v4
+        with:
+          path: _Build/mac/DerivedData
+          key: ${{ runner.os }}-mac-deriveddata-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-mac-deriveddata-
+
       - name: Configure macOS SwiftUI
         shell: bash
         run: |
@@ -379,12 +412,15 @@ jobs:
 
       - name: Build macOS SwiftUI
         shell: bash
-        run: cmake --build --preset macos-swiftui --config Release --target Metaspero
+        run: |
+          cmake --build --preset macos-swiftui --config Release --target Metaspero -- \
+            -derivedDataPath _Build/mac/DerivedData
 
       - name: Build and Run FEX JIT Tests
         shell: bash
         run: |
-          cmake --build --preset macos-swiftui --config Release --target fex_jit_bridge_tests
+          cmake --build --preset macos-swiftui --config Release --target fex_jit_bridge_tests -- \
+            -derivedDataPath _Build/mac/DerivedData
           _Build/mac/Release/fex_jit_bridge_tests
 
       - name: Package macOS App
