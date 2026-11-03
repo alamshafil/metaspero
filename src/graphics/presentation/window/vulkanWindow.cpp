@@ -1032,9 +1032,9 @@ void WindowContext::CreateVulkan() {
 		}
 	}
 
+#if defined(__APPLE__)
 	__block vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
 	__block bool surface_ok = false;
-#if defined(__APPLE__)
 	if (!pthread_main_np()) {
 		dispatch_sync(dispatch_get_main_queue(), ^{
 			surface_ok = CreateWindowSurface(*this, static_cast<vk::Instance::CType>(graphic_ctx.instance), &native_surface);
@@ -1043,6 +1043,8 @@ void WindowContext::CreateVulkan() {
 		surface_ok = CreateWindowSurface(*this, static_cast<vk::Instance::CType>(graphic_ctx.instance), &native_surface);
 	}
 #else
+	vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
+	bool surface_ok = false;
 	surface_ok = CreateWindowSurface(*this, static_cast<vk::Instance::CType>(graphic_ctx.instance), &native_surface);
 #endif
 	if (!surface_ok || native_surface == VK_NULL_HANDLE) {
@@ -1168,9 +1170,9 @@ void WindowContext::RecreateSurface() {
 		graphic_ctx.instance.destroySurfaceKHR(surface, nullptr);
 		surface = nullptr;
 	}
+#if defined(__APPLE__)
 	__block vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
 	__block bool surface_ok = false;
-#if defined(__APPLE__)
 	if (!pthread_main_np()) {
 		dispatch_sync(dispatch_get_main_queue(), ^{
 			surface_ok = CreateWindowSurface(*this, static_cast<vk::Instance::CType>(graphic_ctx.instance), &native_surface);
@@ -1179,6 +1181,8 @@ void WindowContext::RecreateSurface() {
 		surface_ok = CreateWindowSurface(*this, static_cast<vk::Instance::CType>(graphic_ctx.instance), &native_surface);
 	}
 #else
+    vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
+    bool surface_ok = false;
 	surface_ok = CreateWindowSurface(*this, static_cast<vk::Instance::CType>(graphic_ctx.instance), &native_surface);
 #endif
 	if (!surface_ok || native_surface == VK_NULL_HANDLE) {

@@ -294,7 +294,7 @@ jobs:
   ios:
     name: Build Metaspero (iOS)
     needs: metadata
-    runs-on: macos-15
+    runs-on: macos-latest
 
     steps:
       - name: Checkout repository
@@ -348,7 +348,7 @@ jobs:
   macos-swiftui:
     name: Build Metaspero (macOS ARM64 + FEX)
     needs: metadata
-    runs-on: macos-15
+    runs-on: macos-latest
 
     steps:
       - name: Checkout repository

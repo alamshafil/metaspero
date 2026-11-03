@@ -173,7 +173,7 @@ else()
 	project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 0.3.0)
 endif()
 
-if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU" AND NOT MSVC)
 	add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-fmacro-prefix-map=${CMAKE_SOURCE_DIR}=.>")
 endif()
 
