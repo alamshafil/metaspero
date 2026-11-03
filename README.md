@@ -1,10 +1,39 @@
 # Metaspero
 
-Metaspero is an experimental PlayStation 5 emulator and dynamic translation layer for Apple Silicon, with iOS as the primary target platform and support for native macOS (ARM64).
+Metaspero is an experimental PlayStation 5 emulator and dynamic translation layer for Apple Silicon, with support for iOS and native macOS (ARM64).
 
-The project is forked from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (which is based on [Kyty](https://github.com/InoriRus/Kyty)), adapting the codebase for ARM64 Darwin. Base documentation, system requirements, and PC architecture notes are in [README.upstream.md](README.upstream.md).
+This project is forked from [KytyPS5](https://github.com/KytyPS5/KytyPS5) and updated to support ARM64 Darwin. Base documentation is in [README.upstream.md](README.upstream.md).
 
-If you get errors about dependencies or build tools on macOS, check [README.upstream.md](README.upstream.md) as well.
+> **Warning**: This is an early-stage experimental project. Expect crashes, visual glitches, and low frame rates.
+
+## Screenshots
+
+### In-Game
+
+| Dead Cells | XIII |
+| :---: | :---: |
+| ![Dead Cells](docs/screenshots/ios-dead-cells.png) | ![XIII](docs/screenshots/ios-xiii.png) |
+
+### Library
+
+| macOS | iOS |
+| :---: | :---: |
+| ![macOS Home](docs/screenshots/mac-library.png) | ![iOS Home](docs/screenshots/ios-library.png) |
+
+## Requirements
+
+### macOS
+
+- Apple Silicon Mac (M1 or newer)
+- 16 GB RAM recommended (8 GB for light 2D games)
+
+### iOS / iPadOS
+
+- Apple Silicon device (A-series chip, M-series chip)
+- iOS 18.0 to iOS 27
+- 12 GB RAM recommended (8 GB for light 2D games)
+- JIT enabled
+- Increased memory limit entitlement for 3D games
 
 ## x86_64 to ARM64
 
@@ -18,14 +47,6 @@ By default, the iOS Jetsam daemon limits standard apps to roughly 2 GB to 3 GB o
 
 Emulating the PS5 on iOS can easily exceeds default limits.
 
-The app, by default, requires the increased memory limit entitlement in `src/ios_jit.entitlements`:
-
-```xml
-<key>com.apple.developer.kernel.increased-memory-limit</key>
-<true/>
-<key>get-task-allow</key>
-<true/>
-```
 An in-app toast monitor alerts you when device memory pressure approaches the kill threshold.
 
 ## CMake Presets and Dependencies
@@ -51,7 +72,8 @@ Configured in `CMakePresets.json`:
 
 - `3rdparty/fexcore`: FEXCore submodule fork for ARM64 Darwin JIT
 - `cmake/`: CMake helper scripts for MoltenVK, FFmpeg, and platform configuration
-- `docs/`: Architecture notes and JIT documentation (`docs/darwin_jit.md`)
+- `docs/`: Architecture notes, JIT documentation (`docs/darwin_jit.md`), and memory architecture (`docs/darwin_memory.md`)
+- `docs/screenshots/`: In-game and library screenshots
 - `frontend/swift/`: SwiftUI application and Objective-C++ bridge (`KytyBridge.mm`)
 - `src/loader/fex/`: FEXCore guest engine, dual-mapping allocator, HLE thunks
 - `tests/`: Regression test suites
@@ -70,8 +92,8 @@ Configured in `CMakePresets.json`:
 Clone recursively to fetch all submodules:
 
 ```bash
-git clone --recursive https://github.com/alamshafil/kytyps5-apple.git
-cd kytyps5-apple
+git clone --recursive https://github.com/alamshafil/metaspero.git
+cd metaspero
 
 # If already cloned:
 git submodule update --init --recursive
@@ -131,7 +153,7 @@ For macOS:
 
 ```bash
 cmake --preset macos-swiftui
-open _Build/mac/Kyty.xcodeproj
+open _Build/mac/Metaspero.xcodeproj
 ```
 
 Select the Metaspero scheme, choose My Mac, and press Cmd+R to build and run.
@@ -150,12 +172,12 @@ iOS requires an attached debugger for JIT permissions:
 
 ## Website and Compatibility Reports
 
-Website repository: https://github.com/alamshafil/kytyps5-apple-site
+Website repository: https://github.com/alamshafil/metaspero-site
 
 ### Submitting Reports
 
 1. Web tool: Visit `/report` on the website, fill out the form, and paste the markdown into a GitHub issue.
-2. Pull request: Add a file under `src/content/compatibility/<game-slug>.md` using the format described in `README.upstream.md`.
+2. Pull request: Add a file under `src/content/compatibility/<game-slug>.md` using the format described.
 
 Status ratings:
 - Playable: Runs without critical issues.
