@@ -323,9 +323,8 @@ jobs:
             ${{ runner.os }}-ios-deps-
 
       - name: Cache Xcode Derived Data
-        uses: actions/cache@v4
+        uses: irgaly/xcode-cache@v1
         with:
-          path: _Build/ios/DerivedData
           key: ${{ runner.os }}-ios-deriveddata-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-ios-deriveddata-
@@ -343,7 +342,6 @@ jobs:
         shell: bash
         run: |
           cmake --build --preset ios --config Release --target Metaspero -- \
-            -derivedDataPath _Build/ios/DerivedData \
             CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
 
       - name: Package IPA
@@ -394,9 +392,8 @@ jobs:
             ${{ runner.os }}-mac-deps-
 
       - name: Cache Xcode Derived Data
-        uses: actions/cache@v4
+        uses: irgaly/xcode-cache@v1
         with:
-          path: _Build/mac/DerivedData
           key: ${{ runner.os }}-mac-deriveddata-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-mac-deriveddata-
@@ -412,15 +409,12 @@ jobs:
 
       - name: Build macOS SwiftUI
         shell: bash
-        run: |
-          cmake --build --preset macos-swiftui --config Release --target Metaspero -- \
-            -derivedDataPath _Build/mac/DerivedData
+        run: cmake --build --preset macos-swiftui --config Release --target Metaspero
 
       - name: Build and Run FEX JIT Tests
         shell: bash
         run: |
-          cmake --build --preset macos-swiftui --config Release --target fex_jit_bridge_tests -- \
-            -derivedDataPath _Build/mac/DerivedData
+          cmake --build --preset macos-swiftui --config Release --target fex_jit_bridge_tests
           _Build/mac/Release/fex_jit_bridge_tests
 
       - name: Package macOS App
