@@ -4,7 +4,7 @@ Metaspero is an experimental PlayStation 5 emulator and dynamic translation laye
 
 This project is forked from [KytyPS5](https://github.com/KytyPS5/KytyPS5) and updated to support ARM64 Darwin. Base documentation is in [README.upstream.md](README.upstream.md).
 
-> **Warning**: This is an early-stage experimental project. Expect crashes, visual glitches, and low frame rates.
+**Warning**: This is an early-stage experimental project. Expect crashes, visual glitches, and low frame rates.
 
 ## Screenshots
 
@@ -157,10 +157,6 @@ open _Build/mac/Metaspero.xcodeproj
 ```
 
 Select the Metaspero scheme, choose My Mac, and press Cmd+R to build and run.
-
-### 5. Release Builds
-
-For instructions on bumping version numbers, building release binaries, and packaging iOS IPA or macOS zip archives, see [docs/release.md](docs/release.md).
 
 ## Running with JIT on iOS
 
