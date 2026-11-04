@@ -126,6 +126,9 @@ public:
 #define SDL_GetAudioStreamQueued    Fake::GetAudioStreamQueued
 #define SDL_PutAudioStreamData      Fake::PutAudioStreamData
 #define SDL_ClearAudioStream        Fake::ClearAudioStream
+namespace Libs::Audio::Ngs2 {
+void Shutdown() {} // test stub
+} // namespace Libs::Audio::Ngs2
 #include "libs/audio.cpp"
 #undef Thread
 #undef SDL_InitSubSystem

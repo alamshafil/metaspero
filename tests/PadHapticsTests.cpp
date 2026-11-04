@@ -291,6 +291,9 @@ bool SendGamepadEffect(SDL_Gamepad* pad, const void* data, int size) {
 #define SDL_GetGamepadConnectionState Fake::GetGamepadConnectionState
 #include "libs/dualSenseBluetooth.cpp"
 #include "libs/dualSenseHaptics.cpp"
+namespace Libs::Audio::Ngs2 {
+void Shutdown() {} // test stub
+} // namespace Libs::Audio::Ngs2
 #include "libs/audio.cpp"
 #undef SDL_GetTicks
 #undef SDL_InitSubSystem
