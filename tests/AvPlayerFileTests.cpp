@@ -50,6 +50,12 @@ FexGuestEngine& FexGuestEngine::Instance() { return *reinterpret_cast<FexGuestEn
 GuestThreadState* FexGuestEngine::CreateThread(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) { return nullptr; }
 uint64_t FexGuestEngine::Run(GuestThreadState*, bool) { return 0; }
 void FexGuestEngine::DestroyThread(GuestThreadState*) {}
+uint64_t FexGuestEngine::CallGuestFunction(uint64_t rip, uint64_t arg0, uint64_t arg1,
+                                           uint64_t arg2, uint64_t arg3, uint64_t arg4,
+                                           uint64_t arg5) {
+	using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+	return reinterpret_cast<Fn>(rip)(arg0, arg1, arg2, arg3, arg4, arg5);
+}
 }
 }
 #endif

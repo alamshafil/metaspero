@@ -2375,7 +2375,7 @@ static int MapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags
 			out_addr        = in_addr;
 		}
 #if defined(__APPLE__) && !TARGET_OS_IPHONE
-		if (out_addr == 0 && in_addr < HOST_USER_MIN) {
+		if (out_addr == 0 && in_addr < HOST_USER_MIN && (flags & 0x10) == 0) {
 			out_addr = FindGuestFreeRange(HOST_USER_MIN, len, map_alignment);
 			if (out_addr != 0) {
 				UnmapGpuRange(out_addr, len);
@@ -3157,7 +3157,7 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 				reserved_target = true;
 			}
 #if defined(__APPLE__) && !TARGET_OS_IPHONE
-			if (!reserved_target && in_addr < HOST_USER_MIN) {
+			if (!reserved_target && in_addr < HOST_USER_MIN && (flags & 0x10) == 0) {
 				const auto relocated = FindGuestFreeRange(HOST_USER_MIN, len, alignment != 0 ? alignment : PAGE_SIZE);
 				if (relocated != 0 && map_shared_fixed(relocated)) {
 					out_addr       = relocated;
@@ -3327,8 +3327,11 @@ int KYTY_SYSV_ABI KernelMapNamedDirectMemory(void** addr, size_t len, int prot, 
 	if (name != nullptr && std::strlen(name) >= KERNEL_MAXIMUM_NAME_LENGTH) {
 		return KERNEL_ERROR_ENAMETOOLONG;
 	}
+	if (name == nullptr) {
+		return KERNEL_ERROR_EFAULT;
+	}
 
-	return MapDirectMemory(addr, len, prot, flags, direct_memory_start, alignment, name != nullptr ? name : "");
+	return MapDirectMemory(addr, len, prot, flags, direct_memory_start, alignment, name);
 }
 
 int KYTY_SYSV_ABI KernelIsAddressSanitizerEnabled() {
@@ -3597,18 +3600,11 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 		if ((flags & GUEST_MAP_NO_OVERWRITE) != 0 && g_virtual_ranges->HasOverlap(in_addr, len)) {
 			return KERNEL_ERROR_ENOMEM;
 		}
-		if (ReplaceFixedRangeWithReserved(in_addr, len)) {
-			out_addr            = in_addr;
-			range_already_added = true;
+		if (!ReplaceFixedRangeWithReserved(in_addr, len)) {
+			return KERNEL_ERROR_ENOMEM;
 		}
-#if defined(__APPLE__) && !TARGET_OS_IPHONE
-		else if (in_addr < HOST_USER_MIN) {
-			out_addr = FindGuestFreeRange(HOST_USER_MIN, len, alignment != 0 ? alignment : PAGE_SIZE);
-			if (out_addr != 0) {
-				UnmapGpuRange(out_addr, len);
-			}
-		}
-#endif
+		out_addr = in_addr;
+		range_already_added = true;
 	} else {
 		alignment = (alignment != 0 ? alignment : PAGE_SIZE);
 		out_addr  = FindGuestFreeRange(in_addr, len, alignment);

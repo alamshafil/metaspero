@@ -91,17 +91,13 @@ void DbgExit(int status) {
 	Subsystems::EmergencyShutdownActive();
 	std::fflush(nullptr);
 	InvokeFatalHandler(status, g_last_fatal_message.empty() ? "Fatal error: DbgExit called" : g_last_fatal_message.c_str());
-#if defined(__APPLE__)
+#if defined(__APPLE__) && TARGET_OS_IPHONE
 	if (pthread_main_np() == 0) {
 		pthread_exit(nullptr);
 	}
-#if TARGET_OS_IPHONE
 	while (true) {
 		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.2, false);
 	}
-#else
-	std::_Exit(status);
-#endif
 #else
 	std::_Exit(status);
 #endif

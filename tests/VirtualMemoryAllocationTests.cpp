@@ -86,11 +86,7 @@ using Libs::LibKernel::Memory::VirtualQueryInfo;
 
 // Prospero ABI?
 constexpr uint64_t SceKernelPageSize             = 0x4000;
-#if defined(KYTY_ARM64_APPLE)
-constexpr uint64_t SceKernelTotalPhysicalSize    = 4352ull * 1024ull * 1024ull;
-#else
 constexpr uint64_t SceKernelTotalPhysicalSize    = 13824ull * 1024ull * 1024ull;
-#endif
 constexpr uint64_t TestFlexibleMemorySize        = 3072ull * 1024ull * 1024ull;
 constexpr int      SceKernelProtCpuRead          = 0x01;
 constexpr int      SceKernelProtCpuRw            = 0x02;

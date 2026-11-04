@@ -12,7 +12,11 @@
 #include <vector>
 
 namespace Loader {
+#ifdef KYTY_ENABLE_FEX_GUEST_CPU
+void SymbolDatabase::Add(const SymbolResolve&, uint64_t, const std::string&, Fex::HleDescriptor) {}
+#else
 void SymbolDatabase::Add(const SymbolResolve&, uint64_t, const std::string&) {}
+#endif
 namespace Timer {
 double GetTimeMs() {
 	return 0.0;
