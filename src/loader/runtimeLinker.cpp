@@ -995,34 +995,6 @@ static void PatchProgram(Program* program, uint64_t address, uint64_t size) {
 		}
 	}
 
-#if defined(KYTY_ARM64_APPLE)
-	// On iOS/macOS Apple, force CoreCLR virtual GC arena calculation to 512 MB:
-	// Original 36-byte sequence starting at movabs rdx, 0x4000000000:
-	// 48 ba 00 00 00 00 40 00 00 00 48 d1 e9 48 01 c0 48 39 d0 48 0f 46 c2 48 39 c1 73 08 e8 1c 26 01 00 48 d1 e8
-	// Replaced with:
-	// b8 00 00 00 20 (mov eax, 0x20000000)
-	// eb 1d          (jmp +29 -> directly to rounding at 0x4aac7)
-	// 29 x 0x90      (nop)
-	if (size >= 36) {
-		const uint8_t gc_arena_256gb_pattern[10] = {0x48, 0xba, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00};
-		auto* start_ptr = reinterpret_cast<uint8_t*>(address);
-		auto* end_ptr   = start_ptr + size - 36;
-		for (auto* ptr = start_ptr; ptr <= end_ptr; ptr++) {
-			if (std::memcmp(ptr, gc_arena_256gb_pattern, sizeof(gc_arena_256gb_pattern)) == 0 &&
-			    ptr[10] == 0x48 && ptr[11] == 0xd1 && ptr[12] == 0xe9) {
-				ptr[0] = 0xb8;
-				ptr[1] = 0x00;
-				ptr[2] = 0x00;
-				ptr[3] = 0x00;
-				ptr[4] = 0x20;
-				ptr[5] = 0xeb;
-				ptr[6] = 29;
-				std::memset(ptr + 7, 0x90, 29);
-			}
-		}
-	}
-#endif
-
 #if !defined(KYTY_ENABLE_FEX_GUEST_CPU)
 	if (!program->elf->IsShared() && program->tls.handler_vaddr != 0 &&
 	    size >= Jit::Call9::GetSize()) {

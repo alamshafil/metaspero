@@ -69,7 +69,7 @@ constexpr uint64_t PAGE_TABLE_POOL_SIZE   = 4ull * 1024ull * 1024ull * 1024ull;
 constexpr uint64_t PAGE_TABLE_GRANULARITY = 2ull * 1024ull * 1024ull;
 constexpr int      PAGE_TABLE_POOL_ENTRIES =
     static_cast<int>(PAGE_TABLE_POOL_SIZE / PAGE_TABLE_GRANULARITY);
-#if defined(KYTY_ARM64_APPLE)
+#if defined(KYTY_ARM64_APPLE) && TARGET_OS_IPHONE
 constexpr uint64_t DEFAULT_FLEXIBLE_MEMORY_SIZE = 256ull * 1024ull * 1024ull;
 #else
 constexpr uint64_t DEFAULT_FLEXIBLE_MEMORY_SIZE = 1ull * 1024ull * 1024ull * 1024ull;
