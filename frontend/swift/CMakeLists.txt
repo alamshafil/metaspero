@@ -15,19 +15,20 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(SWIFT_SOURCES
     KytyApp.swift
-    Services/CompatibilityService.swift
-    Views/ContentView.swift
-    Views/LibraryView.swift
-    Views/GameDetailsView.swift
-    Views/TrophiesView.swift
-    Views/TrophyOverviewView.swift
-    Views/InputMappingView.swift
-    Views/AboutView.swift
-    Views/EmulationView.swift
-    Views/TouchControlsView.swift
-    Views/SettingsView.swift
-    Views/LogView.swift
-    Views/MemoryWarningToastView.swift
+    Sources/MetasperoUI/CompatibilityService.swift
+    Sources/MetasperoUI/ContentView.swift
+    Sources/MetasperoUI/LibraryView.swift
+    Sources/MetasperoUI/GameDetailsView.swift
+    Sources/MetasperoUI/TrophiesView.swift
+    Sources/MetasperoUI/TrophyOverviewView.swift
+    Sources/MetasperoUI/InputMappingView.swift
+    Sources/MetasperoUI/AboutView.swift
+    Sources/MetasperoUI/EmulationView.swift
+    Sources/MetasperoUI/SettingsView.swift
+    Sources/MetasperoUI/LogView.swift
+    Sources/MetasperoUI/MemoryWarningToastView.swift
+    Sources/MetasperoUI/PlatformIcon.swift
+    TouchControlsView.swift
     Bridge/KytyBridge.h
     Bridge/KytyBridge.mm
     Icon.icon

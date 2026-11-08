@@ -50,8 +50,7 @@ struct TrophiesView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if trophies.isEmpty {
                     VStack(spacing: 14) {
-                        Image(systemName: "trophy")
-                            .font(.system(size: 54))
+                        PlatformIcon("trophy", size: 54)
                             .foregroundColor(.secondary)
                         Text("No Trophies Found")
                             .font(.title3)
@@ -103,7 +102,7 @@ struct TrophiesView: View {
 #if os(macOS)
                         .background(Color(NSColor.controlBackgroundColor))
 #else
-                        .background(Color(UIColor.secondarySystemGroupedBackground))
+                        .background(Color.secondary.opacity(0.1))
 #endif
                         
                         Divider()
@@ -169,7 +168,9 @@ struct TrophiesView: View {
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
+                        #if !SKIP
                         .keyboardShortcut(.cancelAction)
+                        #endif
                 }
             }
 #endif
@@ -180,15 +181,15 @@ struct TrophiesView: View {
     }
     
     private func loadTrophies() {
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global().async {
             let raw = KytyBridge.getTrophiesForGamePath(game.path)
             var items: [TrophyItem] = []
             for d in raw {
-                let id = (d["id"] as? NSNumber)?.intValue ?? 0
+                let id = (d["id"] as? Int) ?? Int((d["id"] as? NSNumber)?.intValue ?? 0)
                 let name = d["name"] as? String ?? "Trophy \(id)"
                 let desc = d["description"] as? String ?? ""
                 let grade = d["grade"] as? String ?? "Bronze"
-                let hidden = (d["hidden"] as? NSNumber)?.boolValue ?? false
+                let hidden = (d["hidden"] as? Bool) ?? false
                 let iconData = d["iconData"] as? Data
                 items.append(TrophyItem(
                     id: id,
@@ -214,8 +215,7 @@ struct GradeBadge: View {
     
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: "trophy.fill")
-                .font(.system(size: 11))
+            PlatformIcon("trophy.fill", size: 11)
                 .foregroundColor(color)
             Text("\(count)")
                 .font(.system(size: 12, weight: .semibold))
@@ -255,8 +255,7 @@ struct TrophyRow: View {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(gradeColor.opacity(0.18))
                         .frame(width: 44, height: 44)
-                    Image(systemName: "trophy.fill")
-                        .font(.system(size: 20))
+                    PlatformIcon("trophy.fill", size: 20)
                         .foregroundColor(gradeColor)
                 }
             }
@@ -291,7 +290,9 @@ struct TrophyRow: View {
                         .background(gradeColor.opacity(0.15))
                         .cornerRadius(4)
                         .fixedSize(horizontal: true, vertical: true)
-                        .layoutPriority(1)
+                        #if !SKIP
+    .layoutPriority(1)
+    #endif
                 }
                 
                 if !trophy.description.isEmpty {
@@ -307,7 +308,7 @@ struct TrophyRow: View {
     }
     
     private func platformImage(from data: Data) -> Image? {
-#if os(iOS)
+#if os(iOS) || SKIP
         if let ui = UIImage(data: data) {
             return Image(uiImage: ui)
         }

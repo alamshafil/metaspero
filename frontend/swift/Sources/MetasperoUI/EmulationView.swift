@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import SwiftUI
+#if !SKIP
 import QuartzCore
 import GameController
 import MetalKit
@@ -8,6 +9,7 @@ import MetalKit
 import UIKit
 #elseif os(macOS)
 import AppKit
+#endif
 #endif
 
 /// On-screen controls default: on for iOS, off for macOS (opt-in via Settings).
@@ -20,13 +22,16 @@ let touchOverlayDefault = true
 struct EmulationView: View {
     let game: GameItem
     @Binding var isEmulating: Bool
+#if !SKIP
     @State private var isClosing: Bool = false
     @State private var closingTimeoutTask: Task<Void, Never>? = nil
     @AppStorage("enableTouchOverlay") private var enableTouchOverlay = touchOverlayDefault
     @AppStorage("resolutionScale") private var resolutionScale = "720p"
     @ObservedObject private var physicalManager = PhysicalControllerManager.shared
-    
+#endif
+
     var body: some View {
+#if !SKIP
         ZStack {
             Color.black.edgesIgnoringSafeArea(.all)
             
@@ -61,29 +66,26 @@ struct EmulationView: View {
             #endif
         }
         .onDisappear {
-            closingTimeoutTask?.cancel()
-            closingTimeoutTask = nil
             #if os(iOS)
             OrientationManager.unlockOrientation()
             #endif
-            if !isEmulating && KytyBridge.isEmulationRunning() && !KytyBridge.isStopping() {
-                KytyBridge.stopEmulation()
+        }
+        .onChange(of: isEmulating) { running in
+            if !running {
+                requestCloseGame()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.KytyEmulationStopping)) { _ in
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isClosing = true
+            if !isClosing {
+                withAnimation { isClosing = true }
             }
-            closingTimeoutTask?.cancel()
-            closingTimeoutTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 8_000_000_000)
-                guard !Task.isCancelled else { return }
-                if isClosing && KytyBridge.isStopping() {
-                    KytyBridge.addLogMessage("[EmulationView] Shutdown safety timeout reached (8.0s), forcing cleanup.")
-                    KytyBridge.forceResetEmulationSession()
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        isClosing = false
-                        isEmulating = false
+            if closingTimeoutTask == nil {
+                closingTimeoutTask = Task {
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    if isClosing && KytyBridge.isStopping() {
+                        KytyBridge.addLogMessage("[EmulationView] Shutdown safety timeout reached (8.0s), forcing cleanup.")
+                        KytyBridge.forceResetEmulationSession()
                     }
                 }
             }
@@ -91,17 +93,29 @@ struct EmulationView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.KytyEmulationStopped)) { _ in
             closingTimeoutTask?.cancel()
             closingTimeoutTask = nil
-            withAnimation(.easeInOut(duration: 0.25)) {
-                isClosing = false
+            isClosing = false
+            withAnimation {
                 isEmulating = false
             }
         }
-        #if os(iOS)
-        .navigationBarHidden(true)
-        .statusBar(hidden: true)
-        #endif
+#else
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 12) {
+                Text("Emulating: \(game.title)")
+                    .font(.headline)
+                    .foregroundColor(.white)
+                Button("Stop Emulation") {
+                    KytyBridge.stopEmulation()
+                    isEmulating = false
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+#endif
     }
-    
+
+#if !SKIP
     private func requestCloseGame() {
         guard !isClosing else { return }
         withAnimation(.easeInOut(duration: 0.2)) {
@@ -139,8 +153,10 @@ struct EmulationView: View {
         .transition(.opacity)
         .zIndex(99)
     }
+    #endif
 }
 
+#if !SKIP
 // MARK: - In-Game Overlay (Controls & Options Menu)
 
 struct InGameOverlayView: View {
@@ -294,7 +310,7 @@ struct EmulatorMetalSurface: UIViewRepresentable {
         let view = HostMetalView(frame: .zero)
         KytyBridge.startEmulation(withGamePath: game.path, in: view) { success, error in
             if !success, let error = error {
-                NSLog("[EmulatorMetalSurface] Launch error: %@", error)
+                print("[EmulatorMetalSurface] Launch error: \(error)")
             }
         }
         return view
@@ -343,7 +359,7 @@ struct EmulatorMetalSurface: NSViewRepresentable {
         let view = HostMetalView(frame: .zero)
         KytyBridge.startEmulation(withGamePath: game.path, in: view) { success, error in
             if !success, let error = error {
-                NSLog("[EmulatorMetalSurface] Launch error: %@", error)
+                print("[EmulatorMetalSurface] Launch error: \(error)")
             }
         }
         return view
@@ -361,4 +377,5 @@ struct EmulatorMetalSurface: NSViewRepresentable {
         nsView.metalLayer.removeFromSuperlayer()
     }
 }
+#endif
 #endif

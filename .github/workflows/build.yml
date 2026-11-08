@@ -360,6 +360,56 @@ jobs:
           path: _Build/ios/Metaspero-iOS-arm64.ipa
           if-no-files-found: error
 
+  android:
+    name: Build Metaspero (Android ARM64)
+    needs: metadata
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0"
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28
+          link-to-sdk: true
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslang-tools ninja-build
+
+      - name: Build Android APK
+        shell: bash
+        run: |
+          cmake --preset android-arm64 \
+            -DKYTY_BUILD_ORIGIN="$KYTY_BUILD_ORIGIN" \
+            -DKYTY_BUILD_REPOSITORY="$KYTY_BUILD_REPOSITORY" \
+            -DKYTY_RELEASE_TAG="${{ needs.metadata.outputs.release_tag }}"
+          cmake --build _Build/android-arm64 --target kyty_android_apk
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Metaspero-Android-arm64
+          path: frontend/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
   macos-swiftui:
     name: Build Metaspero (macOS ARM64 + FEX)
     needs: metadata

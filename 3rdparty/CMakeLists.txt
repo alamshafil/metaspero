@@ -3,6 +3,10 @@ set_property(DIRECTORY PROPERTY FOLDER "3rdparty")
 set(CMAKE_FOLDER "3rdparty")
 
 add_subdirectory(cpuinfo)
+if(ANDROID)
+	# cpuinfo's chipset.c uses tolower() without including <ctype.h>, which clang rejects.
+	target_compile_options(cpuinfo PRIVATE -include ctype.h)
+endif()
 
 include(FetchContent)
 
@@ -185,6 +189,10 @@ if (NOT TARGET FFmpeg::ffmpeg)
 		# ffmpeg-core has no iOS package. Build FFmpeg from source and hand it over as a prebuilt dir.
 		include(${CMAKE_CURRENT_LIST_DIR}/../cmake/FFmpegiOS.cmake)
 	endif()
+	if(ANDROID)
+		# ffmpeg-core's Linux prebuilt targets glibc. Build an NDK/Bionic FFmpeg from source instead.
+		include(${CMAKE_CURRENT_LIST_DIR}/../cmake/FFmpegAndroid.cmake)
+	endif()
 	add_subdirectory(ffmpeg-core)
 	if(IOS)
 		# ffmpeg-core links macOS-only frameworks (CoreServices, AudioUnit) for APPLE, use the iOS set.
@@ -274,6 +282,10 @@ if(KYTY_ENABLE_FEX_GUEST_CPU)
 	target_compile_definitions(FEXCore INTERFACE
 		META_NO_STD_FORWARD_DECLARATIONS
 	)
+endif()
+
+if(ANDROID)
+	add_subdirectory(libadrenotools)
 endif()
 
 if(TARGET clean-all)

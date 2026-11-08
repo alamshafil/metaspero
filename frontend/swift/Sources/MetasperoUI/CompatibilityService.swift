@@ -72,8 +72,12 @@ final class CompatibilityService: ObservableObject {
     private let databaseURL = URL(string: "https://kytyps5.github.io/data/compatibility.json")!
     
     private var cacheFileURL: URL {
+        #if !SKIP
         let paths = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
-        let dir = paths.first ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let dir = paths.first ?? FileManager.default.temporaryDirectory
+        #else
+        let dir = FileManager.default.temporaryDirectory
+        #endif
         return dir.appendingPathComponent("compatibility_db.json")
     }
     

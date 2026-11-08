@@ -477,6 +477,144 @@ static void SignalHandler(int sig, siginfo_t* si, void* uctx) {
 }
 #endif
 
+#elif defined(__linux__) && defined(__aarch64__)
+
+// Linux / Android arm64 host: guest x86-64 code runs through FEXCore's JIT, so faults arrive
+// with host (AArch64) register state. Mirrors the Apple arm64 handler above.
+#include <asm/sigcontext.h>
+
+#include <cinttypes>
+
+static AccessViolationType DecodeAccess(uint64_t esr) {
+	const uint32_t ec = (esr >> 26) & 0x3f;
+	if (ec == 0x20 || ec == 0x21) {
+		return AccessViolationType::Execute;
+	}
+	if ((esr & 0x40u) != 0) {
+		return AccessViolationType::Write;
+	}
+	return AccessViolationType::Read;
+}
+
+// The kernel stores ESR_EL1 in an esr_context record inside uc_mcontext.__reserved.
+static bool FindEsr(const mcontext_t& mc, uint64_t* esr) {
+	const auto* p   = reinterpret_cast<const uint8_t*>(mc.__reserved);
+	const auto* end = p + sizeof(mc.__reserved);
+	while (p + sizeof(_aarch64_ctx) <= end) {
+		const auto* head = reinterpret_cast<const _aarch64_ctx*>(p);
+		if (head->magic == 0 || head->size < sizeof(_aarch64_ctx) || p + head->size > end) {
+			break;
+		}
+		if (head->magic == ESR_MAGIC && head->size >= sizeof(esr_context)) {
+			*esr = reinterpret_cast<const esr_context*>(p)->esr;
+			return true;
+		}
+		p += head->size;
+	}
+	return false;
+}
+
+static void ChainToDefault(int signal_number) noexcept {
+	struct sigaction restore {};
+	restore.sa_handler = SIG_DFL;
+	sigemptyset(&restore.sa_mask);
+	::sigaction(signal_number, &restore, nullptr);
+}
+
+static void SignalHandler(int sig, siginfo_t* si, void* uctx) {
+	if (IsAllocatorSelftestRunning()) {
+		JumpAllocatorSelftest();
+	}
+
+	auto*       uc = static_cast<ucontext_t*>(uctx);
+	const auto& mc = uc->uc_mcontext;
+
+	ExceptionInfo info {};
+	info.exception_address = mc.pc;
+	info.native_code       = static_cast<uint32_t>(si->si_code);
+	info.native_context    = uctx;
+
+	if (sig == SIGILL || sig == SIGTRAP) {
+		info.type = ExceptionType::IllegalInstruction;
+	} else {
+		uint64_t esr = 0;
+		info.type                   = ExceptionType::AccessViolation;
+		info.access_violation_type  = FindEsr(mc, &esr) ? DecodeAccess(esr)
+		                              : (si->si_code == SEGV_ACCERR ? AccessViolationType::Write : AccessViolationType::Read);
+		info.access_violation_vaddr = reinterpret_cast<uint64_t>(si->si_addr);
+	}
+
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	if (mc.regs[28] != 0) {
+		// Inside FEX-JIT code: x86 GPRs live in the host registers FEX pins them to.
+		info.rax = mc.regs[4];
+		info.rdx = mc.regs[5];
+		info.rbx = mc.regs[6];
+		info.rcx = mc.regs[7];
+		info.rsp = mc.regs[8];
+		info.rbp = mc.regs[9];
+		info.rsi = mc.regs[10];
+		info.rdi = mc.regs[11];
+		info.r8  = mc.regs[12];
+		info.r9  = mc.regs[13];
+		info.r10 = mc.regs[14];
+		info.r11 = mc.regs[15];
+		info.r12 = mc.regs[16];
+		info.r13 = mc.regs[17];
+		info.r14 = mc.regs[19];
+		info.r15 = mc.regs[29];
+	} else
+#endif
+	{
+		info.rsp = mc.sp;
+		info.rbp = mc.regs[29];
+		info.rax = mc.regs[0];
+		info.rbx = mc.regs[1];
+		info.rcx = mc.regs[2];
+		info.rdx = mc.regs[3];
+		info.rsi = mc.regs[4];
+		info.rdi = mc.regs[5];
+		info.r8  = mc.regs[6];
+		info.r9  = mc.regs[7];
+		info.r10 = mc.regs[8];
+		info.r11 = mc.regs[9];
+		info.r12 = mc.regs[10];
+		info.r13 = mc.regs[11];
+		info.r14 = mc.regs[12];
+		info.r15 = mc.regs[30];
+	}
+
+	if (IsEmulationShuttingDown()) {
+		return;
+	}
+
+	const auto fex_handler = g_fex_signal_handler.load(std::memory_order_acquire);
+	const auto handler     = g_handler.load(std::memory_order_acquire);
+
+	// Illegal instructions / traps: FEX first (UD2, unlinked thunks), then the emulator.
+	if (sig == SIGILL || sig == SIGTRAP) {
+		if (fex_handler != nullptr && fex_handler(sig, si, uctx)) {
+			return;
+		}
+		if (handler != nullptr && handler(info)) {
+			return;
+		}
+	} else {
+		// Memory faults: GPU write-tracking first, then FEX (unaligned atomics, null-branch recovery).
+		if (handler != nullptr && handler(info)) {
+			return;
+		}
+		if (fex_handler != nullptr && fex_handler(sig, si, uctx)) {
+			return;
+		}
+	}
+
+	SetEmulationShuttingDown(true);
+	std::fprintf(stderr, "[HostFatal] signal %d code=%d addr=%p pc=0x%016" PRIx64 " sp=0x%016" PRIx64 "\n", sig,
+	             si->si_code, si->si_addr, static_cast<uint64_t>(mc.pc), static_cast<uint64_t>(mc.sp));
+	ChainToDefault(sig);
+}
+
 #else
 
 // x86-64 page-fault error bits.
@@ -592,7 +730,7 @@ bool InstallHandler(Handler handler) {
 	sigemptyset(&action.sa_mask);
 	action.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
 
-	for (const int signal_number: {SIGSEGV, SIGBUS, SIGILL}) {
+	for (const int signal_number: {SIGSEGV, SIGBUS, SIGILL, SIGTRAP}) {
 		if (::sigaction(signal_number, &action, nullptr) != 0) {
 			g_handler.store(nullptr, std::memory_order_release);
 			g_install_state.store(0, std::memory_order_release);

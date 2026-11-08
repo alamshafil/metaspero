@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct LogView: View {
-    @Environment(\.presentationMode) var presentationMode
+    @Environment(\.dismiss) private var dismiss
     @State private var logLines: [String] = []
     
     var body: some View {
@@ -35,14 +35,14 @@ struct LogView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Close") {
-                        presentationMode.wrappedValue.dismiss()
+                        dismiss()
                     }
                     .font(.system(size: 14, weight: .semibold))
                 }
             }
             .onAppear {
                 refreshLogs()
-                NotificationCenter.default.addObserver(forName: NSNotification.Name.KytyLogUpdated, object: nil, queue: .main) { _ in
+                NotificationCenter.default.addObserver(forName: .KytyLogUpdated, object: nil, queue: .main) { _ in
                     refreshLogs()
                 }
             }

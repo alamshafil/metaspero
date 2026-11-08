@@ -8,8 +8,7 @@ struct AboutKytyContentView: View {
     static let upstreamCommit = "df5b9b9"
 
     private var defaultIconView: some View {
-        Image(systemName: "gamecontroller.fill")
-            .font(.system(size: 44))
+        PlatformIcon("gamecontroller.fill", size: 44)
             .foregroundColor(.blue)
     }
 

@@ -50,8 +50,19 @@ if(CMAKE_SYSTEM_NAME MATCHES ".*Linux")
 	set(LINUX TRUE)
 endif()
 
-if (NOT (WIN32 OR LINUX OR APPLE))
-    message(FATAL_ERROR "only Windows, Linux, and macOS builds are supported")
+if(ANDROID)
+	# Android uses POSIX/Linux code paths with Android-specific customizations.
+	set(LINUX TRUE)
+	add_compile_definitions(KYTY_PLATFORM_ANDROID=1 _LIBCPP_ENABLE_EXPERIMENTAL)
+	# NDK r28's libc++ has no std::atomic_ref (needed by FEXCore and the emulator).
+	add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${CMAKE_CURRENT_LIST_DIR}/cmake/android/atomic_ref_polyfill.h>")
+	add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${CMAKE_CURRENT_LIST_DIR}/cmake/android/bionic_compat.h>")
+	# 16 KB page devices reject 4 KB-aligned segments, nothing here executes from the stack.
+	add_link_options(-Wl,-z,max-page-size=16384 -Wl,-z,noexecstack)
+endif()
+
+if (NOT (WIN32 OR LINUX OR APPLE OR ANDROID))
+    message(FATAL_ERROR "only Windows, Linux, macOS, and Android builds are supported")
 endif()
 
 if(WIN32)
@@ -922,6 +933,30 @@ if(TARGET kyty_core)
 	add_dependencies(kyty_core kyty_generated_shader_headers)
 endif()
 
+if(ANDROID)
+	add_library(hardware SHARED "${CMAKE_CURRENT_SOURCE_DIR}/cmake/android/hardware_stub.c")
+	add_library(sync SHARED "${CMAKE_CURRENT_SOURCE_DIR}/cmake/android/sync_stub.c")
+
+	add_library(kyty_android SHARED
+		"${KYTY_SOURCE_DIR}/android/kyty_jni.cpp"
+		${kyty_emulator_src}
+	)
+	add_dependencies(kyty_android kyty_generated_shader_headers)
+	target_link_libraries(kyty_android
+		${kyty_emulator_link_libraries}
+		${CMAKE_DL_LIBS}
+		log
+		android
+		adrenotools
+	)
+	target_include_directories(kyty_android PRIVATE ${inc_headers})
+	target_link_options(kyty_android PRIVATE
+		"-Wl,-Bsymbolic"
+		"-Wl,-Bsymbolic-functions"
+	)
+	set_target_properties(kyty_android PROPERTIES FOLDER "Core")
+endif()
+
 # FEX JIT & HLE Bridge Test Suite for ARM64 macOS
 if(KYTY_ENABLE_FEX_GUEST_CPU AND TARGET kyty_core)
 	add_executable(fex_jit_bridge_tests EXCLUDE_FROM_ALL
@@ -966,7 +1001,7 @@ endif()
 if (KYTY_CLANG_CL)
 	target_link_libraries(kyty_emulator onecore)
 endif()
-if (CLANG AND NOT KYTY_CLANG_CL)
+if (CLANG AND NOT KYTY_CLANG_CL AND NOT ANDROID)
 	target_link_libraries(kyty_emulator pthread)
 endif()
 # dlopen/dlsym/dladdr for RenderDoc.
@@ -1047,6 +1082,48 @@ if(IOS)
 	option(KYTY_BUILD_IOS_APP "Build the SwiftUI iOS app (frontend/swift) on top of kyty_core" ON)
 	if(KYTY_BUILD_IOS_APP)
 		add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/frontend/swift" "${CMAKE_CURRENT_BINARY_DIR}/frontend/swift")
+	endif()
+elseif(ANDROID)
+	option(KYTY_BUILD_ANDROID_APK "Build the complete Android APK (SwiftUI via Skip) on top of kyty_android" ON)
+	if(KYTY_BUILD_ANDROID_APK)
+		set(ANDROID_APP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/frontend/android")
+		set(ANDROID_JNI_DIR "${ANDROID_APP_DIR}/app/src/main/jniLibs/arm64-v8a")
+		set(GRADLEW_BIN "${ANDROID_APP_DIR}/gradlew")
+		set(NDK_LIBCXX_SO "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-android/libc++_shared.so")
+
+		add_custom_target(kyty_android_stage_libs
+			COMMAND ${CMAKE_COMMAND} -E make_directory "${ANDROID_JNI_DIR}"
+			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:kyty_android> "${ANDROID_JNI_DIR}/libkyty_android.so"
+			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:hardware> "${ANDROID_JNI_DIR}/libhardware.so"
+			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:sync> "${ANDROID_JNI_DIR}/libsync.so"
+			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:main_hook> "${ANDROID_JNI_DIR}/libmain_hook.so"
+			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:hook_impl> "${ANDROID_JNI_DIR}/libhook_impl.so"
+			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:file_redirect_hook> "${ANDROID_JNI_DIR}/libfile_redirect_hook.so"
+			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:gsl_alloc_hook> "${ANDROID_JNI_DIR}/libgsl_alloc_hook.so"
+			COMMAND ${CMAKE_COMMAND} -E copy "${NDK_LIBCXX_SO}" "${ANDROID_JNI_DIR}/libc++_shared.so"
+			COMMAND "${CMAKE_STRIP}" --strip-unneeded "${ANDROID_JNI_DIR}/libkyty_android.so"
+			DEPENDS kyty_android hardware sync main_hook hook_impl file_redirect_hook gsl_alloc_hook
+			COMMENT "==> Staging and stripping native libraries into Android jniLibs..."
+		)
+
+		find_program(SWIFT_EXECUTABLE swift)
+		if(SWIFT_EXECUTABLE)
+			add_custom_target(kyty_android_swift_aar
+				COMMAND ${SWIFT_EXECUTABLE} build
+				WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/frontend/swift"
+				COMMENT "==> Transpiling SwiftUI views via Skip..."
+			)
+		endif()
+
+		add_custom_target(kyty_android_apk ALL
+			COMMAND "${GRADLEW_BIN}" assembleDebug
+			WORKING_DIRECTORY "${ANDROID_APP_DIR}"
+			DEPENDS kyty_android_stage_libs
+			COMMENT "==> Assembling complete Android APK via Gradle..."
+		)
+		if(TARGET kyty_android_swift_aar)
+			add_dependencies(kyty_android_apk kyty_android_swift_aar)
+		endif()
 	endif()
 elseif(APPLE)
 	option(KYTY_BUILD_SWIFTUI_APP "Build the Native macOS SwiftUI app (frontend/swift) on top of kyty_core" OFF)

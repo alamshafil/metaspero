@@ -17,6 +17,9 @@
 #elif defined(__linux__)
 #include <linux/close_range.h>
 #include <unistd.h>
+#if defined(__ANDROID__)
+#include <sys/syscall.h>
+#endif
 #endif
 
 namespace Emulator {
@@ -116,7 +119,12 @@ int LoadExec(const char* path, const char* const argv[]) {
 		host_argv.push_back(argument.data());
 	}
 	host_argv.push_back(nullptr);
+	#if defined(__ANDROID__)
+	// Bionic does not wrap close_range(), call the syscall directly
+	if (syscall(__NR_close_range, 3u, ~0u, (1u << 1) /*UNSHARE*/ | (1u << 2) /*CLOEXEC*/) == 0) {
+#else
 	if (close_range(3, ~0u, CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) == 0) {
+#endif
 		execvp(host_argv[0], host_argv.data());
 	}
 	LOGF("LoadExec failed: %s\n", std::strerror(errno));

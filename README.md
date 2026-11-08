@@ -1,8 +1,8 @@
 # Metaspero
 
-Metaspero is an experimental PlayStation 5 emulator and dynamic translation layer for Apple Silicon, with support for iOS and native macOS (ARM64).
+Metaspero is an experimental PlayStation 5 emulator and dynamic translation layer for ARM64, with support for iOS, Android, and native macOS.
 
-This project is forked from [KytyPS5](https://github.com/KytyPS5/KytyPS5) and updated to support ARM64 Darwin. Base documentation is in [README.upstream.md](README.upstream.md).
+This project is forked from [KytyPS5](https://github.com/KytyPS5/KytyPS5) and updated to support ARM64 Darwin and Android. Base documentation is in [README.upstream.md](README.upstream.md).
 
 **Warning**: This is an early-stage experimental project. Expect crashes, visual glitches, and low frame rates.
 
@@ -35,6 +35,13 @@ This project is forked from [KytyPS5](https://github.com/KytyPS5/KytyPS5) and up
 - JIT enabled
 - Increased memory limit entitlement for 3D games
 
+### Android
+
+- 64-bit ARM64 device (Snapdragon 8 Gen 2 or newer recommended)
+- Android 12 (API 31) or newer
+- 12 GB RAM recommended (8 GB for light 2D games)
+- Vulkan 1.3 capable GPU (Qualcomm Adreno recommended for custom driver loading)
+
 ## x86_64 to ARM64
 
 - Upstream macOS build: Upstream KytyPS5 builds an x86_64 binary that runs under Apple's Rosetta 2 translation layer. Apple plans to drop Rosetta 2 in a future macOS release (expected in macOS 28).
@@ -57,6 +64,7 @@ Configured in `CMakePresets.json`:
 
 - `ios`: iOS device (arm64) Release build with SwiftUI app bundle
 - `ios-debug`: iOS device (arm64) Debug build
+- `android-arm64`: Android (arm64-v8a) Release build with JNI bridge, native libs, and Gradle APK target
 - `macos-swiftui`: macOS native ARM64 SwiftUI application using FEXCore
 - `macos-arm64-fex`: macOS native ARM64 CLI binary and regression tests
 - `macos`: macOS x86_64 build under Rosetta 2 (upstream compatibility)
@@ -65,16 +73,19 @@ Configured in `CMakePresets.json`:
 
 - FEXCore: A git submodule in `3rdparty/fexcore` pointing to `alamshafil/fexcore-darwin`. It is compiled directly in the CMake tree when `KYTY_ENABLE_FEX_GUEST_CPU=ON`.
 - MoltenVK: Fetched automatically via CMake FetchContent (`cmake/MoltenVKiOS.cmake` and `cmake/MoltenVKMacOS.cmake`) from official releases.
-- FFmpeg: On iOS, `cmake/FFmpegiOS.cmake` downloads FFmpeg 7.1.1 source and compiles an arm64 static library with required codecs. Desktop macOS/Linux uses `3rdparty/ffmpeg-core`.
+- FFmpeg: On iOS, `cmake/FFmpegiOS.cmake` downloads FFmpeg 7.1.1 source and compiles an arm64 static library. On Android, `cmake/FFmpegAndroid.cmake` cross-compiles FFmpeg using the NDK toolchain. Desktop macOS/Linux uses `3rdparty/ffmpeg-core`.
+- libadrenotools: Used on Android for custom Vulkan driver loading (e.g. Turnip/Mesa drivers on Qualcomm Adreno GPUs).
 - Other dependencies: Located in `3rdparty/` as submodules. If you get errors about build tools on macOS, check `README.upstream.md`.
 
-## Directory Layout for iOS changes
+## Directory Layout for Mobile and Native Ports
 
-- `3rdparty/fexcore`: FEXCore submodule fork for ARM64 Darwin JIT
-- `cmake/`: CMake helper scripts for MoltenVK, FFmpeg, and platform configuration
-- `docs/`: Architecture notes, JIT documentation (`docs/darwin_jit.md`), and memory architecture (`docs/darwin_memory.md`)
+- `3rdparty/fexcore`: FEXCore submodule fork for ARM64 Darwin & Android JIT
+- `cmake/`: CMake helper scripts for MoltenVK, FFmpeg, Android, and platform configurations
+- `docs/`: Architecture notes, JIT documentation (`docs/darwin_jit.md`), memory architecture (`docs/darwin_memory.md`), and Android guide (`docs/android.md`)
 - `docs/screenshots/`: In-game and library screenshots
-- `frontend/swift/`: SwiftUI application and Objective-C++ bridge (`KytyBridge.mm`)
+- `frontend/android/`: Android app shell (Jetpack Compose, Vulkan Activity, Adreno driver manager, virtual gamepad)
+- `frontend/swift/`: Shared SwiftUI application and platform bridges (`KytyBridge.mm`, `MetasperoUI` Skip package)
+- `src/android/`: Android JNI bindings and native bridge implementation
 - `src/loader/fex/`: FEXCore guest engine, dual-mapping allocator, HLE thunks
 - `tests/`: Regression test suites
 - `README.upstream.md`: Upstream KytyPS5 documentation
@@ -83,9 +94,10 @@ Configured in `CMakePresets.json`:
 
 ### Prerequisites
 
-- Apple Silicon Mac running macOS
-- Xcode with iOS SDK installed
+- Apple Silicon Mac running macOS 
+- Xcode with iOS SDK installed (for iOS and macOS SwiftUI targets)
 - CMake and Ninja (`brew install cmake ninja glslang python`)
+- **For Android**: Android NDK (r28+), Android SDK (API 35+), JDK 17+, and Swift with Skip toolchain
 
 ### 1. Clone
 
@@ -136,7 +148,30 @@ cmake --build --preset macos-arm64-fex
 ctest --test-dir _Build/macos-arm64 --output-on-failure
 ```
 
-### 4. Open and Build in Xcode
+### 4. Build for Android (ARM64 APK)
+
+Ensure `ANDROID_NDK_HOME` points to your NDK installation:
+
+```bash
+export ANDROID_NDK_HOME=$HOME/Library/Android/sdk/ndk/28.2.13676358
+```
+
+Configure the Android preset:
+
+```bash
+cmake --preset android-arm64
+```
+
+Build the complete Android application package (native C++ core, JNI libraries, transpiled SwiftUI-to-Kotlin AAR, and APK):
+
+```bash
+cmake --build _Build/android-arm64 --target kyty_android_apk
+```
+
+The generated APK will be at:
+`frontend/android/app/build/outputs/apk/debug/app-debug.apk`
+
+### 5. Open and Build in Xcode
 
 Generate and open projects directly in Xcode:
 

@@ -2,6 +2,8 @@
 #include "loader/fex/fexGuestEngine.h"
 #include "loader/fex/fexHleBridge.h"
 #include "loader/fex/iosJitAllocator.h"
+#include "common/common.h"
+#include "common/singleton.h"
 #include "common/logging/log.h"
 #include "common/hostException.h"
 #include "graphics/host_gpu/hostMemory.h"
@@ -49,6 +51,11 @@
 #include <mach/mach_vm.h>
 #endif
 #include <sys/ucontext.h>
+#endif
+#if defined(__ANDROID__) || defined(__linux__)
+#include <sys/auxv.h>
+#include <asm/hwcap.h>
+#include <pthread.h>
 #endif
 
 #if defined(__APPLE__)
@@ -240,16 +247,33 @@ public:
         return {region_addr, end - region_addr, (info.protection & VM_PROT_WRITE) != 0};
 #endif
 #else
+        // 1. Check if addr belongs to an ELF program loaded by RuntimeLinker
+        auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
+        if (rt != nullptr) {
+            auto* prog = rt->FindProgramByAddr(addr);
+            if (prog != nullptr && prog->mapped_size != 0) {
+                return {prog->base_vaddr, prog->mapped_size, true};
+            }
+        }
+
+        // 2. Check if addr is tracked by the kernel virtual memory manager
         void* start = nullptr;
         void* end = nullptr;
         int prot = 0;
-        if (Libs::LibKernel::Memory::KernelQueryMemoryProtection(reinterpret_cast<void*>(addr), &start, &end, &prot) != 0 ||
-            (prot & Libs::LibKernel::Memory::KERNEL_PROT_CPU_READ) == 0) {
-            return {0, 0, false};
+        if (Libs::LibKernel::Memory::KernelQueryMemoryProtection(reinterpret_cast<void*>(addr), &start, &end, &prot) == 0 &&
+            (prot & Libs::LibKernel::Memory::KERNEL_PROT_CPU_READ) != 0) {
+            uint64_t u_start = reinterpret_cast<uint64_t>(start);
+            uint64_t u_end = reinterpret_cast<uint64_t>(end);
+            return {u_start, u_end - u_start, (prot & Libs::LibKernel::Memory::KERNEL_PROT_CPU_WRITE) != 0};
         }
-        uint64_t u_start = reinterpret_cast<uint64_t>(start);
-        uint64_t u_end = reinterpret_cast<uint64_t>(end);
-        return {u_start, u_end - u_start, (prot & Libs::LibKernel::Memory::KERNEL_PROT_CPU_WRITE) != 0};
+
+        // 3. Fallback for thunks, JIT buffers, or mapped guest code
+        if (addr >= 0x0000000100000000ull && addr < 0x0000001000000000ull) {
+            uint64_t base = addr & ~0xFFFFFull; // 1MB align
+            return {base, 1024 * 1024, true};
+        }
+
+        return {0, 0, false};
 #endif
     }
 
@@ -360,6 +384,36 @@ bool FexGuestEngine::Initialize() {
     features.SupportsRCPC = false;
     features.SupportsTSOImm9 = false;
     if (sysctl_present("hw.optional.arm.FEAT_SHA1") || sysctl_present("hw.optional.arm.FEAT_SHA256")) features.SupportsSHA = true;
+    features.SupportsAES256 = features.SupportsAVX && features.SupportsAES;
+#elif defined(__ANDROID__) || defined(__linux__)
+    uint64_t hwcap = getauxval(AT_HWCAP);
+    uint64_t hwcap2 = getauxval(AT_HWCAP2);
+#if defined(HWCAP_ATOMICS)
+    if (hwcap & HWCAP_ATOMICS) features.SupportsAtomics = true;
+#endif
+#if defined(HWCAP_AES)
+    if (hwcap & HWCAP_AES) features.SupportsAES = true;
+#endif
+#if defined(HWCAP_CRC32)
+    if (hwcap & HWCAP_CRC32) features.SupportsCRC = true;
+#endif
+#if defined(HWCAP_PMULL)
+    if (hwcap & HWCAP_PMULL) features.SupportsPMULL_128Bit = true;
+#endif
+#if defined(HWCAP_SHA1) || defined(HWCAP_SHA2)
+    if ((hwcap & HWCAP_SHA1) || (hwcap & HWCAP_SHA2)) features.SupportsSHA = true;
+#endif
+#if defined(HWCAP_ASIMDFCMA)
+    if (hwcap & HWCAP_ASIMDFCMA) features.SupportsFCMA = true;
+#endif
+#if defined(HWCAP2_FLAGM)
+    if (hwcap2 & HWCAP2_FLAGM) features.SupportsFlagM = true;
+#endif
+#if defined(HWCAP2_FLAGM2)
+    if (hwcap2 & HWCAP2_FLAGM2) features.SupportsFlagM2 = true;
+#endif
+    features.SupportsRCPC = false;
+    features.SupportsTSOImm9 = false;
     features.SupportsAES256 = features.SupportsAVX && features.SupportsAES;
 #endif
 
@@ -898,7 +952,7 @@ static inline std::mutex& GetAtomicLockForAddress(uintptr_t addr) {
     return s_striped_atomic_locks[bucket & 255].mtx;
 }
 
-bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
+bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext) {
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU) && (defined(__arm64__) || defined(__aarch64__)) && defined(__APPLE__)
     auto* thread = s_tls_current_fex_thread;
     auto* engine_instance = &Instance();
@@ -960,7 +1014,7 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* si_ptr, void* ucontext) {
     if (sig != SIGBUS && sig != SIGILL) {
         return false;
     }
-    const auto* si = static_cast<const siginfo_t*>(si_ptr);
+    const auto* si = static_cast<const siginfo_t*>(siginfo_ptr);
     if (sig == SIGBUS && si != nullptr && si->si_code != BUS_ADRALN) {
         return false;
     }

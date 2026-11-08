@@ -48,16 +48,28 @@
 
 // IWYU pragma: no_include <intrin.h>
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__ANDROID__)
 typedef void (*KytyWindowCreatedCallback_t)(void* window);
 typedef void (*KytyWindowDestroyedCallback_t)();
 static KytyWindowCreatedCallback_t g_window_created_cb = nullptr;
 static KytyWindowDestroyedCallback_t g_window_destroyed_cb = nullptr;
 
+#if defined(__APPLE__)
 // CAMetalLayer of the host (SwiftUI) view, or null when the core should create its own SDL window.
 extern "C" __attribute__((weak)) void* KytyGetHostMetalLayer(void) {
 	return nullptr;
 }
+#endif
+
+#if defined(__ANDROID__)
+// ANativeWindow of the host SurfaceView, or null when the core should create its own SDL window.
+extern "C" __attribute__((weak)) void* KytyGetHostNativeWindow(void) {
+	return nullptr;
+}
+extern "C" __attribute__((weak)) const char* KytyGetCustomVulkanPath(void) {
+	return nullptr;
+}
+#endif
 
 extern "C" void KytySetWindowCallbacks(KytyWindowCreatedCallback_t created_cb, KytyWindowDestroyedCallback_t destroyed_cb) {
 	g_window_created_cb = created_cb;
@@ -753,6 +765,11 @@ void WindowContext::ProcessEvent(double time_s) {
 	}
 }
 
+static std::atomic<float> g_kyty_current_fps {0.0f};
+extern "C" float KytyGetCurrentFps() {
+	return g_kyty_current_fps.load(std::memory_order_relaxed);
+}
+
 void WindowContext::Run() {
 	Common::Timer timer;
 	timer.Start();
@@ -780,8 +797,10 @@ void WindowContext::Run() {
 		if (elapsed >= title_interval_ms) {
 			const auto frames = loop.presented_frames.load(std::memory_order_relaxed);
 			if (frames != 0) {
-				UpdateTitle(frames, static_cast<double>(frames - title_frames) * 1000.0 /
+				const auto fps = static_cast<float>(static_cast<double>(frames - title_frames) * 1000.0 /
 				                        static_cast<double>(elapsed));
+				g_kyty_current_fps.store(fps, std::memory_order_relaxed);
+				UpdateTitle(frames, fps);
 			}
 			title_time   = now;
 			title_frames = frames;
@@ -903,6 +922,19 @@ static void WindowCreate(WindowContext& context) {
 	}
 #else
 	SDL_SetMainReady();
+#if defined(__ANDROID__)
+	if (void* host_native_window = KytyGetHostNativeWindow(); host_native_window != nullptr) {
+		if (!SDL_InitSubSystem(SDL_INIT_EVENTS)) {
+			EXIT("%s\n", SDL_GetError());
+		}
+		context.host_native_window = host_native_window;
+		LOGF("WindowCreate(): using host native window = %p\n", host_native_window);
+		if (g_window_created_cb != nullptr) {
+			g_window_created_cb(host_native_window);
+		}
+		return;
+	}
+#endif
 	if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
 		EXIT("%s\n", SDL_GetError());
 	}
@@ -916,7 +948,7 @@ static void WindowCreate(WindowContext& context) {
 
 	HostInputInit(context.window);
 	InitializeSystemOverlayInput(context.window);
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__ANDROID__)
 	context.UpdateIcon();
 #endif
 }

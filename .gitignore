@@ -1,9 +1,26 @@
 # Visual Studio 2015 cache/options directory
 .vs/
 .idea/
+*.iml
+.DS_Store
 build/
+**/build/
 _Build/vscode-clang/
 _Build/
 cmake-build-debug/
 _PipelineCache/
 _TempData/
+
+# Android / Gradle artifacts
+.gradle/
+**/.gradle/
+**/local.properties
+**/.cxx/
+**/.externalNativeBuild/
+*.apk
+*.aab
+*.aar
+frontend/android/app/libs/
+frontend/android/app/src/main/jniLibs/
+.build/
+**/.build/

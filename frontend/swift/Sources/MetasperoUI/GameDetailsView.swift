@@ -51,12 +51,14 @@ struct GameDetailsView: View {
                             Text(game.path)
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundColor(.primary)
+                                #if !SKIP
                                 .textSelection(.enabled)
+                                #endif
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(16)
-#if os(macOS)
+#if os(macOS) || SKIP
                     .background(Color.secondary.opacity(0.1))
 #else
                     .background(Color(UIColor.secondarySystemGroupedBackground))
@@ -77,7 +79,7 @@ struct GameDetailsView: View {
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
-#if os(macOS)
+#if os(macOS) || SKIP
                         .background(Color.secondary.opacity(0.1))
 #else
                         .background(Color(UIColor.secondarySystemGroupedBackground))
@@ -143,7 +145,7 @@ struct GameDetailsView: View {
                 .padding(20)
             }
             .navigationTitle("Game Details")
-#if os(macOS)
+#if os(macOS) || SKIP
             .frame(minWidth: 480, idealWidth: 540, minHeight: 520, idealHeight: 580)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -181,8 +183,10 @@ struct GameDetailsView: View {
     
     @ViewBuilder
     private var artworkView: some View {
-#if os(iOS)
-        if let iconPath = game.iconPath, let uiImage = UIImage(contentsOfFile: iconPath) {
+#if os(iOS) || SKIP
+        if let iconPath = game.iconPath,
+           let data = readFileData(path: iconPath),
+           let uiImage = UIImage(data: data) {
             Image(uiImage: uiImage)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
@@ -209,8 +213,7 @@ struct GameDetailsView: View {
             RoundedRectangle(cornerRadius: 16)
                 .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
                 .frame(width: 130, height: 130)
-            Image(systemName: "gamecontroller.fill")
-                .font(.system(size: 48))
+            PlatformIcon("gamecontroller.fill", size: 48)
                 .foregroundColor(.white)
         }
     }
@@ -248,8 +251,7 @@ struct CompatibilityReportView: View {
                     let status = info?.status ?? .unknown
                     
                     HStack(spacing: 12) {
-                        Image(systemName: status.iconName)
-                            .font(.title2)
+                        PlatformIcon(status.iconName, size: 24)
                             .foregroundColor(status.color)
                         
                         VStack(alignment: .leading, spacing: 2) {
@@ -343,8 +345,7 @@ struct CompatibilityReportView: View {
                     GroupBox {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack(spacing: 12) {
-                                Image(systemName: status.iconName)
-                                    .font(.system(size: 32))
+                                PlatformIcon(status.iconName, size: 32)
                                     .foregroundColor(status.color)
                                 
                                 VStack(alignment: .leading, spacing: 3) {
@@ -402,7 +403,9 @@ struct CompatibilityReportView: View {
                         .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    #if !SKIP
                     .controlSize(.regular)
+                    #endif
                     .disabled(isLoading)
                     
                     // Notice
@@ -439,8 +442,10 @@ struct CompatibilityReportView: View {
     
     @ViewBuilder
     private var compatArtworkView: some View {
-#if os(iOS)
-        if let iconPath = game.iconPath, let uiImage = UIImage(contentsOfFile: iconPath) {
+#if os(iOS) || SKIP
+        if let iconPath = game.iconPath,
+           let data = readFileData(path: iconPath),
+           let uiImage = UIImage(data: data) {
             Image(uiImage: uiImage)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
@@ -464,11 +469,10 @@ struct CompatibilityReportView: View {
     
     private func placeholderIcon(size: CGFloat) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: size > 60 ? 12 : 10)
+            RoundedRectangle(cornerRadius: size > 60 ? 12.0 : 10.0)
                 .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
                 .frame(width: size, height: size)
-            Image(systemName: "gamecontroller.fill")
-                .font(.system(size: size * 0.45))
+            PlatformIcon("gamecontroller.fill", size: size * 0.45)
                 .foregroundColor(.white)
         }
     }

@@ -49,13 +49,20 @@ struct InputMappingView: View {
     ]
     
     var groups: [String] {
-        Array(NSOrderedSet(array: controlLabels.map { $0.group })).compactMap { $0 as? String }
+        var seen = Set<String>()
+        var result: [String] = []
+        for label in controlLabels {
+            if seen.insert(label.group).inserted {
+                result.append(label.group)
+            }
+        }
+        return result
     }
     
     var body: some View {
         NavigationStack {
             List {
-                Section(footer: Text("Custom keyboard mappings are loaded by the emulator on macOS.")) {
+                Section {
                     HStack {
                         Text("Reset All to Default")
                         Spacer()
@@ -64,10 +71,14 @@ struct InputMappingView: View {
                         }
                         .buttonStyle(.bordered)
                     }
+                } header: {
+                    EmptyView()
+                } footer: {
+                    Text("Custom keyboard mappings are loaded by the emulator on macOS.")
                 }
                 
                 ForEach(groups, id: \.self) { group in
-                    Section(header: Text(group)) {
+                    Section(group) {
                         ForEach(bindings.filter { $0.group == group }) { item in
                             HStack {
                                 Text(item.label)
@@ -122,7 +133,11 @@ struct InputMappingView: View {
             }
         }
         
+        #if !SKIP
         let saved = UserDefaults.standard.stringArray(forKey: "keymapBindings") ?? []
+#else
+        let saved: [String] = []
+#endif
         for s in saved {
             let parts = s.components(separatedBy: "=")
             if parts.count == 2 {

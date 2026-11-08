@@ -47,10 +47,11 @@ struct SettingsView: View {
     @AppStorage("presentMode") private var presentMode = "Mailbox"
     @AppStorage("vblankFrequency") private var vblankFrequency = 60
     @AppStorage("enableMetalHud") private var enableMetalHud = false
+    @AppStorage("hudDetailLevel") private var hudDetailLevel = "Full"
     
     // Controllers & Input
     @AppStorage("enableHaptics") private var enableHaptics = true
-    @AppStorage("enableTouchOverlay") private var enableTouchOverlay = touchOverlayDefault
+    @AppStorage("enableTouchOverlay") private var enableTouchOverlay: Bool = true
     
     // JIT & Memory
     @AppStorage("skipMeshShaders") private var skipMeshShaders = false
@@ -112,7 +113,7 @@ struct SettingsView: View {
     }
 
     var body: some View {
-#if os(iOS)
+#if os(iOS) || SKIP
         iOSView
 #else
         macOSView
@@ -513,31 +514,41 @@ struct SettingsView: View {
 
     // MARK: - iOS View
 
-#if os(iOS)
+#if os(iOS) || SKIP
     var iOSView: some View {
         NavigationStack {
             Form {
                 Section {
                     NavigationLink { iosGraphicsPage } label: {
-                        Label("Graphics", systemImage: "display")
+                        PlatformLabel("Graphics", systemImage: "display")
                     }
                     NavigationLink { iosControllersPage } label: {
-                        Label("Controllers", systemImage: "gamecontroller.fill")
+                        PlatformLabel("Controllers", systemImage: "gamecontroller.fill")
                     }
                     NavigationLink { iosJitPage } label: {
-                        Label("JIT", systemImage: "cpu")
+                        PlatformLabel("JIT", systemImage: "cpu")
                     }
                     NavigationLink { iosAdvancedPage } label: {
-                        Label("Advanced", systemImage: "slider.horizontal.3")
+                        PlatformLabel("Advanced", systemImage: "slider.horizontal.3")
                     }
                     NavigationLink { iosDiagnosticsPage } label: {
-                        Label("Diagnostics", systemImage: "waveform.path.ecg")
+                        PlatformLabel("Diagnostics", systemImage: "waveform.path.ecg")
                     }
                     NavigationLink { iosAboutPage } label: {
-                        Label("About", systemImage: "info.circle.fill")
+                        PlatformLabel("About", systemImage: "info.circle.fill")
                     }
                 }
+                #if SKIP
+                Section(header: Text("Android System")) {
+                    NavigationLink { androidDriversPage } label: {
+                        PlatformLabel("GPU Driver Manager", systemImage: "cpu")
+                    }
+                }
+                #endif
             }
+            #if SKIP
+            .scrollContentBackground(.hidden)
+            #endif
             .navigationTitle("Settings")
             .sheet(isPresented: $showLogSheet) {
                 LogView()
@@ -549,12 +560,37 @@ struct SettingsView: View {
         }
     }
 
+    #if SKIP
+    private var androidDriversPage: some View {
+        Form {
+            Section(header: Text("Active Driver")) {
+                Picker("Active Driver", selection: Binding(
+                    get: { KytyBridge.selectedDriverId },
+                    set: { KytyBridge.selectDriver(id: $0) }
+                )) {
+                    ForEach(KytyBridge.installedDrivers) { driver in
+                        Text(driver.name).tag(driver.id)
+                    }
+                }
+            }
+            
+            Section(header: Text("Custom Drivers")) {
+                Button(action: {
+                    KytyBridge.requestInstallDriver()
+                }) {
+                    PlatformLabel("Install Custom Driver (.zip)", systemImage: "arrow.down.doc.fill")
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .navigationTitle("GPU Drivers")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+    #endif
+
     private var iosGraphicsPage: some View {
         Form {
-            Section(
-                header: Text("Graphics & Display"),
-                footer: Text("Mailbox: fast V-Sync, lowest latency. Fifo: strict 60 FPS V-Sync. Immediate: uncapped frame rate.")
-            ) {
+            Section {
                 Picker("Resolution", selection: $resolutionScale) {
                     Text("480p").tag("480p")
                     Text("720p").tag("720p")
@@ -573,10 +609,23 @@ struct SettingsView: View {
                     Text("120 Hz").tag(120)
                 }
                 
-                Toggle("Metal Performance HUD", isOn: $enableMetalHud)
-                    .onChange(of: enableMetalHud) { newValue in
-                        KytyBridge.setMetalHudEnabled(newValue)
+                #if SKIP
+                Toggle("Performance & FPS HUD", isOn: $enableMetalHud)
+                if enableMetalHud {
+                    Picker("HUD Detail Level", selection: $hudDetailLevel) {
+                        Text("Full Stats (FPS, RAM, GPU)").tag("Full")
+                        Text("Minimal (FPS & Frame Time)").tag("Minimal")
                     }
+                }
+                
+                HStack {
+                    Text("Vulkan Graphics Engine")
+                    Spacer()
+                    Text("Kyty Vulkan")
+                        .foregroundColor(.secondary)
+                }
+                #else
+                Toggle("Metal Performance HUD", isOn: $enableMetalHud)
                 
                 HStack {
                     Text("Vulkan Translation")
@@ -584,7 +633,22 @@ struct SettingsView: View {
                     Text(KytyBridge.moltenVkVersion())
                         .foregroundColor(.secondary)
                 }
+                #endif
+            } header: {
+                Text("Graphics & Display")
+            } footer: {
+                #if SKIP
+                Text("Performance HUD displays real-time frame rates, frame times, VmRSS physical memory usage, and active Vulkan GPU driver details.")
+                #else
+                Text("Mailbox: fast V-Sync, lowest latency. Fifo: strict 60 FPS V-Sync. Immediate: uncapped frame rate.")
+                #endif
             }
+        }
+        #if SKIP
+        .scrollContentBackground(.hidden)
+        #endif
+        .onChange(of: enableMetalHud) { newValue in
+            KytyBridge.setMetalHudEnabled(newValue)
         }
         .navigationTitle("Graphics")
         .navigationBarTitleDisplayMode(.inline)
@@ -592,9 +656,13 @@ struct SettingsView: View {
 
     private var iosControllersPage: some View {
         Form {
-            Section(header: Text("Touch & Haptics")) {
+            Section {
                 Toggle("On-Screen Touch Controls", isOn: $enableTouchOverlay)
                 Toggle("Controller Haptic Feedback", isOn: $enableHaptics)
+            } header: {
+                Text("Touch & Haptics")
+            } footer: {
+                Text("Enable or disable the on-screen virtual gamepad overlay during gameplay.")
             }
             
             Section(header: Text("Connected Gamepads")) {
@@ -608,7 +676,7 @@ struct SettingsView: View {
                 if !controllers.isEmpty {
                     ForEach(controllers) { ctrl in
                         HStack {
-                            Image(systemName: "gamecontroller.fill")
+                            PlatformIcon("gamecontroller.fill")
                                 .foregroundColor(.blue)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(ctrl.name)
@@ -626,6 +694,9 @@ struct SettingsView: View {
                 }
             }
         }
+        #if SKIP
+        .scrollContentBackground(.hidden)
+        #endif
         .navigationTitle("Controllers")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -654,15 +725,15 @@ struct SettingsView: View {
                 }
                 
                 Button(action: { KytyBridge.openStikDebug() }) {
-                    Label("Attach StikDebug", systemImage: "ladybug.fill")
+                    PlatformLabel("Attach StikDebug", systemImage: "ladybug.fill")
                 }
                 
                 Button(action: {
-                    DispatchQueue.global(qos: .userInitiated).async {
+                    DispatchQueue.global().async {
                         _ = KytyBridge.refreshJitStatus()
                     }
                 }) {
-                    Label("Refresh Status", systemImage: "arrow.clockwise")
+                    PlatformLabel("Refresh Status", systemImage: "arrow.clockwise")
                 }
             }
             
@@ -670,17 +741,30 @@ struct SettingsView: View {
                 HStack {
                     Text("Extended Memory Limit")
                     Spacer()
+#if os(iOS) && !SKIP
                     Text(ExtendedMemoryEntitlement.hasIncreasedMemoryLimit ? "Granted" : "Not Granted")
                         .foregroundColor(ExtendedMemoryEntitlement.hasIncreasedMemoryLimit ? .green : .secondary)
+#else
+                    Text("N/A")
+                        .foregroundColor(.secondary)
+#endif
                 }
                 HStack {
                     Text("Extended Virtual Addressing")
                     Spacer()
+#if os(iOS) && !SKIP
                     Text(ExtendedMemoryEntitlement.hasExtendedVirtualAddressing ? "Granted" : "Not Granted")
                         .foregroundColor(ExtendedMemoryEntitlement.hasExtendedVirtualAddressing ? .green : .secondary)
+#else
+                    Text("N/A")
+                        .foregroundColor(.secondary)
+#endif
                 }
             }
         }
+        #if SKIP
+        .scrollContentBackground(.hidden)
+        #endif
         .navigationTitle("JIT")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -698,9 +782,14 @@ struct SettingsView: View {
                 HStack {
                     Text("User ID")
                     Spacer()
+#if !SKIP
                     TextField("1000", value: $userId, formatter: NumberFormatter())
                         .keyboardType(.numberPad)
                         .multilineTextAlignment(.trailing)
+#else
+                    TextField("1000", text: Binding(get: { "\(userId)" }, set: { userId = Int($0) ?? userId }))
+                        .multilineTextAlignment(.trailing)
+#endif
                 }
                 
                 Picker("Console Language", selection: $consoleLanguage) {
@@ -720,13 +809,17 @@ struct SettingsView: View {
                 Toggle("High Dynamic Range (HDR)", isOn: $hdrEnabled)
             }
             
-            Section(
-                header: Text("Mesh Shaders"),
-                footer: Text("Warning: Skipping mesh shaders bypasses geometry processing. This can cause missing 3D models, severe rendering glitches, or game crashes. Only enable if a title fails to render on unsupported GPU hardware.")
-            ) {
+            Section {
                 Toggle("Skip Mesh Shaders", isOn: $skipMeshShaders)
+            } header: {
+                Text("Mesh Shaders")
+            } footer: {
+                Text("Warning: Skipping mesh shaders bypasses geometry processing. This can cause missing 3D models, severe rendering glitches, or game crashes. Only enable if a title fails to render on unsupported GPU hardware.")
             }
         }
+        #if SKIP
+        .scrollContentBackground(.hidden)
+        #endif
         .navigationTitle("Advanced")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -735,7 +828,7 @@ struct SettingsView: View {
         Form {
             Section(header: Text("Diagnostics & Logs")) {
                 Button(action: { showLogSheet = true }) {
-                    Label("View Runtime Logs", systemImage: "terminal.fill")
+                    PlatformLabel("View Runtime Logs", systemImage: "terminal.fill")
                 }
                 
                 Toggle("Write Logs to Disk", isOn: $enableLogFileWriting)
@@ -759,6 +852,9 @@ struct SettingsView: View {
                 }
             }
         }
+        #if SKIP
+        .scrollContentBackground(.hidden)
+        #endif
         .navigationTitle("Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -784,7 +880,7 @@ struct SettingsView: View {
     }
 }
 
-#if os(iOS)
+#if os(iOS) && !SKIP
 enum ExtendedMemoryEntitlement {
     private static let increasedLimitKey = "com.apple.developer.kernel.increased-memory-limit"
     private static let extendedVAKey = "com.apple.developer.kernel.extended-virtual-addressing"

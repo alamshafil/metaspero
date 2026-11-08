@@ -20,7 +20,7 @@ final class MemoryPressureMonitor: ObservableObject {
     
     private init() {
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name.KytyMemoryPressure,
+            forName: .KytyMemoryPressure,
             object: nil,
             queue: .main
         ) { [weak self] notif in
@@ -33,9 +33,9 @@ final class MemoryPressureMonitor: ObservableObject {
             guard let info = notif.userInfo else { return }
             let level = info[KytyMemoryPressureLevelKey] as? String ?? "Warning"
             let reason = info[KytyMemoryPressureReasonKey] as? String ?? "High memory pressure"
-            let usedMB = (info[KytyMemoryUsedMBKey] as? NSNumber)?.doubleValue ?? 0
-            let availMB = (info[KytyMemoryAvailMBKey] as? NSNumber)?.doubleValue ?? 0
-            let limitMB = (info[KytyMemoryLimitMBKey] as? NSNumber)?.doubleValue ?? 0
+            let usedMB = (info[KytyMemoryUsedMBKey] as? Double) ?? Double((info[KytyMemoryUsedMBKey] as? Int) ?? 0)
+            let availMB = (info[KytyMemoryAvailMBKey] as? Double) ?? Double((info[KytyMemoryAvailMBKey] as? Int) ?? 0)
+            let limitMB = (info[KytyMemoryLimitMBKey] as? Double) ?? Double((info[KytyMemoryLimitMBKey] as? Int) ?? 0)
             let message = info["message"] as? String ?? "Memory pressure detected"
             
             let data = MemoryPressureToastData(
@@ -116,15 +116,18 @@ struct MemoryWarningToastBanner: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                #if os(iOS)
+                #if os(iOS) && !SKIP
                 .fill(Color(UIColor.secondarySystemBackground))
-                #else
+                #elseif os(macOS)
                 .fill(Color(NSColor.windowBackgroundColor))
+                #else
+                .fill(Color.secondary.opacity(0.2))
                 #endif
                 .shadow(color: Color.black.opacity(0.12), radius: 8, x: 0, y: 3)
         )
         .padding(.horizontal, 16)
         .padding(.top, 8)
+#if !SKIP
         .gesture(
             DragGesture(minimumDistance: 10)
                 .onEnded { value in
@@ -133,6 +136,7 @@ struct MemoryWarningToastBanner: View {
                     }
                 }
         )
+#endif
     }
 }
 

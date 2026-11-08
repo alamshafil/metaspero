@@ -1,29 +1,34 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import SwiftUI
 
-struct ContentView: View {
+public struct ContentView: View {
     @State private var selectedGame: GameItem? = nil
     @State private var isEmulating = false
     @State private var showCrashAlert = false
     @State private var crashAlertMessage = ""
     @State private var showLogSheetFromCrash = false
     
-    var body: some View {
+    public init() {}
+    
+    public var body: some View {
         ZStack {
-#if os(iOS)
+#if os(iOS) || SKIP
             TabView {
                 LibraryView(selectedGame: $selectedGame, isEmulating: $isEmulating)
                     .tabItem {
-                        Label("Library", systemImage: "square.grid.2x2.fill")
+                        PlatformLabel("Library", systemImage: "square.grid.2x2.fill")
                     }
                 
                 SettingsView()
                     .tabItem {
-                        Label("Settings", systemImage: "gearshape.fill")
+                        PlatformLabel("Settings", systemImage: "gearshape.fill")
                     }
             }
+            #if !SKIP
             .accentColor(.blue)
+            #endif
             
+            #if !SKIP
             // Fullscreen active game emulation overlay on iOS
             if isEmulating, let game = selectedGame {
                 EmulationView(game: game, isEmulating: $isEmulating)
@@ -31,20 +36,19 @@ struct ContentView: View {
                     .transition(.opacity)
                     .zIndex(1)
             }
+            #endif
 #else
             LibraryView(selectedGame: $selectedGame, isEmulating: $isEmulating)
                 .frame(minWidth: 960, minHeight: 640)
 #endif
         }
-        .alert(isPresented: $showCrashAlert) {
-            Alert(
-                title: Text("Emulation Stopped"),
-                message: Text(crashAlertMessage),
-                primaryButton: .default(Text("View Logs")) {
-                    showLogSheetFromCrash = true
-                },
-                secondaryButton: .cancel(Text("Dismiss"))
-            )
+        .alert("Emulation Stopped", isPresented: $showCrashAlert) {
+            Button("View Logs") {
+                showLogSheetFromCrash = true
+            }
+            Button("Dismiss", role: .cancel) {}
+        } message: {
+            Text(crashAlertMessage)
         }
         .sheet(isPresented: $showLogSheetFromCrash) {
             LogView()
@@ -52,7 +56,7 @@ struct ContentView: View {
         .withMemoryWarningToast()
         .onAppear {
             NotificationCenter.default.addObserver(
-                forName: NSNotification.Name.KytyEmulationCrashed,
+                forName: .KytyEmulationCrashed,
                 object: nil,
                 queue: .main
             ) { notification in
@@ -81,7 +85,7 @@ struct ContentView: View {
             }
             
             NotificationCenter.default.addObserver(
-                forName: NSNotification.Name.KytyWindowDestroyed,
+                forName: .KytyWindowDestroyed,
                 object: nil,
                 queue: .main
             ) { _ in
@@ -97,7 +101,7 @@ struct ContentView: View {
             }
 
             NotificationCenter.default.addObserver(
-                forName: NSNotification.Name.KytyEmulationStopped,
+                forName: .KytyEmulationStopped,
                 object: nil,
                 queue: .main
             ) { _ in
@@ -120,7 +124,7 @@ struct ContentView: View {
             return "Emulation stopped due to an unexpected core assertion or fatal fault."
         }
         
-        var lines = trimmed.components(separatedBy: .newlines)
+        var lines = trimmed.components(separatedBy: "\n")
         var wasTruncated = false
         
         if lines.count > maxLines {

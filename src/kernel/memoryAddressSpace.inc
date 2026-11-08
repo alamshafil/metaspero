@@ -20,6 +20,26 @@ static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x07ffffbfffull;
 static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x0fbfffffffull;
 static constexpr uint64_t HOST_USER_MIN            = 0x7000000000ull;
 static constexpr uint64_t HOST_USER_MAX            = 0xfbffffffffull;
+#elif defined(__ANDROID__)
+// Android arm64 kernels commonly expose a 39-bit (512 GiB) user address space, but 48-bit kernels
+// provide full VA space. Probe whether addresses >= 512 GiB can be mapped with MAP_FIXED_NOREPLACE;
+// if so, expand the guest ceiling to 1 TiB (0xfbffffffff), otherwise fall back to 256 GiB (0x3fffffffff).
+static inline uint64_t ProbeAndroidUserMax() {
+#if defined(MAP_FIXED_NOREPLACE)
+	void* probe = ::mmap(reinterpret_cast<void*>(0x8000000000ull), 4096, PROT_NONE,
+	                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+	if (probe != MAP_FAILED) {
+		::munmap(probe, 4096);
+		return 0xfbffffffffull; // 48-bit VA kernel
+	}
+#endif
+	return 0x3fffffffffull; // 39-bit VA kernel
+}
+static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = 0x0000040000ull;
+static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x07ffffbfffull;
+static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x0fffffffffull;
+static constexpr uint64_t HOST_USER_MIN            = 0x1000000000ull;
+static const uint64_t     HOST_USER_MAX            = ProbeAndroidUserMax();
 #else
 static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = 0x0000040000ull;
 static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x07ffffbfffull;

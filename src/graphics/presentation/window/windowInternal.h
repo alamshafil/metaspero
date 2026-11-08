@@ -54,6 +54,10 @@ struct WindowContext {
 	SDL_Window*                    window        = nullptr;
 	// Apple only: CAMetalLayer owned by the host (SwiftUI) view. When set, no SDL window exists.
 	void*                          host_layer    = nullptr;
+#if defined(__ANDROID__)
+	// Android only: ANativeWindow owned by the host SurfaceView. When set, no SDL window exists.
+	void*                          host_native_window = nullptr;
+#endif
 	vk::SurfaceKHR                 surface       = nullptr;
 	SurfaceCapabilities            surface_capabilities;
 	std::unique_ptr<RenderContext> render_context;

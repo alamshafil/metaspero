@@ -63,12 +63,14 @@ vk::PhysicalDeviceVulkan12Features WindowContext::RequiredVulkan12Features() noe
 	vk::PhysicalDeviceVulkan12Features features {};
 	features.samplerMirrorClampToEdge  = VK_TRUE;
 	features.timelineSemaphore         = VK_TRUE;
+#if !defined(__ANDROID__)
 	features.shaderOutputLayer         = VK_TRUE;
 	features.shaderOutputViewportIndex = VK_TRUE;
-	features.bufferDeviceAddress       = VK_TRUE;
-#if !defined(__APPLE__)
+#endif
+#if !defined(__APPLE__) && !defined(__ANDROID__)
 	features.shaderBufferInt64Atomics  = VK_TRUE;
 #endif
+	features.bufferDeviceAddress       = VK_TRUE;
 	features.storageBuffer8BitAccess   = VK_TRUE;
 	features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 	return features;
@@ -388,11 +390,21 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 			check_format(vk::Format::eR8G8B8A8Unorm, storage_features, "storage image");
 		}
 
+#if !defined(__ANDROID__)
 		if (!skip_device &&
 		    !CheckFormat(device, vk::Format::eB8G8R8A8Srgb, true, storage_features)) {
 			LOGF("Format vk::Format::eB8G8R8A8Srgb cannot be used as storage image\n");
 			check_format(vk::Format::eB8G8R8A8Unorm, storage_features, "storage image");
 		}
+#else
+		if (!skip_device &&
+		    !CheckFormat(device, vk::Format::eB8G8R8A8Srgb, true, storage_features)) {
+			LOGF("Format vk::Format::eB8G8R8A8Srgb cannot be used as storage image\n");
+			if (!CheckFormat(device, vk::Format::eB8G8R8A8Unorm, true, storage_features)) {
+				LOGF("Format vk::Format::eB8G8R8A8Unorm cannot be used as storage image (non-fatal on Android)\n");
+			}
+		}
+#endif
 
 		if (!skip_device && device_properties.limits.maxSamplerAnisotropy < 16.0f) {
 			reject("maxSamplerAnisotropy < 16.0f");
@@ -543,6 +555,10 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	features12.shaderSharedInt64Atomics = supported_features12.shaderSharedInt64Atomics;
 #if defined(__APPLE__)
 	features12.shaderBufferInt64Atomics = supported_features12.shaderBufferInt64Atomics;
+#elif defined(__ANDROID__)
+	features12.shaderBufferInt64Atomics  = supported_features12.shaderBufferInt64Atomics;
+	features12.shaderOutputLayer         = supported_features12.shaderOutputLayer;
+	features12.shaderOutputViewportIndex = supported_features12.shaderOutputViewportIndex;
 #endif
 	graphics.shader_buffer_int64_atomics_enabled =
 	    features12.shaderBufferInt64Atomics == VK_TRUE;
@@ -616,21 +632,27 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	}
 	// VulkanFindPhysicalDevice already checked the required creation features. These
 	// requirements are specific to this creation path and are not part of device selection.
+#if !defined(__ANDROID__)
 	EXIT_NOT_IMPLEMENTED(supported_features2.features.shaderInt64 != VK_TRUE);
 	EXIT_NOT_IMPLEMENTED(supported_features2.features.vertexPipelineStoresAndAtomics != VK_TRUE);
 	EXIT_NOT_IMPLEMENTED(supported_features2.features.dualSrcBlend != VK_TRUE);
+#endif
 	vk::PhysicalDeviceFeatures device_features {};
 	device_features.fragmentStoresAndAtomics = VK_TRUE;
 	device_features.samplerAnisotropy        = VK_TRUE;
 	device_features.robustBufferAccess       = VK_TRUE;
 #if !defined(__APPLE__)
-	device_features.depthBounds = VK_TRUE; // unsupported by MoltenVK
-	device_features.depthClamp  = VK_TRUE;
+	device_features.depthBounds = supported_features2.features.depthBounds;
+	device_features.depthClamp  = supported_features2.features.depthClamp;
 #endif
 	device_features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 	device_features.shaderImageGatherExtended            = VK_TRUE;
 	device_features.independentBlend                     = VK_TRUE;
+#if !defined(__ANDROID__)
 	device_features.dualSrcBlend                         = VK_TRUE;
+#else
+	device_features.dualSrcBlend                         = supported_features2.features.dualSrcBlend;
+#endif
 	device_features.tessellationShader                   = VK_TRUE;
 	device_features.sampleRateShading                    = VK_TRUE;
 	device_features.depthBiasClamp                       = VK_TRUE;
@@ -649,9 +671,13 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	device_features.largePoints                          = VK_TRUE;
 	device_features.multiViewport                        = VK_TRUE;
 	device_features.fillModeNonSolid                      = VK_TRUE;
-	device_features.vertexPipelineStoresAndAtomics       = VK_TRUE;
+	device_features.vertexPipelineStoresAndAtomics       = supported_features2.features.vertexPipelineStoresAndAtomics;
 	graphics.sample_rate_shading_enabled                 = true;
-	device_features.shaderInt64 = VK_TRUE;
+	device_features.shaderInt64 = supported_features2.features.shaderInt64;
+	if (device_features.shaderInt64 != VK_TRUE) {
+		Log::WriteToConsoleAndLog(
+		    "WARNING: shaderInt64 is unavailable; shaders using 64-bit integer arithmetic will fail.\n");
+	}
 	device_features.shaderFloat64 =
 	    supported_features2.features.shaderFloat64 &&
 	    float_controls.shaderSignedZeroInfNanPreserveFloat64;
@@ -728,8 +754,14 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	return device;
 }
 
+#if defined(__ANDROID__)
+extern "C" __attribute__((weak)) void* KytyGetVkGetInstanceProcAddr(void) {
+	return nullptr;
+}
+#endif
+
 // Creates the presentation surface: from the host's CAMetalLayer (Apple),
-// otherwise through SDL.
+// host ANativeWindow (Android), otherwise through SDL.
 static bool CreateWindowSurface(WindowContext& ctx, VkInstance instance, VkSurfaceKHR* out) {
 #if defined(__APPLE__)
 	if (ctx.host_layer != nullptr) {
@@ -750,17 +782,55 @@ static bool CreateWindowSurface(WindowContext& ctx, VkInstance instance, VkSurfa
 		MetalSurfaceCreateInfo info {static_cast<VkStructureType>(1000217000), nullptr, 0, ctx.host_layer};
 		return create(instance, &info, nullptr, out) == VK_SUCCESS;
 	}
+#elif defined(__ANDROID__)
+	if (ctx.host_native_window != nullptr) {
+		struct AndroidSurfaceCreateInfoKHR {
+			VkStructureType sType;
+			const void*     pNext;
+			VkFlags         flags;
+			void*           window;
+		};
+		using CreateFn = VkResult (*)(VkInstance, const AndroidSurfaceCreateInfoKHR*, const VkAllocationCallbacks*, VkSurfaceKHR*);
+		auto get_proc  = reinterpret_cast<PFN_vkGetInstanceProcAddr>(KytyGetVkGetInstanceProcAddr());
+		if (get_proc == nullptr) {
+			static void* s_vk_lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+			if (s_vk_lib != nullptr) {
+				get_proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(s_vk_lib, "vkGetInstanceProcAddr"));
+			}
+		}
+		if (get_proc == nullptr) {
+			get_proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+		}
+		auto create    = reinterpret_cast<CreateFn>(get_proc(instance, "vkCreateAndroidSurfaceKHR"));
+		if (create == nullptr) {
+			LOGF("vkCreateAndroidSurfaceKHR is not available\n");
+			return false;
+		}
+		AndroidSurfaceCreateInfoKHR info {
+			static_cast<VkStructureType>(1000008000), // VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR
+			nullptr, 0, ctx.host_native_window
+		};
+		return create(instance, &info, nullptr, out) == VK_SUCCESS;
+	}
 #endif
 	return SDL_Vulkan_CreateSurface(ctx.window, instance, nullptr, out);
 }
 
 static void VulkanGetExtensions(VulkanExtensions& r) {
+#if defined(__ANDROID__)
+	static const char* const android_extensions[] = {
+		"VK_KHR_surface",
+		"VK_KHR_android_surface"
+	};
+	r.required_extensions.assign(android_extensions, android_extensions + 2);
+#else
 	uint32_t required_extensions_count = 0;
 
 	const char* const* extensions = SDL_Vulkan_GetInstanceExtensions(&required_extensions_count);
 	EXIT_NOT_IMPLEMENTED(extensions == nullptr);
 	EXIT_NOT_IMPLEMENTED(required_extensions_count == 0);
 	r.required_extensions.assign(extensions, extensions + required_extensions_count);
+#endif
 
 	r.available_extensions =
 	    EnumerateVulkan<vk::ExtensionProperties>( // @suppress("Ambiguous problem")
@@ -781,6 +851,18 @@ static void VulkanGetExtensions(VulkanExtensions& r) {
 	} else {
 		r.enable_validation_layers = false;
 	}
+
+#if defined(__ANDROID__)
+	std::vector<const char*> valid_extensions;
+	for (const char* ext : r.required_extensions) {
+		if (HasExtension(r.available_extensions, ext)) {
+			valid_extensions.push_back(ext);
+		} else {
+			LOGF("Vulkan extension %s not supported by this driver, skipping\n", ext);
+		}
+	}
+	r.required_extensions = std::move(valid_extensions);
+#endif
 
 	for (const char* ext: r.required_extensions) {
 		LOGF("Vulkan required extension: %s\n", ext);
@@ -932,14 +1014,31 @@ static void VulkanCheckInstanceVersion() {
 }
 
 void WindowContext::CreateVulkan() {
-	EXIT_IF(window == nullptr && host_layer == nullptr);
+	EXIT_IF(window == nullptr && host_layer == nullptr
+#if defined(__ANDROID__)
+		&& host_native_window == nullptr
+#endif
+	);
 	EXIT_IF(graphic_ctx.instance != nullptr);
 	EXIT_IF(graphic_ctx.physical_device != nullptr);
 	EXIT_IF(graphic_ctx.device != nullptr);
 	EXIT_IF(surface != nullptr);
 
 	auto get_instance_proc_addr =
-	    reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+	    reinterpret_cast<PFN_vkGetInstanceProcAddr>(KytyGetVkGetInstanceProcAddr());
+	if (get_instance_proc_addr == nullptr) {
+#if defined(__ANDROID__)
+		static void* s_vk_lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+		if (s_vk_lib != nullptr) {
+			get_instance_proc_addr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+				dlsym(s_vk_lib, "vkGetInstanceProcAddr"));
+		}
+#endif
+	}
+	if (get_instance_proc_addr == nullptr) {
+		get_instance_proc_addr =
+		    reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+	}
 	if (get_instance_proc_addr == nullptr) {
 		EXIT("Could not load Vulkan: %s\n", SDL_GetError());
 	}
@@ -1165,7 +1264,11 @@ void WindowContext::RefreshSurfaceCapabilities() {
 }
 
 void WindowContext::RecreateSurface() {
-	EXIT_IF((window == nullptr && host_layer == nullptr) || graphic_ctx.instance == nullptr);
+	EXIT_IF((window == nullptr && host_layer == nullptr
+#if defined(__ANDROID__)
+		&& host_native_window == nullptr
+#endif
+	) || graphic_ctx.instance == nullptr);
 	if (surface != nullptr) {
 		graphic_ctx.instance.destroySurfaceKHR(surface, nullptr);
 		surface = nullptr;
@@ -1231,6 +1334,8 @@ WindowContext::~WindowContext() {
 	} else {
 		SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
 	}
+#elif defined(__ANDROID__)
+	SDL_QuitSubSystem(SDL_INIT_EVENTS);
 #else
 	SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
 #endif

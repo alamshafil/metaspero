@@ -2270,7 +2270,9 @@ uint32_t* KYTY_SYSV_ABI AgcDcbResetQueue(CommandBuffer* buf, uint32_t op, uint32
 
 	auto* cmd = buf->AllocateDW(2);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		return nullptr;
+	}
 
 	cmd[0] = KYTY_PM4(2, Pm4::IT_CLEAR_STATE, 0u);
 	cmd[1] = state & 0xfu;
@@ -4375,7 +4377,9 @@ uint32_t* KYTY_SYSV_ABI AgcDcbSetFlip(CommandBuffer* buf, uint32_t video_out_han
 
 	auto* cmd = buf->AllocateDW(6);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		return nullptr;
+	}
 
 	cmd[0] = KYTY_PM4(6, Pm4::IT_NOP, Pm4::R_FLIP);
 	cmd[1] = video_out_handle;

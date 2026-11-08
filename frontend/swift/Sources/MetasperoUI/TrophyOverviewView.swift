@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import SwiftUI
 
+struct TrophyOverviewCounts {
+    var platinum: Int = 0
+    var gold: Int = 0
+    var silver: Int = 0
+    var bronze: Int = 0
+    var total: Int = 0
+}
+
 struct TrophyOverviewView: View {
     @Environment(\.dismiss) private var dismiss
     let games: [GameItem]
@@ -8,20 +16,20 @@ struct TrophyOverviewView: View {
     @State private var gameTrophies: [(game: GameItem, trophies: [TrophiesView.TrophyItem])] = []
     @State private var isLoading = true
     
-    var totalCounts: (platinum: Int, gold: Int, silver: Int, bronze: Int, total: Int) {
-        var p = 0, g = 0, s = 0, b = 0, total = 0
+    var totalCounts: TrophyOverviewCounts {
+        var res = TrophyOverviewCounts()
         for (_, list) in gameTrophies {
             for t in list {
-                total += 1
+                res.total += 1
                 switch t.grade.lowercased() {
-                case "platinum": p += 1
-                case "gold": g += 1
-                case "silver": s += 1
-                default: b += 1
+                case "platinum": res.platinum += 1
+                case "gold": res.gold += 1
+                case "silver": res.silver += 1
+                default: res.bronze += 1
                 }
             }
         }
-        return (p, g, s, b, total)
+        return res
     }
     
     var body: some View {
@@ -83,7 +91,7 @@ struct TrophyOverviewView: View {
                                 NavigationLink(destination: TrophiesView(game: item.game)) {
                                     HStack(spacing: 12) {
                                         if let iconPath = item.game.iconPath {
-#if os(iOS)
+#if os(iOS) || SKIP
                                             if let uiImage = UIImage(contentsOfFile: iconPath) {
                                                 Image(uiImage: uiImage)
                                                     .resizable()
@@ -141,7 +149,7 @@ struct TrophyOverviewView: View {
     }
     
     private func loadAllTrophies() {
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global().async {
             var results: [(game: GameItem, trophies: [TrophiesView.TrophyItem])] = []
             
             for g in games {
@@ -152,7 +160,7 @@ struct TrophyOverviewView: View {
                         let name = d["name"] as? String ?? "Trophy #\(idx)"
                         let desc = d["description"] as? String ?? ""
                         let grade = d["grade"] as? String ?? "Bronze"
-                        let hidden = (d["hidden"] as? NSNumber)?.boolValue ?? false
+                        let hidden = (d["hidden"] as? Bool) ?? false
                         let iconData = d["iconData"] as? Data
                         list.append(TrophiesView.TrophyItem(id: idx, name: name, description: desc, grade: grade, hidden: hidden, iconData: iconData))
                     }
