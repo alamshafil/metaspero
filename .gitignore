@@ -10,6 +10,8 @@ _Build/
 cmake-build-debug/
 _PipelineCache/
 _TempData/
+_DownloadData/
+_SaveData/
 
 # Android / Gradle artifacts
 .gradle/
