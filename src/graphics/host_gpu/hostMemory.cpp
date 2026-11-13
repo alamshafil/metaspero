@@ -12,6 +12,12 @@
 #undef max
 #endif
 
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <mach/vm_region.h>
+#endif
+
 namespace Libs::Graphics {
 namespace {
 
@@ -57,6 +63,35 @@ bool HostMemoryQueryRange(uint64_t addr, uint64_t requested_size, HostMemoryAcce
 		current = finish < end ? finish : end;
 	}
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+#if defined(__APPLE__)
+	// macOS has no /proc, so walk the Mach VM map.
+	while (current < end) {
+		mach_vm_address_t              region_addr = current;
+		mach_vm_size_t                 region_size = 0;
+		vm_region_basic_info_data_64_t region_info {};
+		mach_msg_type_number_t         count       = VM_REGION_BASIC_INFO_COUNT_64;
+		mach_port_t                    object_name = MACH_PORT_NULL;
+		if (mach_vm_region(mach_task_self(), &region_addr, &region_size, VM_REGION_BASIC_INFO_64,
+		                   reinterpret_cast<vm_region_info_t>(&region_info), &count,
+		                   &object_name) != KERN_SUCCESS) {
+			break;
+		}
+		if (object_name != MACH_PORT_NULL) {
+			mach_port_deallocate(mach_task_self(), object_name);
+		}
+		if (region_addr > current || region_size == 0) {
+			break;
+		}
+		if (access == HostMemoryAccess::Read && (region_info.protection & VM_PROT_READ) == 0) {
+			break;
+		}
+		const auto finish = static_cast<uint64_t>(region_addr) + region_size;
+		if (finish <= current) {
+			break;
+		}
+		current = finish < end ? finish : end;
+	}
+#else
 	auto* maps = std::fopen("/proc/self/maps", "r");
 	if (maps == nullptr) {
 		return false;
@@ -80,6 +115,7 @@ bool HostMemoryQueryRange(uint64_t addr, uint64_t requested_size, HostMemoryAcce
 		current = finish < end ? finish : end;
 	}
 	std::fclose(maps);
+#endif
 #else
 	(void)access;
 #endif

@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cinttypes>
 #include <cmath>
+#include <cstring>
 #include <condition_variable>
 #include <limits>
 #include <memory>
@@ -967,6 +968,16 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
     auto& ss = const_cast<decltype(uc->uc_mcontext->__ss)&>(uc->uc_mcontext->__ss);
     uintptr_t pc = arm_thread_state64_get_pc(ss);
 
+    // The JIT buffer is dual-mapped, so the PC can be the RX alias or the writable base.
+    auto is_fex_code = [&](uintptr_t address) {
+        if (ctx->IsAddressInCodeBuffer(thread, address)) {
+            return true;
+        }
+        const auto* writable = FEXCore::Allocator::GetWritableAddress(reinterpret_cast<void*>(address));
+        return writable != nullptr &&
+               ctx->IsAddressInCodeBuffer(thread, reinterpret_cast<uintptr_t>(writable));
+    };
+
     // 1. Recover from branch to NULL (PC == 0) caused by unlinked or failed JIT block compilation
     if ((sig == SIGSEGV || sig == SIGBUS) && pc == 0 && thread->CurrentFrame != nullptr) {
         static thread_local uint64_t s_last_null_rip = 0;
@@ -1020,7 +1031,7 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
     }
 
     if (sig == SIGILL) {
-        if (!ctx->IsAddressInCodeBuffer(thread, pc)) {
+        if (!is_fex_code(pc)) {
             return false;
         }
         uint64_t cur_rip = thread->CurrentFrame->State.rip;
@@ -1062,7 +1073,7 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
         return false;
     }
 
-    if (!ctx->IsAddressInCodeBuffer(thread, pc)) {
+    if (!is_fex_code(pc)) {
         return false;
     }
 
