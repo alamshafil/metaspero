@@ -46,3 +46,6 @@
 	path = 3rdparty/fexcore
 	url = https://github.com/alamshafil/fexcore-darwin.git
 	branch = main
+[submodule "3rdparty/libadrenotools"]
+	path = 3rdparty/libadrenotools
+	url = https://github.com/bylaws/libadrenotools.git
