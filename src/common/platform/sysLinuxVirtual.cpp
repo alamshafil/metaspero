@@ -56,11 +56,10 @@ static int get_protection_flag(Mode mode) {
 		case Mode::Read: protect = PROT_READ; break;
 		case Mode::Write:
 		case Mode::ReadWrite: protect = PROT_READ | PROT_WRITE; break; // NOLINT
-#if defined(__APPLE__)
+#if defined(__APPLE__) && defined(__aarch64__) && KYTY_ENABLE_FEX_GUEST_CPU
 		// On Apple Silicon (iOS), guest code is emulated via FEXCore JIT.
 		// The host CPU never branches into guest memory directly, execution happens in FEX JIT buffers.
-		// W^X (PROT_WRITE | PROT_EXEC) is forbidden by the Darwin kernel and returns EACCES.
-		// Map guest executable modes to readable/writable data protections.
+		// FEX only. Native x86_64 jumps into guest memory, so it must stay executable.
 		case Mode::Execute:
 		case Mode::ExecuteRead: protect = PROT_READ; break;
 		case Mode::ExecuteWrite:

@@ -754,11 +754,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	return device;
 }
 
-#if defined(__ANDROID__)
 extern "C" __attribute__((weak)) void* KytyGetVkGetInstanceProcAddr(void) {
 	return nullptr;
 }
-#endif
 
 // Creates the presentation surface: from the host's CAMetalLayer (Apple),
 // host ANativeWindow (Android), otherwise through SDL.

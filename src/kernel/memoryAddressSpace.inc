@@ -1426,7 +1426,7 @@ private:
 				reserve_range(current, region_end);
 			}
 		}
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) && !defined(KYTY_LINKED_GUEST_ADDRESS_SPACE)
 		std::vector<std::pair<uint64_t, uint64_t>> occupied;
 		// 0 to 4GB is __PAGEZERO on Darwin 64-bit
 		occupied.emplace_back(0, 0x100000000ULL);

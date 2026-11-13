@@ -721,6 +721,29 @@ static bool IsReadableRange(uint64_t addr, uint64_t size) {
 	return true;
 }
 
+#if defined(__APPLE__)
+// Darwin reports GPU protection faults and FEX alignment faults both as SIGBUS/BUS_ADRALN.
+// Only a read-only page can be a protection fault.
+static bool IsPageWritable(uint64_t addr) {
+	mach_vm_address_t              region_addr = addr;
+	mach_vm_size_t                 region_size = 0;
+	vm_region_basic_info_data_64_t region_info {};
+	mach_msg_type_number_t         count       = VM_REGION_BASIC_INFO_COUNT_64;
+	mach_port_t                    object_name = MACH_PORT_NULL;
+	const kern_return_t            kr =
+	    mach_vm_region(mach_task_self(), &region_addr, &region_size, VM_REGION_BASIC_INFO_64,
+	                   reinterpret_cast<vm_region_info_t>(&region_info), &count, &object_name);
+	if (object_name != MACH_PORT_NULL) {
+		mach_port_deallocate(mach_task_self(), object_name);
+	}
+	// An unmapped addr returns the next region.
+	if (kr != KERN_SUCCESS || region_addr > addr) {
+		return false;
+	}
+	return (region_info.protection & VM_PROT_WRITE) != 0;
+}
+#endif
+
 static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exception_info) {
 	const auto* info = &exception_info;
 
@@ -739,10 +762,27 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			case CoreAccess::Execute: access = GpuAccess::Execute; break;
 			case CoreAccess::Unknown: return false;
 		}
-		if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
-			return true;
+#if defined(__APPLE__)
+		// A wide access can cross from a writable page into a GPU-protected one.
+		const uint64_t page_size = static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
+		const uint64_t page_base = info->access_violation_vaddr & ~(page_size - 1);
+		const bool     writable  = IsPageWritable(info->access_violation_vaddr);
+		const uint64_t span_candidates[2] = {info->access_violation_vaddr, page_base + page_size};
+		for (size_t i = 0; i < 2; i++) {
+			const auto candidate = span_candidates[i];
+			if (!(i == 0 ? writable : IsPageWritable(candidate)) &&
+			    Libs::LibKernel::Memory::HandleGpuFault(access, candidate)) {
+				return true;
+			}
 		}
-		return false;
+		// Writable page means an alignment fault, left to the FEX handler.
+		if (writable) {
+			return false;
+		}
+		return Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr);
+#else
+		return Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr);
+#endif
 	}
 	return false;
 }
