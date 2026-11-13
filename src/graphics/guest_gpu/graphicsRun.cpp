@@ -191,7 +191,10 @@ CommandProcessor& GuestGpu::GetProcessor(uint32_t queue_id) {
 	}
 	auto& processor = m_compute_cp[queue_id - 1];
 	if (processor == nullptr) {
-		processor = std::make_unique<CommandProcessor>(m_renderer, ComputeQueueBase + queue_id - 1);
+		// The guest registers one EOP interrupt id per compute pipe, not per queue.
+		const auto compute_queue = queue_id - 1;
+		const auto compute_pipe  = compute_queue / QueuesPerComputePipe;
+		processor = std::make_unique<CommandProcessor>(m_renderer, ComputeQueueBase + compute_pipe);
 	}
 	return *processor;
 }
@@ -685,6 +688,10 @@ void CommandProcessor::SuspendPm4() {
 
 void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 	while (!execution.m_buffer_stack.empty()) {
+		// Stop on shutdown, a pending EOP write can fault and block the Shutdown() join.
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			return;
+		}
 		if (g_gpu_state != nullptr) {
 			g_gpu_state->ProcessCommands();
 		}
@@ -1064,6 +1071,11 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
                                         void* dst_gpu_addr, T value, uint32_t interrupt_selector,
                                         uint32_t interrupt_context_id) {
 	static_assert(sizeof(T) == sizeof(uint32_t) || sizeof(T) == sizeof(uint64_t));
+
+	// The fault handler cannot resolve GPU-protected pages during shutdown, so drop the write.
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		return;
+	}
 
 	auto& command = CurrentBuffer();
 

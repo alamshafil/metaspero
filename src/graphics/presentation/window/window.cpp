@@ -34,6 +34,7 @@
 #include "libs/controller.h"
 #include "loader/systemContent.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <fmt/format.h>
 #include <memory>
@@ -908,6 +909,10 @@ static void WindowCreate(WindowContext& context) {
 #endif
 		LOGF("WindowCreate(): SDL Window = %p\n", window_ptr);
 		SDL_SetWindowPosition(context.window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+		// Standalone SDL build needs input, overlay input and icon setup.
+		HostInputInit(context.window);
+		InitializeSystemOverlayInput(context.window);
+		context.UpdateIcon();
 		if (g_window_created_cb != nullptr) {
 			g_window_created_cb(window_ptr);
 		}

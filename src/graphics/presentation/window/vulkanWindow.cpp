@@ -780,6 +780,12 @@ static bool CreateWindowSurface(WindowContext& ctx, VkInstance instance, VkSurfa
 		MetalSurfaceCreateInfo info {static_cast<VkStructureType>(1000217000), nullptr, 0, ctx.host_layer};
 		return create(instance, &info, nullptr, out) == VK_SUCCESS;
 	}
+	// Standalone build without a host layer, use the SDL window.
+	if (ctx.window != nullptr) {
+		return SDL_Vulkan_CreateSurface(ctx.window, instance, nullptr, out);
+	}
+	LOGF("CreateWindowSurface(): no host layer and no SDL window\n");
+	return false;
 #elif defined(__ANDROID__)
 	if (ctx.host_native_window != nullptr) {
 		struct AndroidSurfaceCreateInfoKHR {

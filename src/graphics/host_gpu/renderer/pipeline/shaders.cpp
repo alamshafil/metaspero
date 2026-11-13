@@ -236,7 +236,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		pipeline.pipeline = nullptr;
 		return;
 	}
-	EXIT_NOT_IMPLEMENTED(mesh && !graphics.mesh_shader_enabled);
+	if (mesh && !graphics.mesh_shader_enabled) {
+		pipeline.pipeline = nullptr;
+		return;
+	}
 	const bool rect_list =
 	    !mesh && !tessellation && static_params.topology == vk::PrimitiveTopology::ePatchList;
 
@@ -563,8 +566,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		graphics.device.destroyShaderModule(tess_eval_shader_module, nullptr);
 	}
 
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
-	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
+	if (result != vk::Result::eSuccess || pipeline.pipeline == nullptr) {
+		pipeline.pipeline = nullptr;
+		return;
+	}
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)

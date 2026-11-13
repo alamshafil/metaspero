@@ -497,6 +497,14 @@ bool HostInputWaitEvent(SDL_Event* event, int max_wait_ms) {
 			SDL_PumpEvents();
 		}
 #else
+		// Pump events on the main thread like iOS, SDL_PeepEvents only reads the queue.
+		if (!pthread_main_np()) {
+			dispatch_sync(dispatch_get_main_queue(), ^{
+				SDL_PumpEvents();
+			});
+		} else {
+			SDL_PumpEvents();
+		}
 		SDL_UpdateJoysticks();
 #endif
 		if (SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) > 0) {

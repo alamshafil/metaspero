@@ -704,7 +704,9 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 			}
 			return {};
 		}
-		EXIT_NOT_IMPLEMENTED(!m_graphics.mesh_shader_enabled);
+		if (!m_graphics.mesh_shader_enabled) {
+			return {};
+		}
 		auto& mesh              = vertex_info[0].mesh;
 		mesh.host_subgroup_size = m_graphics.subgroup_size;
 		const auto& limits      = m_graphics.mesh_shader_properties;
@@ -712,13 +714,20 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		    mesh.threads_num[0] * mesh.threads_num[1] * mesh.threads_num[2];
 		const auto host_threads = ((logical_threads + mesh.wave_size - 1u) / mesh.wave_size) *
 		                          std::min(mesh.host_subgroup_size, mesh.wave_size);
+		const auto lds_bytes = static_cast<uint64_t>(mesh.lds_size_dwords) * sizeof(uint32_t);
+		// MoltenVK reports maxMeshSharedMemorySize as a half split of threadgroup memory, so
+		// gate on the compute shared memory budget instead.
+		const auto mesh_output_bytes = static_cast<uint64_t>(mesh.max_primitives) * 16u;
+		const auto mesh_memory_total = lds_bytes + mesh_output_bytes + 16u;
+		const auto mesh_memory_budget =
+		    static_cast<uint64_t>(m_graphics.GetPhysicalDeviceProperties()
+		                              .limits.maxComputeSharedMemorySize);
 		if (host_threads > limits.maxMeshWorkGroupInvocations ||
 		    host_threads > limits.maxMeshWorkGroupSize[0] ||
 		    mesh.max_vertices > limits.maxMeshOutputVertices ||
 		    mesh.max_primitives > limits.maxMeshOutputPrimitives ||
-		    mesh.lds_size_dwords * sizeof(uint32_t) > limits.maxMeshSharedMemorySize) {
-			EXIT("mesh shader exceeds host limits: threads=%u vertices=%u primitives=%u LDS=%u\n",
-			     host_threads, mesh.max_vertices, mesh.max_primitives, mesh.lds_size_dwords);
+		    mesh_memory_total > mesh_memory_budget) {
+			return {};
 		}
 	}
 	ShaderParams pixel_params;
@@ -997,8 +1006,13 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 	                       ps_input_info, programs, static_params, m_driver_cache);
 	LogPipelineTrace("CreatePipelineInternal done", vs_id, ps_id);
 
-	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
-	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
+	if (cached->pipeline == nullptr || cached->pipeline_layout == nullptr) {
+		// Cache the failure so later draws skip it.
+		auto [failed_iter, failed_inserted] =
+		    m_graphics_pipelines.emplace(std::move(key), std::move(cached));
+		(void)failed_inserted;
+		return *failed_iter->second;
+	}
 
 	auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
@@ -1025,8 +1039,12 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	auto cached = std::make_unique<Pipeline>();
 	CreatePipelineInternal(m_graphics, *cached, input_info, compute_program.module, m_driver_cache);
 
-	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
-	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
+	if (cached->pipeline == nullptr || cached->pipeline_layout == nullptr) {
+		auto [failed_iter, failed_inserted] =
+		    m_compute_pipelines.emplace(compute_program.id, std::move(cached));
+		(void)failed_inserted;
+		return *failed_iter->second;
+	}
 
 	auto [iter, inserted] = m_compute_pipelines.emplace(compute_program.id, std::move(cached));
 	EXIT_IF(!inserted);
