@@ -55,6 +55,8 @@ struct GuestInstructionPatchResult {
 void RegisterGuestInstructionPatchModule(void* module_ptr, uint64_t module_size,
                                          void* trampoline_area_ptr, uint64_t trampoline_area_size);
 void UnregisterGuestInstructionPatchModule(void* module_ptr);
+
+// Trampoline bytes already used by the patcher, 0 if the module is not registered.
 uint64_t GetGuestInstructionTrampolineBytesUsed(void* module_ptr);
 
 // Apply enabled instruction fixes using native trampolines or safe trap fallbacks.

@@ -97,6 +97,19 @@ static uint64_t AlignUp(uint64_t value, uint64_t alignment) {
 	return alignment != 0 ? (value + alignment - 1) & ~(alignment - 1) : value;
 }
 
+#if defined(__APPLE__) && defined(__x86_64__)
+// KYTY_SPLIT_WIDE_STORES=0 disables, any other value enables. Unset, enabled only under Rosetta.
+static bool SplitWideStoresEnabled() {
+	if (const char* value = std::getenv("KYTY_SPLIT_WIDE_STORES"); value != nullptr) {
+		return std::strcmp(value, "0") != 0;
+	}
+	int    translated = 0;
+	size_t size       = sizeof(translated);
+	return sysctlbyname("sysctl.proc_translated", &translated, &size, nullptr, 0) == 0 &&
+	       translated == 1;
+}
+#endif
+
 ThreadLocalStorage::~ThreadLocalStorage() {
 	for (auto& [_, block]: tlss) {
 		FreeTlsBlock(&block);
@@ -1900,9 +1913,16 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 #else
 	const bool patch_guest_instructions = protect_memory_faults || emulate_amd;
 #endif
+#if defined(__APPLE__) && defined(__x86_64__)
+	// Rosetta aborts on some 256-bit stores.
+	const bool split_wide_stores = SplitWideStoresEnabled();
+#else
+	// The splitter is only built for x86-64.
+	const bool split_wide_stores = false;
+#endif
 
 	constexpr uint64_t INSTRUCTION_TRAMPOLINE_SIZE = 8u * 1024u * 1024u;
-	if (patch_guest_instructions) {
+	if (patch_guest_instructions || split_wide_stores) {
 		EXIT_IF(INSTRUCTION_TRAMPOLINE_SIZE > UINT64_MAX - program->mapped_size);
 		program->mapped_size += INSTRUCTION_TRAMPOLINE_SIZE;
 	}
@@ -1913,12 +1933,15 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	EXIT_IF(program->base_vaddr == 0);
 	std::memset(reinterpret_cast<void*>(program->base_vaddr), 0, program->mapped_size);
 
+	if (patch_guest_instructions || split_wide_stores) {
+		program->instruction_trampoline_vaddr = program->base_vaddr + program->base_size_aligned;
+		program->instruction_trampoline_size  = INSTRUCTION_TRAMPOLINE_SIZE;
+	}
 	if (patch_guest_instructions) {
-		const auto trampoline_addr           = program->base_vaddr + program->base_size_aligned;
-		program->instruction_trampoline_size = INSTRUCTION_TRAMPOLINE_SIZE;
 		RegisterGuestInstructionPatchModule(
 		    reinterpret_cast<void*>(program->base_vaddr), program->base_size_aligned,
-		    reinterpret_cast<void*>(trampoline_addr), program->instruction_trampoline_size);
+		    reinterpret_cast<void*>(program->instruction_trampoline_vaddr),
+		    program->instruction_trampoline_size);
 	}
 	if (!is_shared) {
 		program->tls.handler_vaddr =
@@ -2075,6 +2098,26 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 			    fmt::format("AMD CPU compatibility: {} {} ({})\n", module_name, status, details));
 		}
 	}
+
+#if defined(__APPLE__) && defined(__x86_64__)
+	if (split_wide_stores) {
+		// Continue behind the AMD CPU patcher's trampolines.
+		uint64_t cursor = program->instruction_trampoline_vaddr +
+		                  GetGuestInstructionTrampolineBytesUsed(
+		                      reinterpret_cast<void*>(program->base_vaddr));
+		const uint64_t cursor_begin = cursor;
+		for (const auto& [segment_addr, segment_size]: executable_segments) {
+			X64InstructionEmulator::SplitWideStores(
+			    segment_addr, segment_size, &cursor,
+			    program->instruction_trampoline_vaddr + program->instruction_trampoline_size);
+			Common::VirtualMemory::FlushInstructionCache(segment_addr, segment_size);
+		}
+		// Flush all trampolines once.
+		if (cursor > cursor_begin) {
+			Common::VirtualMemory::FlushInstructionCache(cursor_begin, cursor - cursor_begin);
+		}
+	}
+#endif
 
 	if (!is_shared) {
 		SetupTlsHandler(program);

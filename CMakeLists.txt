@@ -911,6 +911,22 @@ if(BUILD_TESTING AND APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
 	add_dependencies(kyty_tests macos_sse4a_tests)
 endif()
 
+# Test the Rosetta 256-bit store splitter (write-protected page crossing).
+if(BUILD_TESTING AND APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
+		(NOT CMAKE_OSX_ARCHITECTURES AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")))
+	add_executable(macos_wide_store_tests EXCLUDE_FROM_ALL
+		"${KYTY_TESTS_DIR}/macosWideStoreTests.cpp"
+		"${KYTY_SOURCE_DIR}/loader/x64InstructionEmulator.cpp"
+		"${KYTY_SOURCE_DIR}/loader/guestInstructionPatcher.cpp"
+	)
+	target_link_libraries(macos_wide_store_tests common fmt::fmt Zydis::Zydis xbyak::xbyak)
+	target_include_directories(macos_wide_store_tests PRIVATE ${inc_headers})
+	set_target_properties(macos_wide_store_tests PROPERTIES FOLDER "Tests")
+	add_test(NAME macos_wide_store COMMAND $<TARGET_FILE:macos_wide_store_tests>)
+	set_tests_properties(macos_wide_store PROPERTIES TIMEOUT 15)
+	add_dependencies(kyty_tests macos_wide_store_tests)
+endif()
+
 unset(CMAKE_FOLDER)
 
 if(IOS OR KYTY_BUILD_SWIFTUI_APP)
