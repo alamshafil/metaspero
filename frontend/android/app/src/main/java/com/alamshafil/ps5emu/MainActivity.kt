@@ -7,6 +7,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.storage.StorageManager
+import android.provider.DocumentsContract
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -48,6 +50,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Initialize native bridge and load kyty_android shared library before JNI setup
+        NativeBridge.nativeInit(filesDir.absolutePath, cacheDir.absolutePath)
+
         // Initialize SDL3 Android host context
         SDL.setContext(this)
         SDL.setupJNI()
@@ -55,14 +60,18 @@ class MainActivity : ComponentActivity() {
         // Initialize SkipFoundation process runtime context
         skip.foundation.ProcessInfo.launch(applicationContext)
 
-        // Initialize native bridge directories
-        NativeBridge.nativeInit(filesDir.absolutePath, cacheDir.absolutePath)
-
         checkStoragePermission()
         refreshDrivers()
 
-        // App sandbox documents directory
+        // App sandbox documents directory + persisted user scan folders
         KytyBridge.addCustomGamePath(filesDir.absolutePath)
+        val gamePrefs = getSharedPreferences("kyty_prefs", Context.MODE_PRIVATE)
+        val savedPaths = gamePrefs.getStringSet("custom_game_paths", emptySet()) ?: emptySet()
+        for (savedPath in savedPaths) {
+            if (savedPath.isNotBlank()) {
+                KytyBridge.addCustomGamePath(savedPath)
+            }
+        }
 
         // Bridge SwiftUI launch action into native Android EmulationActivity
         KytyBridge.onLaunchGame = { gamePath ->
@@ -221,17 +230,14 @@ class MainActivity : ComponentActivity() {
                             Intent.FLAG_GRANT_READ_URI_PERMISSION
                         )
                     } catch (_: Exception) {}
-                    val rawPath = uri.path ?: uri.toString()
-                    val posixPath = if (rawPath.contains("primary:")) {
-                        "/storage/emulated/0/" + rawPath.substringAfter("primary:").trimStart('/')
-                    } else if (rawPath.contains("tree/")) {
-                        val sub = rawPath.substringAfter("tree/").substringAfter(":")
-                        "/storage/emulated/0/" + sub.trimStart('/')
+                    val posixPath = resolveSafUriToPosixPath(uri, isTree = true)
+                    if (posixPath != null) {
+                        KytyBridge.addCustomGamePath(posixPath)
+                        persistCustomGamePath(posixPath)
+                        Toast.makeText(this, "Added: $posixPath", Toast.LENGTH_SHORT).show()
                     } else {
-                        rawPath
+                        Toast.makeText(this, "Unsupported folder provider: ${uri.authority}", Toast.LENGTH_SHORT).show()
                     }
-                    KytyBridge.addCustomGamePath(posixPath)
-                    Toast.makeText(this, "Added: $posixPath", Toast.LENGTH_SHORT).show()
                 }
             }
             REQUEST_CODE_PICK_FILE -> {
@@ -243,18 +249,15 @@ class MainActivity : ComponentActivity() {
                             Intent.FLAG_GRANT_READ_URI_PERMISSION
                         )
                     } catch (_: Exception) {}
-                    val rawPath = uri.path ?: uri.toString()
-                    val posixPath = if (rawPath.contains("primary:")) {
-                        "/storage/emulated/0/" + rawPath.substringAfter("primary:").trimStart('/')
-                    } else if (rawPath.contains("document/")) {
-                        val sub = rawPath.substringAfter("document/").substringAfter(":")
-                        "/storage/emulated/0/" + sub.trimStart('/')
+                    val posixPath = resolveSafUriToPosixPath(uri, isTree = false)
+                    if (posixPath != null) {
+                        val parentDir = java.io.File(posixPath).parent ?: posixPath
+                        KytyBridge.addCustomGamePath(parentDir)
+                        persistCustomGamePath(parentDir)
+                        Toast.makeText(this, "Added: $posixPath", Toast.LENGTH_SHORT).show()
                     } else {
-                        rawPath
+                        Toast.makeText(this, "Unsupported file provider: ${uri.authority}", Toast.LENGTH_SHORT).show()
                     }
-                    val parentDir = java.io.File(posixPath).parent ?: posixPath
-                    KytyBridge.addCustomGamePath(parentDir)
-                    Toast.makeText(this, "Added: $posixPath", Toast.LENGTH_SHORT).show()
                 }
             }
             REQUEST_CODE_PICK_DRIVER -> {
@@ -275,6 +278,52 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun persistCustomGamePath(path: String) {
+        if (path.isBlank() || path == filesDir.absolutePath) return
+        val prefs = getSharedPreferences("kyty_prefs", Context.MODE_PRIVATE)
+        val updated = (prefs.getStringSet("custom_game_paths", emptySet()) ?: emptySet()).toMutableSet()
+        updated.add(path)
+        prefs.edit().putStringSet("custom_game_paths", updated).apply()
+    }
+
+    private fun resolveSafUriToPosixPath(uri: Uri, isTree: Boolean): String? {
+        if (uri.scheme == "file") {
+            return uri.path
+        }
+        val authority = uri.authority ?: return null
+        val docId = try {
+            if (isTree) DocumentsContract.getTreeDocumentId(uri)
+            else DocumentsContract.getDocumentId(uri)
+        } catch (_: Exception) {
+            return null
+        }
+
+        if (authority == "com.android.externalstorage.documents") {
+            val split = docId.split(":", limit = 2)
+            val volumeId = split.getOrNull(0) ?: return null
+            val relPath = split.getOrNull(1)?.trimStart('/') ?: ""
+            val baseDir = if (volumeId.equals("primary", ignoreCase = true)) {
+                Environment.getExternalStorageDirectory().absolutePath
+            } else {
+                val storageManager = getSystemService(Context.STORAGE_SERVICE) as? StorageManager
+                var volumeRoot: String? = null
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && storageManager != null) {
+                    volumeRoot = storageManager.storageVolumes
+                        .firstOrNull { it.uuid.equals(volumeId, ignoreCase = true) }
+                        ?.directory?.absolutePath
+                }
+                volumeRoot ?: "/storage/$volumeId"
+            }
+            return if (relPath.isEmpty()) baseDir else "$baseDir/$relPath"
+        }
+
+        if (authority == "com.android.providers.downloads.documents" && docId.startsWith("raw:")) {
+            return docId.removePrefix("raw:")
+        }
+
+        return null
     }
 
     companion object {
