@@ -244,7 +244,8 @@ ShaderRecompiler::Spirv::Profile SpirvProfile(const GraphicContext& graphics) {
 	        .robust_buffer_access   = graphics.robust_buffer_access_enabled,
 	        .r8_srgb_views          = graphics.r8_srgb_views,
 	        .r8g8_srgb_views        = graphics.r8g8_srgb_views,
-	        .relaxed_float          = Config::RelaxedShaderFloatEnabled()};
+	        .relaxed_float          = Config::RelaxedShaderFloatEnabled(),
+	        .fragment_barycentric   = graphics.fragment_shader_barycentric_enabled};
 }
 
 std::filesystem::path ShaderStorePath() {
@@ -392,7 +393,8 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 	    .read_specialization_memory = ReadShaderGuestMemory,
 	    .image_heap                 = m_image_heap,
 	};
-	ShaderRecompiler::CompileOptions options {.wave_size = input_info.wave_size};
+	const auto profile = SpirvProfile(m_graphics);
+	ShaderRecompiler::CompileOptions options {.wave_size = input_info.wave_size, .profile = &profile};
 	if constexpr (std::is_same_v<InputInfo, ShaderVertexInputInfo>) {
 		options.stage            = input_info.logical_stage;
 		options.input_info.vertex = &input_info;

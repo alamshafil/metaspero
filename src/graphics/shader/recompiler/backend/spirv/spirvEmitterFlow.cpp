@@ -216,6 +216,9 @@ uint32_t EmitPixelAttribute(EmitterState& state, const InputBinding& input, uint
 	                                  ? IR::StageInputKind::BaryCoordNoPerspective
 	                                  : IR::StageInputKind::BaryCoordSmooth;
 	const auto barycentric      = InputVariableForKind(state, barycentric_kind);
+	if (barycentric == 0) {
+		return select(LoadVertexParameter(state, input, 0u, chan));
+	}
 	uint32_t   sum              = 0;
 	for (uint32_t vertex = 0; vertex < 3u; vertex++) {
 		const auto pointer = state.builder.AllocateId();

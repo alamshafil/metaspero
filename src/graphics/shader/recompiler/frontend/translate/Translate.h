@@ -29,6 +29,7 @@ struct TranslateOptions {
 	uint32_t                      user_data_count     = 64;
 	ShaderStageInputInfo          input_info;
 	const EmbeddedFetchPlan*      embedded_fetch = nullptr;
+	bool                          fragment_barycentric = true;
 };
 
 IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& cfg,

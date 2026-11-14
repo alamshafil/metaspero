@@ -581,6 +581,7 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	    .user_data_count  = static_cast<uint32_t>(options.user_data.size()),
 	    .input_info       = options.input_info,
 	    .embedded_fetch   = embedded_fetch.loads.empty() ? nullptr : &embedded_fetch,
+	    .fragment_barycentric = options.profile ? options.profile->fragment_barycentric : true,
 	};
 	LOGF("ShaderRecompiler %s phase begin: hash=0x%016" PRIx64 " IR TranslateProgram\n", stage,
 	     options.shader_hash);
@@ -681,7 +682,8 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	IR::RemoveIdentities(ir);
 	IR::EliminateDeadCode(ir.blocks);
 
-	IR::CollectShaderInfo(ir, options.input_info);
+	IR::CollectShaderInfo(ir, options.input_info,
+	                      options.profile ? options.profile->fragment_barycentric : true);
 	std::string ir_dump;
 	if (options.dump_ir) {
 		ir_dump = MakeIrDump(translated.cfg_dump, ir);

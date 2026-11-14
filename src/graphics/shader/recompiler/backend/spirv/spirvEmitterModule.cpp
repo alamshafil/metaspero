@@ -831,6 +831,7 @@ void DefineModule(EmitterState& state) {
 		state.builder.RequireExtension("SPV_KHR_compute_shader_derivatives");
 	}
 	const bool fragment_barycentric =
+	    state.profile.fragment_barycentric &&
 	    state.program.stage == ShaderType::Pixel &&
 	    std::any_of(state.inputs.begin(), state.inputs.end(), [](const InputBinding& input) {
 		    return input.per_vertex || input.kind == IR::StageInputKind::BaryCoordSmooth ||

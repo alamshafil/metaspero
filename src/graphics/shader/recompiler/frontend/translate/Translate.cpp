@@ -1361,8 +1361,16 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			const auto* ps = options.input_info.pixel;
 			const auto barycentric_pair = [&](uint32_t reg, IR::StageInputKind kind) {
 				if (reg != UINT32_MAX) {
-					entry_ir.SetVectorReg(static_cast<IR::VectorReg>(reg), builtin(kind, 0));
-					entry_ir.SetVectorReg(static_cast<IR::VectorReg>(reg + 1u), builtin(kind, 1));
+					if (options.fragment_barycentric) {
+						entry_ir.SetVectorReg(static_cast<IR::VectorReg>(reg), builtin(kind, 0));
+						entry_ir.SetVectorReg(static_cast<IR::VectorReg>(reg + 1u), builtin(kind, 1));
+					} else {
+						// Fallback when host does not support fragmentShaderBarycentric
+						// Initialize with neutral center barycentrics
+						const auto default_coord = IR::U32(IR::Value(0x3f000000u));
+						entry_ir.SetVectorReg(static_cast<IR::VectorReg>(reg), default_coord);
+						entry_ir.SetVectorReg(static_cast<IR::VectorReg>(reg + 1u), default_coord);
+					}
 				}
 			};
 			barycentric_pair(ps->ps_perspective_center_vgpr, IR::StageInputKind::BaryCoordSmooth);
