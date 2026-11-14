@@ -280,7 +280,7 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
             options.elf = std::filesystem::path("/app0") / p.filename();
         }
 
-        options.config.printf_direction = Config::LogDirection::Console;
+        options.config.printf_direction = Config::LogDirection::Silent;
 
         if (resolution == "480p") {
             options.config.screen_width  = 854;

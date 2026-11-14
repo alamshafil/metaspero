@@ -650,7 +650,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
                 options.elf = std::filesystem::path("/app0") / p.filename();
             }
 
-            options.config.printf_direction = Config::LogDirection::Console;
+            options.config.printf_direction = Config::LogDirection::Silent;
             
             auto getStringSetting = ^NSString *(NSString *key, NSString *defaultVal) {
                 NSString *val = [[NSUserDefaults standardUserDefaults] stringForKey:key];
