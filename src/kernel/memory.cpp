@@ -1617,7 +1617,7 @@ static int MapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags
 			result               = ReplaceFixedRangeWithReserved(in_addr, len);
 			reserved_or_existing = (result == OK);
 		}
-#if defined(__APPLE__) && !TARGET_OS_IPHONE
+#if defined(__APPLE__)
 		if (!reserved_or_existing && in_addr >= HOST_SYSTEM_MANAGED_MIN &&
 		    in_addr < HOST_USER_MIN) {
 			out_addr = FindGuestFreeRange(HOST_USER_MIN, len, map_alignment);
@@ -2317,7 +2317,7 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 				reserved_or_existing = (reserve_result == OK);
 			}
 		}
-#if defined(__APPLE__) && !TARGET_OS_IPHONE
+#if defined(__APPLE__)
 		if (!reserved_or_existing && replaced_type != VirtualRangeType::Direct &&
 		    in_addr >= HOST_SYSTEM_MANAGED_MIN && in_addr < HOST_USER_MIN) {
 			const auto relocated =
@@ -2568,7 +2568,7 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 			out_addr            = in_addr;
 			range_already_added = true;
 		}
-#if defined(__APPLE__) && !TARGET_OS_IPHONE
+#if defined(__APPLE__)
 		else if (in_addr >= HOST_SYSTEM_MANAGED_MIN && in_addr < HOST_USER_MIN) {
 			out_addr = FindGuestFreeRange(HOST_USER_MIN, len,
 			                              alignment != 0 ? alignment : PAGE_SIZE);

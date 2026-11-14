@@ -50,6 +50,9 @@ static constexpr uint64_t HOST_USER_MAX            = 0xfbffffffffull;
 
 static bool GuestFreeRangeContains(uint64_t base, uint64_t range_size, uint64_t candidate,
                                    uint64_t size) {
+	if (UINT64_MAX - base < range_size || candidate < base) {
+		return false;
+	}
 	const auto range_end = base + range_size;
 	return candidate <= range_end && size <= range_end - candidate;
 }
@@ -90,12 +93,18 @@ public:
 		}
 #elif defined(__APPLE__)
 		auto* backing = mmap(nullptr, m_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_SHARED, -1, 0);
-		if (backing == MAP_FAILED) {
+		if (backing != MAP_FAILED) {
+			m_backing_base = static_cast<uint8_t*>(backing);
+		} else {
+#if TARGET_OS_IPHONE
+			m_backing_base = nullptr;
+			m_phys_vaddr.resize(m_size >> PageBits, 0);
+#else
 			EXIT("direct-memory backing: anonymous shared memory allocation failed (size=%" PRIu64
 			     " MB): %d\n",
 			     m_size / (1024U * 1024U), errno);
+#endif
 		}
-		m_backing_base = static_cast<uint8_t*>(backing);
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 		m_fd = static_cast<int>(syscall(SYS_memfd_create, "KytyDirectMemory", 0));
 		if (m_fd < 0) {
@@ -173,7 +182,23 @@ public:
 	[[nodiscard]] uint64_t GetBackingSize() const { return m_size; }
 
 	void ZeroRange(uint64_t backing_offset, uint64_t size) {
-		std::memset(m_backing_base + backing_offset, 0, size);
+		if (m_backing_base != nullptr) {
+			std::memset(m_backing_base + backing_offset, 0, size);
+		}
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		else {
+			const auto first_page = backing_offset >> PageBits;
+			const auto end_page   = (backing_offset + size) >> PageBits;
+			for (auto phys_page = first_page;
+			     phys_page < end_page && phys_page < m_phys_vaddr.size(); ++phys_page) {
+				const auto vpage = m_phys_vaddr[phys_page];
+				if (vpage != 0) {
+					AccessMappedRun(uint64_t {vpage} << PageBits, uint64_t {1} << PageBits,
+					                [](uint8_t* ptr) { std::memset(ptr, 0, uint64_t {1} << PageBits); });
+				}
+			}
+		}
+#endif
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 		g_test_backing_bytes_zeroed += size;
 #endif
@@ -186,7 +211,9 @@ public:
 		ForEachRun(
 		    vaddr, size,
 		    [&](uint64_t offset, uint64_t start, uint64_t bytes) {
-			    std::memcpy(m_backing_base + offset, source + (start - vaddr), bytes);
+			    WithBackingRun(offset, start, bytes, [&](uint8_t* backing) {
+				    std::memcpy(backing, source + (start - vaddr), bytes);
+			    });
 		    },
 		    [](uint64_t, uint64_t) {});
 	}
@@ -222,7 +249,9 @@ public:
 		ForEachRun(
 		    vaddr, size,
 		    [&](uint64_t offset, uint64_t start, uint64_t bytes) {
-			    std::memcpy(destination + (start - vaddr), m_backing_base + offset, bytes);
+			    WithBackingRun(offset, start, bytes, [&](const uint8_t* backing) {
+				    std::memcpy(destination + (start - vaddr), backing, bytes);
+			    });
 		    },
 		    [&](uint64_t start, uint64_t bytes) {
 			    gap(start, destination + (start - vaddr), bytes);
@@ -328,14 +357,42 @@ private:
 				bucket.store(entries, std::memory_order_release);
 			}
 			entries[page % BucketPages].store(entry, std::memory_order_relaxed);
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+			if (m_backing_base == nullptr && (entry - 1u) < m_phys_vaddr.size()) {
+				m_phys_vaddr[entry - 1u] = static_cast<uint32_t>(page);
+			}
+#endif
 		}
 	}
 
 	void ClearPages(uint64_t vaddr, uint64_t size) {
 		for (auto page = vaddr >> PageBits; page < (vaddr + size) >> PageBits; ++page) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+			if (m_backing_base == nullptr) {
+				const auto entry = LoadPage(page);
+				if (entry != 0 && (entry - 1u) < m_phys_vaddr.size() &&
+				    m_phys_vaddr[entry - 1u] == static_cast<uint32_t>(page)) {
+					m_phys_vaddr[entry - 1u] = 0;
+				}
+			}
+#endif
 			m_pages[page / BucketPages].load(std::memory_order_relaxed)[page % BucketPages].store(
 			    0, std::memory_order_relaxed);
 		}
+	}
+
+	template <typename Fn>
+	void WithBackingRun(uint64_t offset, uint64_t start, uint64_t bytes, Fn&& fn) const {
+		if (m_backing_base != nullptr) {
+			fn(m_backing_base + offset);
+			return;
+		}
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		AccessMappedRun(start, bytes, [&](uint8_t* ptr) { fn(ptr); });
+#else
+		(void)start;
+		(void)bytes;
+#endif
 	}
 
 	static void SetFailure(FailureReason* out, FailureReason reason) {
@@ -479,24 +536,80 @@ private:
 	bool MapView(uint64_t vaddr, uint64_t size, uint64_t backing_offset, VirtualMemory::Mode mode,
 	             FailureReason* failure_reason) {
 #if defined(__APPLE__)
-		vm_address_t target  = static_cast<vm_address_t>(vaddr);
-		vm_prot_t    cur_prot = 0;
-		vm_prot_t    max_prot = 0;
-		kern_return_t kr = vm_remap(
-		    mach_task_self(), &target, size, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
-		    mach_task_self(),
-		    static_cast<vm_address_t>(reinterpret_cast<uintptr_t>(m_backing_base + backing_offset)),
-		    FALSE, &cur_prot, &max_prot, VM_INHERIT_NONE);
-		if (kr != KERN_SUCCESS) {
-			SetFailure(failure_reason, FailureReason::FixedMapViewFailed);
-			return false;
+		if (m_backing_base != nullptr) {
+			vm_address_t target   = static_cast<vm_address_t>(vaddr);
+			vm_prot_t    cur_prot = 0;
+			vm_prot_t    max_prot = 0;
+			kern_return_t kr = vm_remap(
+			    mach_task_self(), &target, size, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
+			    mach_task_self(),
+			    static_cast<vm_address_t>(
+			        reinterpret_cast<uintptr_t>(m_backing_base + backing_offset)),
+			    FALSE, &cur_prot, &max_prot, VM_INHERIT_NONE);
+			if (kr != KERN_SUCCESS) {
+				SetFailure(failure_reason, FailureReason::FixedMapViewFailed);
+				return false;
+			}
+			if (mode != VirtualMemory::Mode::NoAccess &&
+			    mprotect(reinterpret_cast<void*>(vaddr), size, GetProtect(mode)) != 0) {
+				SetFailure(failure_reason, FailureReason::ProtectFailed);
+				return false;
+			}
+			return true;
 		}
-		if (mode != VirtualMemory::Mode::NoAccess &&
+#if TARGET_OS_IPHONE
+		constexpr uint64_t page_size = uint64_t {1} << PageBits;
+		const auto         end       = vaddr + size;
+		auto               cur_vaddr = vaddr;
+		auto               cur_phys  = backing_offset >> PageBits;
+		while (cur_vaddr < end) {
+			const auto existing_vpage =
+			    cur_phys < m_phys_vaddr.size() ? m_phys_vaddr[cur_phys] : 0u;
+			auto run_end  = cur_vaddr + page_size;
+			auto run_phys = cur_phys + 1u;
+			if (existing_vpage == 0) {
+				while (run_end < end &&
+				       (run_phys >= m_phys_vaddr.size() || m_phys_vaddr[run_phys] == 0)) {
+					run_end += page_size;
+					++run_phys;
+				}
+				const auto run_size = run_end - cur_vaddr;
+				if (mmap(reinterpret_cast<void*>(cur_vaddr), run_size, PROT_READ | PROT_WRITE,
+				         MAP_SHARED | MAP_ANON | MAP_FIXED, -1, 0) == MAP_FAILED) {
+					SetFailure(failure_reason, FailureReason::FixedMapViewFailed);
+					return false;
+				}
+			} else {
+				auto expected_vpage = existing_vpage + 1u;
+				while (run_end < end && run_phys < m_phys_vaddr.size() &&
+				       m_phys_vaddr[run_phys] == expected_vpage) {
+					run_end += page_size;
+					++run_phys;
+					++expected_vpage;
+				}
+				const auto   run_size = run_end - cur_vaddr;
+				vm_address_t target   = static_cast<vm_address_t>(cur_vaddr);
+				vm_prot_t    cur_prot = 0;
+				vm_prot_t    max_prot = 0;
+				kern_return_t kr = vm_remap(
+				    mach_task_self(), &target, run_size, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
+				    mach_task_self(), static_cast<vm_address_t>(uint64_t {existing_vpage} << PageBits),
+				    FALSE, &cur_prot, &max_prot, VM_INHERIT_NONE);
+				if (kr != KERN_SUCCESS) {
+					SetFailure(failure_reason, FailureReason::FixedMapViewFailed);
+					return false;
+				}
+			}
+			cur_vaddr = run_end;
+			cur_phys  = run_phys;
+		}
+		if (GetProtect(mode) != (PROT_READ | PROT_WRITE) &&
 		    mprotect(reinterpret_cast<void*>(vaddr), size, GetProtect(mode)) != 0) {
 			SetFailure(failure_reason, FailureReason::ProtectFailed);
 			return false;
 		}
 		return true;
+#endif
 #else
 		if (mmap(reinterpret_cast<void*>(vaddr), size, GetProtect(mode), MAP_SHARED | MAP_FIXED,
 		         m_fd, static_cast<off_t>(backing_offset)) == MAP_FAILED) {
@@ -506,6 +619,28 @@ private:
 		return true;
 #endif
 	}
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	template <typename Fn>
+	static void AccessMappedRun(uint64_t start, uint64_t bytes, Fn&& fn) {
+		const auto   page_base = start & ~PageMask;
+		const auto   page_off  = start - page_base;
+		const auto   map_size  = ((page_off + bytes + PageMask) & ~PageMask);
+		vm_address_t tmp       = 0;
+		vm_prot_t    cur_prot  = 0;
+		vm_prot_t    max_prot  = 0;
+		if (vm_remap(mach_task_self(), &tmp, static_cast<vm_size_t>(map_size), 0, VM_FLAGS_ANYWHERE,
+		             mach_task_self(), static_cast<vm_address_t>(page_base), FALSE, &cur_prot,
+		             &max_prot, VM_INHERIT_NONE) == KERN_SUCCESS) {
+			vm_protect(mach_task_self(), tmp, static_cast<vm_size_t>(map_size), FALSE,
+			           VM_PROT_READ | VM_PROT_WRITE);
+			fn(reinterpret_cast<uint8_t*>(tmp) + page_off);
+			vm_deallocate(mach_task_self(), tmp, static_cast<vm_size_t>(map_size));
+		} else {
+			fn(reinterpret_cast<uint8_t*>(start));
+		}
+	}
+#endif
 
 	// Replace the file view atomically instead of exposing an unmapped hole in the
 	// process-lifetime guest reservation.
@@ -519,6 +654,9 @@ private:
 
 	uint8_t*                                                     m_backing_base = nullptr;
 	uint64_t                                                     m_size         = 0;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	std::vector<uint32_t>                                        m_phys_vaddr;
+#endif
 	std::array<std::atomic<std::atomic<uint32_t>*>, BucketCount> m_pages {};
 };
 
@@ -565,6 +703,11 @@ public:
 				}
 				current = region_end;
 			}
+		}
+#elif defined(KYTY_ARM64_APPLE)
+		for (const auto& [start, size]: m_owned) {
+			vm_deallocate(mach_task_self(), static_cast<vm_address_t>(start),
+			              static_cast<vm_size_t>(size));
 		}
 #else
 		for (const auto& [start, size]: m_owned) {
@@ -790,6 +933,13 @@ public:
 			addr = FindFreeAligned(HOST_USER_MIN, HOST_USER_MAX + 1u, PageSize(), PageSize());
 		}
 		if (addr == 0) {
+			addr = FindFreeAligned(HOST_SYSTEM_MANAGED_MIN, HOST_USER_MAX + 1u, PageSize(),
+			                       PageSize());
+		}
+		if (addr == 0) {
+			addr = FindFreeAligned(0, UINT64_MAX, PageSize(), PageSize());
+		}
+		if (addr == 0) {
 			LOGF_COLOR(Log::Color::Red,
 			           "\t guest address-space self-test: 16 KiB range unavailable\n");
 			return false;
@@ -824,8 +974,15 @@ private:
 	static constexpr uint64_t PageSize() { return 0x4000; }
 
 	static uint64_t AlignUp(uint64_t value, uint64_t alignment) {
+		if (alignment == 0) {
+			return value;
+		}
 		const auto remainder = value % alignment;
-		return remainder != 0 ? value + (alignment - remainder) : value;
+		if (remainder == 0) {
+			return value;
+		}
+		const auto addend = alignment - remainder;
+		return UINT64_MAX - value < addend ? UINT64_MAX : value + addend;
 	}
 
 	static uint64_t AlignDown(uint64_t value, uint64_t alignment) {
