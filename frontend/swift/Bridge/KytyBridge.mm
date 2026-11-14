@@ -157,8 +157,7 @@ extern "C" void KytyNotifyWindowCreated(void *window) {
 
 extern "C" void KytyNotifyWindowDestroyed() {
     dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:KytyWindowDestroyedNotification
-                                                            object:nil];
+        [[NSNotificationCenter defaultCenter] postNotificationName:KytyWindowDestroyedNotification object:nil];
     });
 }
 
@@ -627,6 +626,9 @@ static void KytyFatalExitCallback(int status, const char *message) {
                     completion(NO, @"Previous emulation session did not release in time.");
                 });
             }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter] postNotificationName:KytyEmulationStoppedNotification object:nil];
+            });
             return;
         }
         g_is_running.store(true);
@@ -989,10 +991,10 @@ static void KytyFatalExitCallback(int status, const char *message) {
         [[NSNotificationCenter defaultCenter] postNotificationName:KytyEmulationCrashedNotification
                                                             object:nil
                                                           userInfo:@{
-                                                              KytyCrashErrorKey: dialogSummary,
-                                                              KytyCrashDetailKey: detail ?: @"",
-                                                              @"fullLog": fullMsg
-                                                          }];
+            KytyCrashErrorKey: dialogSummary,
+            KytyCrashDetailKey: detail ?: @"",
+            @"fullLog": fullMsg
+        }];
     });
 
     if (![NSThread isMainThread]) {

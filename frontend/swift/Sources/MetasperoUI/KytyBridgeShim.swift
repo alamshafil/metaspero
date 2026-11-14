@@ -2,14 +2,14 @@
 import Foundation
 import SwiftUI
 
-public let KytyLogUpdatedNotification = "KytyLogUpdated"
-public let KytyEmulationCrashedNotification = "KytyEmulationCrashed"
+public let KytyLogUpdatedNotification = "KytyLogUpdatedNotification"
+public let KytyEmulationCrashedNotification = "KytyEmulationCrashedNotification"
 public let KytyCrashErrorKey = "error"
 public let KytyCrashDetailKey = "detail"
-public let KytyWindowDestroyedNotification = "KytyWindowDestroyed"
-public let KytyEmulationStoppingNotification = "KytyEmulationStopping"
-public let KytyEmulationStoppedNotification = "KytyEmulationStopped"
-public let KytyMemoryPressureNotification = "KytyMemoryPressure"
+public let KytyWindowDestroyedNotification = "KytyWindowDestroyedNotification"
+public let KytyEmulationStoppingNotification = "KytyEmulationStoppingNotification"
+public let KytyEmulationStoppedNotification = "KytyEmulationStoppedNotification"
+public let KytyMemoryPressureNotification = "KytyMemoryPressureNotification"
 public let KytyMemoryPressureLevelKey = "level"
 public let KytyMemoryPressureReasonKey = "reason"
 public let KytyMemoryUsedMBKey = "usedMB"

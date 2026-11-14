@@ -42,6 +42,7 @@ struct LibraryView: View {
     @State private var showSlowClosingAlert = false
     @State private var pendingLaunchGame: GameItem? = nil
     @State private var isRefreshing = false
+    @State private var isStopping = false
     
     @AppStorage("libraryViewMode") private var libraryViewMode = "grid"
     @State private var searchText = ""
@@ -100,12 +101,13 @@ struct LibraryView: View {
                     
                     ToolbarItem(placement: .primaryAction) {
                         Button(action: {
+                            isStopping = true
                             KytyBridge.stopEmulation()
                         }) {
                             Label("Stop Game", systemImage: "xmark.circle.fill")
                         }
                         .tint(.red)
-                        .disabled(KytyBridge.isStopping())
+                        .disabled(isStopping || KytyBridge.isStopping())
                         #if !SKIP
                         .help("Stop Emulation")
                         #endif
@@ -411,7 +413,11 @@ struct LibraryView: View {
         } message: {
             Text("The previous game is still closing. You can wait a moment or force close it to launch immediately.")
         }
+        .onReceive(NotificationCenter.default.publisher(for: .KytyEmulationStopping)) { _ in
+            isStopping = true
+        }
         .onReceive(NotificationCenter.default.publisher(for: .KytyEmulationStopped)) { _ in
+            isStopping = false
             withAnimation(.easeInOut(duration: 0.2)) {
                 isEmulating = false
             }
@@ -501,6 +507,7 @@ struct LibraryView: View {
         }
         _ = KytyBridge.acquireJitPool()
         selectedGame = game
+        isStopping = false
         isEmulating = true
     }
     

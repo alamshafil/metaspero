@@ -66,9 +66,14 @@ struct EmulationView: View {
             #endif
         }
         .onDisappear {
+            closingTimeoutTask?.cancel()
+            closingTimeoutTask = nil
             #if os(iOS)
             OrientationManager.unlockOrientation()
             #endif
+            if !isEmulating && KytyBridge.isEmulationRunning() && !KytyBridge.isStopping() {
+                KytyBridge.stopEmulation()
+            }
         }
         .onChange(of: isEmulating) { running in
             if !running {
@@ -79,13 +84,16 @@ struct EmulationView: View {
             if !isClosing {
                 withAnimation { isClosing = true }
             }
-            if closingTimeoutTask == nil {
-                closingTimeoutTask = Task {
-                    try? await Task.sleep(nanoseconds: 8_000_000_000)
-                    guard !Task.isCancelled else { return }
-                    if isClosing && KytyBridge.isStopping() {
-                        KytyBridge.addLogMessage("[EmulationView] Shutdown safety timeout reached (8.0s), forcing cleanup.")
-                        KytyBridge.forceResetEmulationSession()
+            closingTimeoutTask?.cancel()
+            closingTimeoutTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                guard !Task.isCancelled else { return }
+                if isClosing && KytyBridge.isStopping() {
+                    KytyBridge.addLogMessage("[EmulationView] Shutdown safety timeout reached (8.0s), forcing cleanup.")
+                    KytyBridge.forceResetEmulationSession()
+                    withAnimation {
+                        isClosing = false
+                        isEmulating = false
                     }
                 }
             }
@@ -311,6 +319,11 @@ struct EmulatorMetalSurface: UIViewRepresentable {
         KytyBridge.startEmulation(withGamePath: game.path, in: view) { success, error in
             if !success, let error = error {
                 print("[EmulatorMetalSurface] Launch error: \(error)")
+                NotificationCenter.default.post(
+                    name: .KytyEmulationCrashed,
+                    object: nil,
+                    userInfo: [KytyCrashErrorKey: "Launch Failed: \(error)"]
+                )
             }
         }
         return view
@@ -418,6 +431,11 @@ struct EmulatorMetalSurface: NSViewRepresentable {
         KytyBridge.startEmulation(withGamePath: game.path, in: view) { success, error in
             if !success, let error = error {
                 print("[EmulatorMetalSurface] Launch error: \(error)")
+                NotificationCenter.default.post(
+                    name: .KytyEmulationCrashed,
+                    object: nil,
+                    userInfo: [KytyCrashErrorKey: "Launch Failed: \(error)"]
+                )
             }
         }
         return view
@@ -432,7 +450,10 @@ struct EmulatorMetalSurface: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: HostMetalView, coordinator: ()) {
+        CATransaction.begin()
         nsView.metalLayer.removeFromSuperlayer()
+        CATransaction.commit()
+        CATransaction.flush()
     }
 }
 #endif
