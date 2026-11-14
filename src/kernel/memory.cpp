@@ -1611,14 +1611,15 @@ static int MapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags
 		if ((flags & GUEST_MAP_NO_OVERWRITE) != 0 && g_virtual_ranges->HasOverlap(in_addr, len)) {
 			return KERNEL_ERROR_ENOMEM;
 		}
-		if (!IsReservedSpan(in_addr, len)) {
-			const int result = ReplaceFixedRangeWithReserved(in_addr, len);
-			if (result != OK) {
-				return result;
-			}
+		bool reserved_or_existing = IsReservedSpan(in_addr, len);
+		int  result               = OK;
+		if (!reserved_or_existing) {
+			result               = ReplaceFixedRangeWithReserved(in_addr, len);
+			reserved_or_existing = (result == OK);
 		}
 #if defined(__APPLE__) && !TARGET_OS_IPHONE
-		if (in_addr >= HOST_SYSTEM_MANAGED_MIN && in_addr < HOST_USER_MIN) {
+		if (!reserved_or_existing && in_addr >= HOST_SYSTEM_MANAGED_MIN &&
+		    in_addr < HOST_USER_MIN) {
 			out_addr = FindGuestFreeRange(HOST_USER_MIN, len, map_alignment);
 			if (out_addr != 0) {
 				UnmapGpuRange(out_addr, len);
@@ -1626,6 +1627,9 @@ static int MapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags
 		}
 #endif
 		if (out_addr == 0) {
+			if (!reserved_or_existing) {
+				return result;
+			}
 			UnmapGpuRange(in_addr, len);
 			reserved_target = true;
 			out_addr        = in_addr;
@@ -2294,26 +2298,28 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 			return KERNEL_ERROR_ENOMEM;
 		}
 
+		bool reserved_or_existing = false;
+		int  reserve_result       = OK;
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 		// Keep the old views accessible until mmap atomically replaces them. In particular, do not
 		// publish a temporary reserved/PROT_NONE range between two direct views.
 		if (g_virtual_ranges->QuerySpan(in_addr, len, &replaced) &&
 		    std::all_of(replaced.begin(), replaced.end(),
 		                [](const auto& range) { return range.type == VirtualRangeType::Direct; })) {
-			replaced_type = VirtualRangeType::Direct;
+			replaced_type        = VirtualRangeType::Direct;
+			reserved_or_existing = true;
 		} else
 #endif
 		{
-			if (!IsReservedSpan(in_addr, len)) {
-				const int result = ReplaceFixedRangeWithReserved(in_addr, len);
-				if (result != OK) {
-					return result;
-				}
+			reserved_or_existing = IsReservedSpan(in_addr, len);
+			if (!reserved_or_existing) {
+				reserve_result       = ReplaceFixedRangeWithReserved(in_addr, len);
+				reserved_or_existing = (reserve_result == OK);
 			}
 		}
 #if defined(__APPLE__) && !TARGET_OS_IPHONE
-		if (replaced_type != VirtualRangeType::Direct && in_addr >= HOST_SYSTEM_MANAGED_MIN &&
-		    in_addr < HOST_USER_MIN) {
+		if (!reserved_or_existing && replaced_type != VirtualRangeType::Direct &&
+		    in_addr >= HOST_SYSTEM_MANAGED_MIN && in_addr < HOST_USER_MIN) {
 			const auto relocated =
 			    FindGuestFreeRange(HOST_USER_MIN, len, alignment != 0 ? alignment : PAGE_SIZE);
 			if (relocated != 0) {
@@ -2324,6 +2330,9 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 		if (target == 0)
 #endif
 		{
+			if (!reserved_or_existing) {
+				return reserve_result;
+			}
 			target         = in_addr;
 			replace_target = true;
 		}
@@ -2555,11 +2564,12 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 			return KERNEL_ERROR_ENOMEM;
 		}
 		const int result = ReplaceFixedRangeWithReserved(in_addr, len);
-		if (result != OK) {
-			return result;
+		if (result == OK) {
+			out_addr            = in_addr;
+			range_already_added = true;
 		}
 #if defined(__APPLE__) && !TARGET_OS_IPHONE
-		if (in_addr >= HOST_SYSTEM_MANAGED_MIN && in_addr < HOST_USER_MIN) {
+		else if (in_addr >= HOST_SYSTEM_MANAGED_MIN && in_addr < HOST_USER_MIN) {
 			out_addr = FindGuestFreeRange(HOST_USER_MIN, len,
 			                              alignment != 0 ? alignment : PAGE_SIZE);
 			if (out_addr != 0) {
@@ -2567,9 +2577,8 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 			}
 		}
 #endif
-		if (out_addr == 0) {
-			out_addr            = in_addr;
-			range_already_added = true;
+		else {
+			return result;
 		}
 	} else {
 		alignment = (alignment != 0 ? alignment : PAGE_SIZE);
