@@ -5961,6 +5961,252 @@ void TestDynamicStorageMipTracking() {
         "an inverted mip range was not normalized consistently for plain and dynamic views");
 }
 
+#if !KYTY_SRT_NATIVE_WALKER
+namespace {
+struct BackendSnapshot {
+  std::vector<std::pair<bool, DescriptorValue>> descriptors;
+  std::vector<bool>                             active;
+  std::vector<std::pair<bool, uint32_t>>        outputs;
+  // The public contract regions of scratch: descriptor words, active flags and output
+  // qwords. Node memo slots are x86-internal, and captures are compared through `reads`.
+  std::vector<uint8_t> contract;
+  size_t               scratch_size = 0;
+  uint32_t             host_reads   = 0;
+};
+
+BackendSnapshot TakeBackendSnapshot(const ResourcePlan &plan, const NativeWalkPlan &native,
+                                    uint32_t host_reads, bool compare_host_reads) {
+  BackendSnapshot snapshot;
+  const auto      sources = plan.descriptor_sources.size();
+  const auto      images  = plan.info.images.size();
+  snapshot.descriptors.resize(sources);
+  for (uint32_t source = 0; source < sources; ++source) {
+    DescriptorValue value {};
+    const bool      ok = WalkedDescriptor(plan, source, value);
+    snapshot.descriptors[source] = {ok, value};
+  }
+  snapshot.active.resize(sources + images);
+  for (uint32_t source = 0; source < sources; ++source) {
+    snapshot.active[source] = WalkedActive(plan, source);
+  }
+  for (uint32_t image = 0; image < images; ++image) {
+    snapshot.active[sources + image] = WalkedImageActive(plan, image);
+  }
+  snapshot.outputs.resize(native.outputs.size());
+  for (size_t index = 0; index < native.outputs.size(); ++index) {
+    uint32_t   value = 0;
+    const bool ok    = WalkedValue(plan, native.outputs[index], value);
+    snapshot.outputs[index] = {ok, value};
+  }
+  snapshot.scratch_size = plan.srt_scratch.size();
+  const auto *bytes     = reinterpret_cast<const uint8_t *>(plan.srt_scratch.data());
+  const auto  append    = [&](size_t begin, size_t end) {
+    if (begin >= end || end > plan.srt_scratch.size() * sizeof(uint64_t)) return;
+    snapshot.contract.insert(snapshot.contract.end(), bytes + begin, bytes + end);
+  };
+  append(0, native.active_off);
+  append(native.active_off, native.active_off + sources + images);
+  append(native.output_off, native.output_off + native.outputs.size() * sizeof(uint64_t));
+  // ReadFirstLane re-evaluates its subtree across reachability passes, so it may read
+  // more often than the JIT while still producing identical values. Callers that opt out
+  // keep the value/contract comparison strict.
+  snapshot.host_reads = compare_host_reads ? host_reads : 0u;
+  return snapshot;
+}
+
+bool BackendsEqual(const BackendSnapshot &left, const BackendSnapshot &right) {
+  if (left.scratch_size != right.scratch_size || left.contract != right.contract ||
+      left.host_reads != right.host_reads || left.active != right.active ||
+      left.outputs != right.outputs) {
+    return false;
+  }
+  if (left.descriptors.size() != right.descriptors.size()) return false;
+  for (size_t index = 0; index < left.descriptors.size(); ++index) {
+    const auto &[left_ok, left_value]   = left.descriptors[index];
+    const auto &[right_ok, right_value] = right.descriptors[index];
+    if (left_ok != right_ok || left_value.dword_count != right_value.dword_count ||
+        left_value.dwords != right_value.dwords) {
+      return false;
+    }
+  }
+  return true;
+}
+} // namespace
+
+// Compares the native interpreter with the x86 JIT on the whole WalkSrt/Walked* contract.
+void ExpectBackendsAgree(ResourcePlan &plan, const SrtRuntime &runtime, uint32_t &host_reads,
+                         bool compare_host_reads = true) {
+  const auto planned_user_data = plan.srt_user_data;
+  auto       native            = BuildNativeWalkPlan(plan, {});
+  Check(native != nullptr, "native SRT plan was not built");
+  Check(plan.srt_user_data == std::max(planned_user_data, native->user_data),
+        "native SRT plan overwrote the planned user-data span");
+
+  std::vector<uint32_t>                       jit_flat;
+  std::vector<uint32_t>                       native_flat;
+  std::vector<std::pair<uint64_t, uint64_t>> jit_reads;
+  std::vector<std::pair<uint64_t, uint64_t>> native_reads;
+  host_reads = 0;
+  Check(WalkSrt(plan, runtime, jit_flat, &jit_reads), "x86 SRT walk failed");
+  const auto jit_snapshot = TakeBackendSnapshot(plan, *native, host_reads, compare_host_reads);
+  host_reads = 0;
+  Check(RunNativeWalk(*native, plan, runtime, native_flat, &native_reads),
+        "native SRT walk failed");
+  const auto native_snapshot =
+      TakeBackendSnapshot(plan, *native, host_reads, compare_host_reads);
+  if (jit_flat != native_flat || jit_reads != native_reads ||
+      !BackendsEqual(jit_snapshot, native_snapshot)) {
+    std::fprintf(stderr,
+                 "SRTDIFF flat %zu/%zu reads %zu/%zu scratch %zu/%zu core %zu/%zu host %u/%u "
+                 "active=%d outputs=%d descriptors=%d\n",
+                 jit_flat.size(), native_flat.size(), jit_reads.size(), native_reads.size(),
+                 jit_snapshot.scratch_size, native_snapshot.scratch_size,
+                 jit_snapshot.contract.size(), native_snapshot.contract.size(),
+                 jit_snapshot.host_reads, native_snapshot.host_reads,
+                 jit_snapshot.active == native_snapshot.active,
+                 jit_snapshot.outputs == native_snapshot.outputs,
+                 jit_snapshot.descriptors.size() == native_snapshot.descriptors.size());
+    for (size_t i = 0;
+         i < std::min(jit_snapshot.contract.size(), native_snapshot.contract.size()); ++i) {
+      if (jit_snapshot.contract[i] != native_snapshot.contract[i]) {
+        std::fprintf(stderr, "SRTDIFF contract[%zu] jit=%02x native=%02x\n", i,
+                     jit_snapshot.contract[i], native_snapshot.contract[i]);
+      }
+    }
+    if (jit_flat != native_flat) {
+      for (size_t i = 0; i < std::min(jit_flat.size(), native_flat.size()); ++i) {
+        if (jit_flat[i] != native_flat[i])
+          std::fprintf(stderr, "SRTDIFF flat[%zu] jit=%08x native=%08x\n", i, jit_flat[i],
+                       native_flat[i]);
+      }
+    }
+  }
+  Check(jit_flat == native_flat && jit_reads == native_reads &&
+            BackendsEqual(jit_snapshot, native_snapshot),
+        "native SRT walk differs from the x86 JIT");
+  host_reads = 0;
+}
+#endif
+
+void TestSrtNativeReaderMatrix() {
+  namespace CFG = Libs::Graphics::ShaderRecompiler::CFG;
+  Fixture fixture;
+  auto *entry = fixture.block;
+  auto *taken = fixture.AddBlock();
+  auto *other = fixture.AddBlock();
+  entry->AddBranch(taken);
+  entry->AddBranch(other);
+  const auto handle = fixture.Buffer(
+      {fixture.UserData(0), Value(4u << 16u), Value(1u), Value(4u << 12u)}, 12);
+  MemoryInfo buffer;
+  buffer.kind = ResourceKind::Buffer;
+  const auto load = fixture.Emit(
+      ValueOpcode::LoadBufferU32,
+      {handle, Value(0u), Value(0u), Value(0u), Value(true)},
+      fixture.AddMemory(buffer, 12));
+  entry->condition = load;
+  entry->terminator = {.kind = CFG::TerminatorKind::ConditionalBranch,
+                       .true_block = taken, .false_block = other};
+  taken->terminator.kind = CFG::TerminatorKind::Return;
+  other->terminator.kind = CFG::TerminatorKind::Return;
+  fixture.PlanAndTrack();
+
+  auto plan = ExtractResourcePlan(fixture.program);
+  auto native = BuildNativeWalkPlan(plan, {});
+  Check(native != nullptr, "reader-matrix SRT plan was not built");
+  Check(plan.control_flow.size() >= 3u, "reader-matrix plan lost its blocks");
+
+  const std::array<uint32_t, 2> user_data{0x1000u, 0u};
+  TestMemory memory;
+  memory.words[0] = 1u;
+  std::vector<uint32_t> flat;
+  std::vector<std::pair<uint64_t, uint64_t>> reads;
+
+  {
+    const SrtRuntime runtime{.user_data = user_data};
+    flat.clear();
+    Check(RunNativeWalk(*native, plan, runtime, flat, nullptr),
+          "reader-matrix walk failed with no reader");
+    Check(plan.visited_blocks.size() >= 3u && plan.visited_blocks[1] != 0u &&
+              plan.visited_blocks[2] != 0u,
+          "missing specialization reader did not leave the vector branch unknown");
+  }
+
+  {
+    const SrtRuntime runtime{.user_data = user_data, .userdata = &memory,
+                             .read_memory = ReadTestMemory};
+    flat.clear();
+    reads.clear();
+    Check(RunNativeWalk(*native, plan, runtime, flat, &reads),
+          "reader-matrix walk failed with an ordinary reader");
+    Check(plan.visited_blocks.size() >= 3u && plan.visited_blocks[1] != 0u &&
+              plan.visited_blocks[2] != 0u,
+          "ordinary reader incorrectly resolved a specialization read");
+    Check(reads.empty(), "ordinary reader captured a specialization read");
+  }
+
+  {
+    const SrtRuntime runtime{.user_data = user_data, .userdata = &memory,
+                             .read_specialization_memory = ReadTestMemory};
+    flat.clear();
+    reads.clear();
+    Check(RunNativeWalk(*native, plan, runtime, flat, &reads),
+          "reader-matrix walk failed with a specialization reader");
+    Check(plan.visited_blocks.size() >= 3u && plan.visited_blocks[1] != 0u &&
+              plan.visited_blocks[2] == 0u,
+          "specialization reader did not resolve the vector branch");
+    Check(!reads.empty() && reads.front() == std::pair<uint64_t, uint64_t>{0x1000u, 4u},
+          "specialization read was not captured");
+  }
+}
+
+void TestSrtNativeReadFirstLane() {
+  namespace CFG = Libs::Graphics::ShaderRecompiler::CFG;
+  Fixture fixture;
+  auto *entry = fixture.block;
+  auto *taken = fixture.AddBlock();
+  auto *other = fixture.AddBlock();
+  entry->AddBranch(taken);
+  entry->AddBranch(other);
+  const auto handle = fixture.Buffer(
+      {fixture.UserData(0), Value(4u << 16u), Value(1u), Value(4u << 12u)}, 12);
+  MemoryInfo buffer;
+  buffer.kind = ResourceKind::Buffer;
+  const auto load = fixture.Emit(
+      ValueOpcode::LoadBufferU32,
+      {handle, Value(0u), Value(0u), Value(0u), Value(true)},
+      fixture.AddMemory(buffer, 12));
+  entry->condition = fixture.Emit(ValueOpcode::ReadFirstLane, {load, Value(true)});
+  entry->terminator = {.kind = CFG::TerminatorKind::ConditionalBranch,
+                       .true_block = taken, .false_block = other};
+  taken->terminator.kind = CFG::TerminatorKind::Return;
+  other->terminator.kind = CFG::TerminatorKind::Return;
+  fixture.PlanAndTrack();
+
+  std::array<uint32_t, 2> user_data{0x1000u, 0u};
+  TestMemory memory;
+  memory.words[0] = 1u;
+  FakeGuestMemory fake(ReadTestMemory, &memory);
+  // The JIT reads through the fake guest mapping, and native uses the runtime reader. Both
+  // serve the same words, so the differential comparison stays meaningful.
+  const SrtRuntime runtime{.user_data = user_data, .userdata = &memory,
+                           .read_specialization_memory = ReadTestMemory};
+  auto plan = ExtractResourcePlan(fixture.program);
+  auto native = BuildNativeWalkPlan(plan, {});
+  Check(native != nullptr, "ReadFirstLane SRT plan was not built");
+
+  std::vector<uint32_t> flat;
+  Check(RunNativeWalk(*native, plan, runtime, flat, nullptr),
+        "ReadFirstLane native walk failed");
+  Check(plan.visited_blocks.size() >= 3u && plan.visited_blocks[1] != 0u &&
+            plan.visited_blocks[2] == 0u,
+        "ReadFirstLane sub-walker lost the specialization reader");
+
+#if !KYTY_SRT_NATIVE_WALKER
+  ExpectBackendsAgree(plan, runtime, memory.reads);
+#endif
+}
+
 void TestSrtFlatteningAndRuntimeMemoization() {
   Fixture fixture;
   const auto base =
@@ -5998,6 +6244,9 @@ void TestSrtFlatteningAndRuntimeMemoization() {
   SrtRuntime runtime{.user_data = user_data};
   FakeGuestMemory fake(ReadTestMemory, &memory);
   auto plan = ExtractResourcePlan(fixture.program);
+#if !KYTY_SRT_NATIVE_WALKER
+  ExpectBackendsAgree(plan, runtime, memory.reads);
+#endif
   DescriptorValue descriptor;
   std::vector<uint32_t> flat;
   const uint32_t request = fixture.program.info.buffers[0].source;
@@ -6069,7 +6318,7 @@ void TestScalarDataReadControlFlow() {
         {address, Value(0u), Value(0u), Value(true)}, fixture.AddMemory(scalar, 4), use);
     fixture.PlanAndTrack();
     auto plan = ExtractResourcePlan(fixture.program);
-    Check(plan.srt_reads.size() == 1 && plan.srt_code,
+    Check(plan.srt_reads.size() == 1 && (plan.srt_code || plan.srt_native),
           "scalar data lost flattening or its walker");
     uint32_t reads = 0;
     std::array<uint32_t, 2> user_data {};
@@ -9168,6 +9417,8 @@ int main() {
     Run("shared append selector bounds", TestSharedAppendSelectorBounds);
     Run("descending image range", TestDescendingImageRange);
     Run("SRT runtime", TestSrtFlatteningAndRuntimeMemoization);
+    Run("SRT reader matrix", TestSrtNativeReaderMatrix);
+    Run("SRT read first lane", TestSrtNativeReadFirstLane);
     Run("scalar data control flow", TestScalarDataReadControlFlow);
     Run("dynamic SRT", TestDynamicSrtReadRemainsExplicit);
     Run("writable descriptor phi", TestWritableDescriptorPhi);

@@ -240,7 +240,8 @@ void TestNativeNestedSrtRefresh() {
   leaf->SetArg(1, Value(7u));
   read(leaf->Arg(0), 11u);
   auto plan = Extract(program);
-  Check(plan.srt_code != nullptr, "nested user-data tree did not compile an x86 walker");
+  Check(plan.srt_code != nullptr || plan.srt_native != nullptr,
+        "nested user-data tree did not compile an SRT walker");
   ResourceSnapshot snapshot;
   ResourceSpecialization specialization;
   const SrtRuntime runtime{.user_data = user_data};
@@ -286,7 +287,7 @@ void TestNativeNestedSrtRefresh() {
     program.memory_info[0].offset = static_cast<uint32_t>(offset);
     auto bounded = Extract(program);
     auto base = pointer_words(second.data() + 1);
-    Check(bounded.srt_code != nullptr &&
+    Check((bounded.srt_code != nullptr || bounded.srt_native != nullptr) &&
               MaterializeResources(bounded, {.user_data = base}, snapshot, specialization) &&
               snapshot.flattened_srt[0] == second[offset < 0 ? 0 : 2],
           "native SRT applied a signed immediate offset incorrectly");
@@ -1479,10 +1480,6 @@ void DbgExitIfHandler(const char *, const char *, int) { std::abort(); }
 } // namespace Common
 
 int main() {
-#if defined(__arm64__) || defined(__aarch64__)
-  std::puts("ResourceMaterializationTests: x86_64 JIT walker not supported on ARM64 host (using C++ evaluator), skipping");
-  return 0;
-#else
   TestWalkerLoadsBypassSpecializationReader();
   TestNativeNestedSrtRefresh();
   TestIntegerRuntimeValueFollowsSrtReads();
@@ -1509,7 +1506,6 @@ int main() {
   TestShaderCacheRecords();
   std::puts("ResourceMaterializationTests: all cases passed");
   return 0;
-#endif
 }
 
 // Keep this focused standalone target self-contained by amalgamating its small

@@ -2,6 +2,7 @@
 #define KYTY_TESTS_SRTWALKERTESTMEMORY_H_
 
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
+#include "graphics/shader/recompiler/ir/passes/SrtWalkerNative.h"
 
 #include <xbyak/xbyak.h>
 
@@ -27,6 +28,7 @@ public:
   explicit FakeGuestMemory(Libs::Graphics::ShaderRecompiler::IR::SrtMemoryReader reader = nullptr,
                            void *userdata = nullptr) {
     Current() = {reader, userdata};
+    Libs::Graphics::ShaderRecompiler::IR::SetSrtTestMemoryReader(&TestRead);
 #if defined(__linux__) || defined(__APPLE__)
     struct sigaction action {};
     action.sa_sigaction = Handle;
@@ -38,6 +40,7 @@ public:
 #endif
   }
   ~FakeGuestMemory() {
+    Libs::Graphics::ShaderRecompiler::IR::SetSrtTestMemoryReader(nullptr);
 #if defined(__linux__) || defined(__APPLE__)
     for (size_t index = 0; index < std::size(kSignals); ++index)
       sigaction(kSignals[index], &m_previous[index], nullptr);
@@ -59,6 +62,16 @@ private:
     uint32_t word = 0;
     const auto [reader, userdata] = Current();
     return reader != nullptr && reader(userdata, address, {&word, 1}) ? word : 0u;
+  }
+  static bool TestRead(void *, uint64_t address, std::span<uint32_t> values) {
+    const auto [reader, userdata] = Current();
+    for (auto &word : values) {
+      if (reader == nullptr || !reader(userdata, address, {&word, 1})) {
+        return false;
+      }
+      address += sizeof(uint32_t);
+    }
+    return true;
   }
 #if defined(__linux__) || defined(__APPLE__)
 #if defined(__APPLE__)
@@ -111,6 +124,7 @@ inline bool EvaluateSrtValue(Libs::Graphics::ShaderRecompiler::IR::ResourcePlan 
   const auto *inst = value.Resolve().TryInstruction();
   const auto output = inst != nullptr ? inst->WalkOutput() : UINT32_MAX;
   auto code = std::move(plan.srt_code);
+  auto native = std::move(plan.srt_native);
   auto scratch = std::move(plan.srt_scratch);
   const auto user_data = plan.srt_user_data;
   const auto captures = plan.srt_captures;
@@ -118,6 +132,7 @@ inline bool EvaluateSrtValue(Libs::Graphics::ShaderRecompiler::IR::ResourcePlan 
   std::vector<uint32_t> flat;
   const bool known = WalkSrt(plan, runtime, flat, nullptr) && WalkedValue(plan, value, result);
   plan.srt_code = std::move(code);
+  plan.srt_native = std::move(native);
   plan.srt_scratch = std::move(scratch);
   plan.srt_user_data = user_data;
   plan.srt_captures = captures;
