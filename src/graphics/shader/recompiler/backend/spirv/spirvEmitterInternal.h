@@ -5,6 +5,7 @@
 #include "common/stringUtils.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvBuilder.h"
+#include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 
@@ -36,6 +37,7 @@ struct OutputBinding : IR::StageOutput {
 
 using ImageDimension = Decoder::ImageDimension;
 
+// Component counts are the guest's; 1D images are host 2D images one texel high.
 struct ImageDimensionInfo {
 	ImageDimension dimension;
 	uint32_t       spirv_dimension;
@@ -43,16 +45,17 @@ struct ImageDimensionInfo {
 	uint32_t       spatial_components;
 	uint32_t       arrayed;
 	uint32_t       multisampled;
+	bool           one_dimensional;
 };
 
 constexpr std::array<ImageDimensionInfo, 7> ImageDimensions {{
-    {ImageDimension::Dim1D, spv::Dim1D, 1, 1, 0, 0},
-    {ImageDimension::Dim1DArray, spv::Dim1D, 2, 1, 1, 0},
-    {ImageDimension::Dim2D, spv::Dim2D, 2, 2, 0, 0},
-    {ImageDimension::Dim2DArray, spv::Dim2D, 3, 2, 1, 0},
-    {ImageDimension::Dim3D, spv::Dim3D, 3, 3, 0, 0},
-    {ImageDimension::Dim2DMsaa, spv::Dim2D, 2, 2, 0, 1},
-    {ImageDimension::Dim2DMsaaArray, spv::Dim2D, 3, 2, 1, 1},
+    {ImageDimension::Dim1D, spv::Dim2D, 1, 1, 0, 0, true},
+    {ImageDimension::Dim1DArray, spv::Dim2D, 2, 1, 1, 0, true},
+    {ImageDimension::Dim2D, spv::Dim2D, 2, 2, 0, 0, false},
+    {ImageDimension::Dim2DArray, spv::Dim2D, 3, 2, 1, 0, false},
+    {ImageDimension::Dim3D, spv::Dim3D, 3, 3, 0, 0, false},
+    {ImageDimension::Dim2DMsaa, spv::Dim2D, 2, 2, 0, 1, false},
+    {ImageDimension::Dim2DMsaaArray, spv::Dim2D, 3, 2, 1, 1, false},
 }};
 
 const ImageDimensionInfo& ImageDimensionInfoFor(ImageDimension dimension);
@@ -73,14 +76,14 @@ struct ImageDefinition {
 };
 
 struct EmitterState {
-	EmitterState(IR::Program& program_, ShaderStageInputInfo input_info_)
+	EmitterState(IR::Program& program_, ShaderStageInputInfo input_info_, const Profile& profile_)
 	    : builder(program_.stage == ShaderType::Mesh ? 0x00010400u : 0x00010300u),
-	      program(program_), input_info(input_info_) {
+	      program(program_), input_info(input_info_), profile(profile_) {
 		if (ShaderWorkgroupInput(program.stage, input_info) != nullptr) {
 			lds_storage_class = spv::StorageClassWorkgroup;
 		}
 		if (program.info.uses_lds && program.stage == ShaderType::Compute &&
-		    input_info.compute != nullptr && input_info.compute->lds_storage) {
+		    input_info.compute->lds_storage) {
 			lds_storage_class = spv::StorageClassStorageBuffer;
 		}
 	}
@@ -88,6 +91,8 @@ struct EmitterState {
 	Builder                                          builder;
 	IR::Program&                                     program;
 	ShaderStageInputInfo                             input_info;
+	const Profile&                                      profile;
+	uint32_t                                        debug_source = 0;
 	uint32_t                                        void_type = 0;
 	uint32_t                                        bool_type = 0;
 	uint32_t                                        u32_type = 0;
@@ -102,18 +107,24 @@ struct EmitterState {
 	std::array<uint32_t, 3>                          u32_vector_types {};
 	std::array<uint32_t, 3>                          i32_vector_types {};
 	std::array<uint32_t, 3>                          f32_vector_types {};
-	std::array<uint32_t, 6>                          tess_variables {};
+	std::array<uint32_t, IR::NumTessellationAttributes> tess_variables {};
 	uint32_t                                         tess_inner_variable = 0;
-	uint32_t                                         tess_patch_base     = 0;
 
 	uint32_t                                         lane_count              = 1;
 	uint32_t                                         lane_half               = 0;
 	std::array<BufferDefinition, 4>                  storage_buffers {};
-	std::array<uint32_t, IR::ShaderInfo::MaxBuffers> memory_byte_offsets {};
+	std::vector<uint32_t>                           memory_byte_offsets;
+	std::vector<uint32_t>                           memory_byte_sizes;
 	uint32_t                                         bda_pagetable_variable  = 0;
 	uint32_t                                         fault_buffer_variable   = 0;
 	uint32_t                                         bda_pointer_function    = 0;
+	uint32_t                                         indirect_format_function = 0;
+	uint32_t                                         indirect_format_geometry_function = 0;
+	std::map<std::array<uint32_t, 4>, uint32_t>        indirect_buffer_load_functions;
 	uint32_t                                         bvh_intersect_function  = 0;
+	uint32_t                                         bvh8_result_type       = 0;
+	uint32_t                                         bvh8_intersect_function = 0;
+	uint32_t                                         bvh_stack_function      = 0;
 	uint32_t                                         gds_variable            = 0;
 	uint32_t                                         gds_length              = 0;
 	uint32_t                                         push_constant_variable  = 0;
@@ -125,6 +136,7 @@ struct EmitterState {
 	uint32_t                                         lds_u64_variable        = 0;
 	std::array<uint32_t, 2>                          scratch_variable {};
 	std::array<ImageDefinition, IR::ImageBindingCount> images {};
+	std::array<ImageDefinition, IR::ImageBindingCount> heap_images {};
 	uint32_t                   sampler_variable                      = 0;
 	uint32_t                   sampler_type                          = 0;
 	uint32_t                   sampler_pointer_type                  = 0;
@@ -134,19 +146,23 @@ struct EmitterState {
 	uint32_t                   mesh_primitive_data                   = 0;
 	uint32_t                   mesh_primitives                       = 0;
 	uint32_t                   mesh_cull                             = 0;
+	uint32_t                   mesh_payload                          = 0;
 	uint32_t                   entry_label                           = 0;
 	uint32_t                   current_label                         = 0;
 	const IR::Block*           current_block                         = nullptr;
 	uint32_t                   pixel_valid_mask_variable             = 0;
 	uint32_t                   subgroup_local_invocation_id_variable = 0;
+	uint32_t                   helper_invocation_variable            = 0;
 	uint32_t                   per_vertex_variable                   = 0;
 	uint32_t                   point_size_variable                   = 0;
 	uint32_t                   clip_distance_variable                = 0;
 	uint32_t                   invalid_position_clip_distance        = UINT32_MAX;
+	uint32_t                   user_clip_planes                      = 0;
 	uint32_t                   cull_distance_variable                = 0;
 	uint32_t                   layer_variable                        = 0;
 	uint32_t                   viewport_index_variable               = 0;
 	uint32_t                   depth_variable                        = 0;
+	uint32_t                   object_primitive_id_variable          = 0;
 	uint32_t                   sample_mask_variable                  = 0;
 	std::vector<InputBinding>  inputs;
 	std::vector<OutputBinding> outputs;
@@ -159,6 +175,7 @@ uint32_t TypeBoolVector(EmitterState& state, uint32_t components);
 uint32_t TypeU32(EmitterState& state);
 uint32_t TypeU64(EmitterState& state);
 uint32_t TypeU32Pair(EmitterState& state);
+uint32_t TypeBvh8Result(EmitterState& state);
 uint32_t TypeI32(EmitterState& state);
 uint32_t TypeI32Pair(EmitterState& state);
 uint32_t TypeF32(EmitterState& state);
@@ -172,6 +189,7 @@ uint32_t TypePointer(EmitterState& state, spv::StorageClass storage_class, uint3
 uint32_t TypeFunction(EmitterState& state);
 uint32_t TypeStorageBufferElementPointer(EmitterState& state, uint32_t bits = 32);
 uint32_t TypePhysicalU32Pointer(EmitterState& state);
+uint32_t TypePhysicalU32BufferPointer(EmitterState& state);
 uint32_t TypePushConstantElementPointer(EmitterState& state);
 uint32_t TypeU32ArrayPointer(EmitterState& state, spv::StorageClass storage_class, uint32_t dwords);
 uint32_t TypeU32ElementPointer(EmitterState& state, spv::StorageClass storage_class);
@@ -179,6 +197,11 @@ uint32_t TypeU32ElementPointer(EmitterState& state, spv::StorageClass storage_cl
 inline void EmitLabel(EmitterState& state, uint32_t label) {
 	state.current_label = label;
 	state.builder.AddFunction(spv::OpLabel, label);
+	if (state.debug_source != 0 && state.current_block != nullptr) {
+		// Source lines encode the containing native block's byte offset plus one.
+		state.builder.AddFunction(spv::OpLine, state.debug_source,
+		                          state.current_block->start_pc + 1u, 0u);
+	}
 }
 
 uint32_t TypeId(EmitterState& state, IR::Type type);
@@ -254,8 +277,6 @@ struct ValueEmitContext {
 	uint32_t                                                           half       = 0;
 };
 
-enum class VertexInputScalarKind { Float, Sint, Uint };
-
 constexpr uint32_t NoImageComponent = 0xffffffffu;
 
 struct DppTargetLane {
@@ -269,12 +290,12 @@ struct ImageSampleLayout {
 	uint32_t bias   = NoImageComponent;
 	uint32_t coord  = 0;
 	uint32_t lod    = NoImageComponent;
+	uint32_t clamp  = NoImageComponent;
 	uint32_t grad_x = NoImageComponent;
 	uint32_t grad_y = NoImageComponent;
 };
 
 struct F32Class {
-	uint32_t bits = 0;
 	uint32_t nan  = 0;
 	uint32_t zero = 0;
 };
@@ -285,14 +306,14 @@ bool PixelParameterIsFlat(const EmitterState& state, uint32_t attr);
 
 bool PixelParameterIsCustom(const EmitterState& state, uint32_t attr);
 
-VertexInputScalarKind VertexParameterScalarKind(const EmitterState& state, uint32_t location);
+Format::ComponentType VertexParameterScalarKind(const EmitterState& state, uint32_t location);
 
 uint32_t VertexParameterComponentCount(const InputBinding& input);
 
-uint32_t VertexParameterScalarType(EmitterState& state, VertexInputScalarKind kind);
-
+uint32_t VertexParameterScalarType(EmitterState& state, Format::ComponentType kind);
 
 uint32_t OutputVariableForExport(const EmitterState& state, const IR::ExportInfo& exp);
+uint32_t MrtOutputType(EmitterState& state, uint32_t index);
 
 uint32_t ConstantU32(EmitterState& state, uint32_t value);
 
@@ -301,11 +322,6 @@ uint32_t EmitSubgroupLocalInvocationId(EmitterState& state);
 [[noreturn]] void ExitDescriptorBindingFailure(const EmitterState&       state,
                                                IR::DescriptorBindingKind kind, uint32_t resource,
                                                const char* reason);
-
-uint32_t DescriptorElementPointer(EmitterState& state, uint32_t result_ptr_type,
-                                  uint32_t variable_id, uint32_t array_index,
-                                  IR::DescriptorBindingKind kind, uint32_t resource,
-                                  const char* variable_name);
 
 uint32_t ImageScalarType(EmitterState& state, Prospero::TextureNumericClass numeric_class);
 
@@ -328,12 +344,11 @@ uint32_t MakeSampledImage(EmitterState& state, uint32_t resource, uint32_t sampl
                           uint32_t mip = 0, uint32_t array_index = 0,
                           bool sampler_dynamic = false);
 
+// sample is 0 (no id) for single-sampled images.
 void EmitStorageImageWrite(EmitterState& state, uint32_t resource, uint32_t mip_lod, uint32_t coord,
-                           uint32_t texel);
+                           uint32_t texel, uint32_t array_index, uint32_t sample);
 
 spv::ExecutionModel ExecutionModelForStage(ShaderType stage);
-
-uint32_t ConstantU32(EmitterState& state, uint32_t value);
 
 uint32_t ConstantI32(EmitterState& state, int32_t value);
 
@@ -355,23 +370,10 @@ void     DefineTessellationExecutionModes(EmitterState& state);
 void     DefineMeshOutputs(EmitterState& state, uint32_t clip_distance_count,
                            uint32_t cull_distance_count);
 void     EmitMeshEntryPoint(EmitterState& state);
-void     EmitMeshAllocate(ValueEmitContext& ctx, const IR::Inst& inst);
 uint32_t MeshOutputPointer(EmitterState& state, IR::StageOutputKind kind, uint32_t index = 0);
 uint32_t MeshPrimitivePointer(EmitterState& state);
 
-DppTargetLane EmitDppPermTargetLane(EmitterState& state, uint32_t subid, uint32_t control,
-                                    uint32_t lane_bits);
-
-DppTargetLane EmitDppRowShiftTargetLane(EmitterState& state, uint32_t subid, uint32_t amount,
-                                        bool left);
-
-DppTargetLane EmitDppRowRotateRightTargetLane(EmitterState& state, uint32_t subid, uint32_t amount);
-
-DppTargetLane EmitDppMirrorTargetLane(EmitterState& state, uint32_t subid, bool half_row);
-
 DppTargetLane EmitDppTargetLane(EmitterState& state, const IR::DppMoveFlags& flags);
-
-uint32_t EmitSubgroupLocalInvocationId(EmitterState& state);
 
 uint32_t InputVariableForKind(const EmitterState& state, IR::StageInputKind kind);
 
@@ -393,12 +395,15 @@ inline constexpr auto EmitAddU32 = EmitNative<spv::OpIAdd, IR::Type::U32, uint32
 uint32_t EmitBinaryU32(EmitterState& state, spv::Op opcode, uint32_t lhs, uint32_t rhs);
 
 uint32_t EmitShaderDataDwordLoad(EmitterState& state, uint32_t dword_index);
+uint32_t EmitPushDataLoad(EmitterState& state, uint32_t index);
 
 uint32_t StorageBufferPackedStride(const EmitterState& state, const IR::MemoryInfo& mem);
 
 Prospero::BufferFormat StorageBufferFormat(const EmitterState& state, const IR::MemoryInfo& mem);
 
-void EmitMemoryOffsets(EmitterState& state);
+uint32_t SharedIndirectBufferResource(const EmitterState& state, uint32_t resource);
+
+void EmitMemoryBindings(EmitterState& state);
 
 uint32_t LdsDwordCount(const EmitterState& state);
 void EnsureLdsStorage(EmitterState& state);
@@ -406,22 +411,32 @@ void EnsureLdsStorage(EmitterState& state);
 struct MemoryResourceAccess {
 	IR::ResourceKind      kind             = IR::ResourceKind::None;
 	uint32_t              object_pointer   = 0;
+	uint32_t              descriptor_index = 0;
 	uint32_t              length           = 0;
 	uint32_t              byte_offset      = 0;
 	uint32_t              element_bits     = 32;
+	bool                  non_uniform      = false;
 	spv::MemoryAccessMask memory_access    = spv::MemoryAccessMaskNone;
 };
 
 uint32_t EmitIndirectResourceIndex(EmitterState& state, uint32_t key, uint32_t mapping_offset,
                                    uint32_t search_iterations, uint32_t default_resource);
-MemoryResourceAccess PrepareMemoryResourceAccess(EmitterState& state, const IR::MemoryInfo& mem);
+// Slot word of an image heap byte offset; offsets past the heap select the null element.
+uint32_t EmitImageHeapEntry(EmitterState& state, uint32_t key, uint32_t mapping_offset);
+MemoryResourceAccess PrepareMemoryResourceAccess(EmitterState& state, const IR::MemoryInfo& mem,
+                                                 uint32_t array_index = 0u);
 
 MemoryResourceAccess PrepareStorageBufferResourceAccess(EmitterState&         state,
                                                         const IR::MemoryInfo& mem,
-                                                        BufferDefinition& buffer);
+                                                        BufferDefinition& buffer,
+                                                        uint32_t array_index = 0);
 
 uint32_t EmitMemoryElementInBounds(EmitterState& state, const MemoryResourceAccess& access,
                                    uint32_t index);
+// EmitMemoryElementInBounds, or true for storage buffers the device bounds-checks; only
+// loads and plain stores may use it.
+uint32_t EmitStorageElementInBounds(EmitterState& state, const MemoryResourceAccess& access,
+                                    uint32_t index);
 
 uint32_t EmitMemoryElementPointer(EmitterState& state, const MemoryResourceAccess& access,
                                   uint32_t index);
@@ -429,17 +444,23 @@ uint32_t EmitMemoryElementPointer(EmitterState& state, const MemoryResourceAcces
 uint32_t EmitStorageBufferElementPointer(EmitterState& state, const MemoryResourceAccess& access,
                                          uint32_t index, uint32_t pointer_type);
 
-uint32_t EmitTBufferBitcastU32ToI32(EmitterState& state, uint32_t value);
-
 inline constexpr auto EmitTBufferSelectF32 =
     EmitNative<spv::OpSelect, IR::Type::F32, uint32_t, uint32_t, uint32_t>;
 
 bool IsSignedFormatComponent(Format::ComponentType type);
 
-uint32_t EmitUFloatToF32Bits(EmitterState& state, uint32_t raw, uint32_t bits);
-
 uint32_t NormalizeFormatComponent(EmitterState& state, const Format::BufferFormatInfo& info,
                                   uint32_t component, uint32_t raw);
+
+enum class UnormRounding { RoundEven, HalfUp, Truncate };
+
+uint32_t EncodeFormattedStoreComponent(EmitterState& state, const Format::BufferFormatInfo& info,
+                                       uint32_t component, uint32_t data, uint32_t data_bits,
+                                       UnormRounding rounding = UnormRounding::RoundEven);
+
+uint32_t EncodePackedColorComponent(EmitterState& state, const Format::BufferFormatInfo& info,
+                                    uint32_t component, uint32_t data, uint32_t data_bits,
+                                    UnormRounding rounding = UnormRounding::RoundEven);
 
 spv::Op SpirvAtomicOpcode(IR::ValueOpcode opcode);
 
@@ -461,16 +482,10 @@ inline constexpr auto EmitSelectValueU32 =
 
 uint32_t EmitAndConstant(EmitterState& state, uint32_t value, uint32_t mask);
 
-uint32_t EmitShiftRightConstant(EmitterState& state, uint32_t value, uint32_t shift);
-
 inline constexpr auto EmitOrU32 = EmitNative<spv::OpBitwiseOr, IR::Type::U32, uint32_t, uint32_t>;
 
 uint32_t EmitCompareU32Constant(EmitterState& state, spv::Op opcode, uint32_t value,
                                 uint32_t constant);
-
-uint32_t EmitSubConstantMinusU32(EmitterState& state, uint32_t constant, uint32_t value);
-
-uint32_t EmitF32ToF16RtzBits(EmitterState& state, uint32_t f32);
 
 inline constexpr auto EmitBitcastF32ToU32 = EmitNative<spv::OpBitcast, IR::Type::U32, uint32_t>;
 
@@ -488,17 +503,10 @@ inline constexpr auto EmitLogicalNotBool = EmitNative<spv::OpLogicalNot, IR::Typ
 
 F32Class EmitClassifyF32Bits(EmitterState& state, uint32_t bits);
 
-F32Class EmitClassifyF32(EmitterState& state, uint32_t value);
-
-uint32_t EmitClassMaskBitMatch(EmitterState& state, uint32_t mask, uint32_t bit,
-                               uint32_t class_match);
-
 uint32_t EmitClassMaskF32(EmitterState& state, uint32_t value, uint32_t mask);
 uint32_t EmitClassMaskF16(EmitterState& state, uint32_t bits, uint32_t mask);
 
 uint32_t EmitMinMaxF32Value(EmitterState& state, uint32_t lhs, uint32_t rhs, bool max_value);
-
-inline constexpr auto EmitTruncF32Value = EmitGlsl<GLSLstd450Trunc, IR::Type::F32, uint32_t>;
 
 uint32_t EmitFlushF32DenormToSignedZero(EmitterState& state, uint32_t value);
 
@@ -509,11 +517,20 @@ inline constexpr auto EmitFNegateValue = EmitNative<spv::OpFNegate, IR::Type::F3
 inline constexpr auto EmitFAbsValue = EmitGlsl<GLSLstd450FAbs, IR::Type::F32, uint32_t>;
 
 uint32_t EmitF16BitsToF32(EmitterState& state, uint32_t bits);
+uint32_t EmitF32BitsToF16RtzBits(EmitterState& state, uint32_t bits);
 
 void EmitProgram(EmitterState& state);
 
 void DefineGetBdaPointer(EmitterState& state);
+void DefineIndirectBufferLoads(ValueEmitContext& ctx);
 void DefineBvhIntersect(EmitterState& state);
+void DefineTrinityBvhIntersect(EmitterState& state);
+uint32_t BvhNode(EmitterState& state, uint32_t address);
+uint32_t BvhNodeWord(EmitterState& state, uint32_t block, uint32_t word);
+uint32_t EmitBvhTriangle(EmitterState& state, const std::array<std::array<uint32_t, 3>, 3>& positions,
+                         std::array<uint32_t, 3> origin, std::array<uint32_t, 3> direction,
+                         uint32_t remap, uint32_t triangle_id, uint32_t bary);
+void DefineTrinityFunctions(EmitterState& state);
 uint32_t GetBdaPointer(EmitterState& state, uint32_t address);
 
 // These templates accept local lambdas from several emitter translation units.
@@ -558,6 +575,10 @@ auto EmitIndexSwitch(EmitterState& state, uint32_t index, uint32_t count,
 
 template <typename Fn>
 void EmitIfCondition(EmitterState& state, uint32_t condition, Fn&& fn) {
+	if (condition == ConstantBool(state, true)) {
+		fn();
+		return;
+	}
 	const auto then_label  = state.builder.AllocateId();
 	const auto merge_label = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpSelectionMerge, merge_label, spv::SelectionControlMaskNone);
@@ -571,6 +592,7 @@ void EmitIfCondition(EmitterState& state, uint32_t condition, Fn&& fn) {
 template <typename Fn>
 uint32_t EmitValueOrDefaultIfCondition(EmitterState& state, uint32_t condition, uint32_t type,
                                        uint32_t default_value, Fn&& fn) {
+	if (condition == ConstantBool(state, true)) return fn();
 	const auto then_label  = state.builder.AllocateId();
 	const auto header     = state.current_label;
 	const auto merge_label = state.builder.AllocateId();

@@ -5,15 +5,20 @@
 #include "common/archive.h"
 #include "common/file.h"
 #include "ArchiveTestFixture.h"
+#include "FileTimeTestUtil.h"
 #include "common/logging/log.h"
+#include "common/singleton.h"
 #include "common/subsystems.h"
 #include "common/threads.h"
 #include "common/stringUtils.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "kernel/eventQueue.h"
 #include "kernel/fileSystem.h"
+#include "kernel/pthread.h"
 #include "libs/errno.h"
 #include "libs/network.h"
+#include "loader/additionalContent.h"
+#include "loader/runtimeLinker.h"
 #include "loader/symbolDatabase.h"
 
 #include <algorithm>
@@ -29,6 +34,7 @@
 #include <future>
 #include <limits>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -44,6 +50,10 @@
 
 namespace Libs::LibKernelApr {
 void InitLibKernel_1_Apr(Loader::SymbolDatabase *symbols);
+}
+
+namespace Libs::LibKernel {
+void KernelDispatchPendingSignalForCurrentThread();
 }
 
 namespace Libs {
@@ -69,6 +79,14 @@ namespace Libs::LibNpCommerce {
 void InitNet_1_NpCommerce(Loader::SymbolDatabase *symbols);
 }
 
+namespace Libs::LibNpAuth {
+void InitNet_1_NpAuth(Loader::SymbolDatabase *symbols);
+}
+
+namespace Libs::LibNpEntitlementAccess {
+void InitNet_1_NpEntitlementAccess(Loader::SymbolDatabase *symbols);
+}
+
 namespace {
 
 namespace FileSystem = Libs::LibKernel::FileSystem;
@@ -78,6 +96,186 @@ void Check(bool value, const char *text) {
     std::fprintf(stderr, "KernelFileSystemTests: failed: %s\n", text);
     std::abort();
   }
+}
+
+template <typename Predicate>
+void WaitForMutexTest(Predicate ready) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!ready()) {
+    Check(std::chrono::steady_clock::now() < deadline, "mutex waiter made progress");
+    std::this_thread::yield();
+  }
+}
+
+void TestStaticRwlockDestroy() {
+  using namespace Libs::LibKernel;
+  PthreadRwlock rwlock = nullptr;
+  Check(PthreadRwlockDestroy(nullptr) == KERNEL_ERROR_EINVAL &&
+            PthreadRwlockDestroy(&rwlock) == OK && rwlock == nullptr,
+        "destroy an untouched static rwlock without allocating it");
+  Check(PthreadRwlockRdlock(&rwlock) == OK && PthreadRwlockUnlock(&rwlock) == OK &&
+            PthreadRwlockDestroy(&rwlock) == OK,
+        "static rwlock remains usable after destroying its untouched initializer");
+}
+
+struct MutexWaiter {
+  Libs::LibKernel::PthreadMutex *mutex;
+  Libs::LibKernel::KernelUseconds timeout = 0;
+  bool cancel = false;
+  Libs::LibKernel::Pthread thread = nullptr;
+  std::vector<uint8_t> stack = std::vector<uint8_t>(1024 * 1024);
+  std::atomic<unsigned> parked{0}, resume{0};
+  std::atomic<bool> acquired{false}, release{false}, finished{false};
+  int result = 0;
+};
+
+thread_local MutexWaiter *current_mutex_waiter = nullptr;
+
+void KYTY_SYSV_ABI ParkMutexWaiter(int, void *) {
+  auto &waiter = *current_mutex_waiter;
+  const auto ticket = waiter.parked.fetch_add(1) + 1;
+  WaitForMutexTest([&] { return waiter.resume.load() >= ticket; });
+}
+
+void *KYTY_SYSV_ABI RunMutexWaiter(void *arg) {
+  using namespace Libs::LibKernel;
+  auto &waiter = *static_cast<MutexWaiter *>(arg);
+  current_mutex_waiter = &waiter;
+  waiter.result = waiter.timeout == 0 ? PthreadMutexLock(waiter.mutex)
+                                      : PthreadMutexTimedlock(waiter.mutex, waiter.timeout);
+  if (waiter.result == OK) {
+    waiter.acquired = true;
+    WaitForMutexTest([&] { return waiter.release.load(); });
+    Check(PthreadMutexUnlock(waiter.mutex) == OK, "waiter unlocks owned mutex");
+  }
+  waiter.finished = true;
+  if (waiter.cancel) {
+    PthreadTestcancel();
+    Check(false, "deferred mutex waiter cancellation remains pending");
+  }
+  return nullptr;
+}
+
+void QueueMutexWaiter(MutexWaiter &waiter) {
+  using namespace Libs::LibKernel;
+  PthreadAttr attr = nullptr;
+  Check(PthreadAttrInit(&attr) == OK &&
+            PthreadAttrSetstack(&attr, waiter.stack.data(), waiter.stack.size()) == OK &&
+            PthreadCreate(&waiter.thread, &attr, RunMutexWaiter, &waiter, "MutexTest") == OK &&
+            PthreadAttrDestroy(&attr) == OK,
+        "create guest mutex waiter");
+  // Pending guest signals are dispatched inside the contended lock, after enqueueing.
+  // Holding that callback proves queue order without letting the waiter acquire.
+  PthreadQueuePendingSignal(waiter.thread, 30);
+  WaitForMutexTest([&] { return waiter.parked.load() == 1; });
+}
+
+void TestMutexHandoff() {
+  using namespace Libs::LibKernel;
+  Common::Singleton<Loader::RuntimeLinker>::Instance();
+  Initialize();
+  PthreadInitSelfForMainThread();
+  Loader::SymbolDatabase symbols;
+  Libs::InitLibKernel_1(&symbols);
+  const auto *install_symbol = symbols.FindByNid("WkwEd3N7w0Y", Loader::SymbolType::Func);
+  const auto *remove_symbol = symbols.FindByNid("Qhv5ARAoOEc", Loader::SymbolType::Func);
+  Check(install_symbol != nullptr && remove_symbol != nullptr, "mutex signal exports resolve");
+  const auto install = reinterpret_cast<int(KYTY_SYSV_ABI *)(int, void *)>(install_symbol->vaddr);
+  const auto remove = reinterpret_cast<int(KYTY_SYSV_ABI *)(int)>(remove_symbol->vaddr);
+  Check(install(30, reinterpret_cast<void *>(ParkMutexWaiter)) == OK, "install mutex test signal");
+
+  PthreadMutexattr attr = nullptr;
+  Check(PthreadMutexattrInit(&attr) == OK && PthreadMutexattrSettype(&attr, 2) == OK,
+        "create recursive mutex attributes");
+  for (unsigned timed = 0; timed < 3; ++timed) {
+    PthreadMutex mutex = nullptr;
+    Check(PthreadMutexInit(&mutex, &attr, "MutexHandoff") == OK &&
+              PthreadMutexLock(&mutex) == OK && PthreadMutexLock(&mutex) == OK,
+          "lock recursive mutex twice");
+    std::array<MutexWaiter, 3> waiters{{{&mutex}, {&mutex}, {&mutex}}};
+    waiters[timed].timeout = 5000;
+    for (auto &waiter : waiters) {
+      QueueMutexWaiter(waiter);
+    }
+    waiters[timed].resume = 1;
+    Check(PthreadJoin(waiters[timed].thread, nullptr) == OK &&
+              waiters[timed].result == KERNEL_ERROR_ETIMEDOUT,
+          "timed waiter unlinks from queue head, middle and tail");
+    Check(PthreadMutexUnlock(&mutex) == OK && PthreadMutexTrylock(&mutex) == OK &&
+              PthreadMutexUnlock(&mutex) == OK,
+          "partial recursive unlock retains ownership");
+    Check(PthreadMutexUnlock(&mutex) == OK &&
+              PthreadMutexTrylock(&mutex) == KERNEL_ERROR_EBUSY,
+          "unlock reserves ownership before queued waiter runs");
+    for (auto &waiter : waiters) {
+      if (&waiter == &waiters[timed]) {
+        continue;
+      }
+      waiter.resume = 1;
+      WaitForMutexTest([&] { return waiter.acquired.load(); });
+      Check(PthreadMutexTrylock(&mutex) == KERNEL_ERROR_EBUSY, "FIFO waiter owns mutex");
+      waiter.release = true;
+      WaitForMutexTest([&] { return waiter.finished.load(); });
+      Check(PthreadJoin(waiter.thread, nullptr) == OK && waiter.result == OK,
+            "FIFO waiter completes");
+    }
+    Check(PthreadMutexLock(&mutex) == OK && PthreadMutexUnlock(&mutex) == OK &&
+              PthreadMutexDestroy(&mutex) == OK,
+          "mutex remains usable after timed waiter removal");
+  }
+  Check(PthreadMutexattrDestroy(&attr) == OK, "destroy recursive mutex attributes");
+
+  PthreadMutex mutex = nullptr;
+  Check(PthreadMutexInit(&mutex, nullptr, "MutexCancel") == OK &&
+            PthreadMutexLock(&mutex) == OK &&
+            PthreadMutexTimedlock(&mutex, 5000) == KERNEL_ERROR_EDEADLK,
+        "nonrecursive self timed lock reports deadlock");
+  MutexWaiter waiter{&mutex};
+  waiter.cancel = true;
+  QueueMutexWaiter(waiter);
+  Check(PthreadCancel(waiter.thread) == OK, "cancel queued mutex waiter");
+  PthreadQueuePendingSignal(waiter.thread, 30);
+  waiter.resume = 1;
+  WaitForMutexTest([&] { return waiter.parked.load() == 2; });
+  Check(PthreadMutexUnlock(&mutex) == OK &&
+            PthreadMutexTrylock(&mutex) == KERNEL_ERROR_EBUSY,
+        "canceled waiter retains its queue position");
+  waiter.release = true;
+  waiter.resume = 2;
+  void *result = nullptr;
+  Check(PthreadJoin(waiter.thread, &result) == OK &&
+            result == reinterpret_cast<void *>(-1) && waiter.acquired && waiter.finished,
+        "mutex lock defers cancellation until explicit cancellation point");
+  Check(PthreadMutexLock(&mutex) == OK && PthreadMutexUnlock(&mutex) == OK &&
+            PthreadMutexDestroy(&mutex) == OK && remove(30) == OK,
+        "mutex remains usable after waiter cancellation");
+}
+
+int dispatched_signals = 0;
+
+void KYTY_SYSV_ABI CountDispatchedSignal(int, void *) { dispatched_signals++; }
+
+void TestPendingSignalDispatch() {
+  using namespace Libs::LibKernel;
+  Loader::SymbolDatabase symbols;
+  Libs::InitLibKernel_1(&symbols);
+  const auto *install_symbol = symbols.FindByNid("WkwEd3N7w0Y", Loader::SymbolType::Func);
+  const auto *remove_symbol = symbols.FindByNid("Qhv5ARAoOEc", Loader::SymbolType::Func);
+  Check(install_symbol != nullptr && remove_symbol != nullptr, "signal handler exports resolve");
+  const auto install = reinterpret_cast<int(KYTY_SYSV_ABI *)(int, void *)>(install_symbol->vaddr);
+  const auto remove = reinterpret_cast<int(KYTY_SYSV_ABI *)(int)>(remove_symbol->vaddr);
+  Check(install(30, reinterpret_cast<void *>(CountDispatchedSignal)) == OK,
+        "install signal handler");
+
+  PthreadQueuePendingSignal(PthreadSelf(), 30);
+  const auto start = std::chrono::steady_clock::now();
+  for (int call = 0; call < 1000000; ++call) {
+    KernelDispatchPendingSignalForCurrentThread();
+  }
+  Check(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(50) &&
+            dispatched_signals == 1,
+        "a pending signal dispatches once and idle dispatches skip the signal scan");
+  Check(remove(30) == OK, "remove signal handler");
 }
 
 class TempDirectory {
@@ -103,6 +301,48 @@ public:
 private:
   std::filesystem::path m_path;
 };
+
+void CheckOpenFileCoherence(const std::filesystem::path& root) {
+  const auto path = root / "open-file-coherence.dat";
+  Common::File writer;
+  Check(writer.Create(path), "create shared file fixture");
+  uint32_t count = 0;
+  writer.Write("abcdef", 6, &count);
+  Check(count == 6 && Common::File::Size(path) == 6,
+        "created file writes are visible before flush or close");
+
+  Common::File reader(path, Common::File::Mode::Read);
+  Common::File update(path, Common::File::Mode::Write);
+  Check(!reader.IsInvalid() && !update.IsInvalid(), "open independent file handles");
+  std::array<char, 2> bytes {};
+  reader.Read(bytes.data(), 1, &count);
+  Check(count == 1 && bytes[0] == 'a' && update.Seek(1),
+        "prime sequential read and position independent writer");
+  update.Write("XY", 2, &count);
+  Check(count == 2, "overwrite bytes through write handle");
+  reader.Read(bytes.data(), bytes.size(), &count);
+  Check(count == bytes.size() && std::memcmp(bytes.data(), "XY", bytes.size()) == 0,
+        "sequential reader observes another handle's writes without seeking");
+
+  Common::File read_write(path, Common::File::Mode::ReadWrite);
+  Check(!read_write.IsInvalid() && read_write.Seek(3), "open read-write handle");
+  read_write.Write("Z", 1, &count);
+  Check(count == 1, "overwrite through read-write handle");
+  reader.Read(bytes.data(), 1, &count);
+  Check(count == 1 && bytes[0] == 'Z', "read-write handle changes are immediately visible");
+
+  writer.Write("g", 1, &count);
+  Check(count == 1 && writer.Tell() == 7, "extend through the original writer");
+  std::error_code error;
+  std::filesystem::resize_file(path, 2, error);
+  Check(!error && writer.Tell() == 7 && Common::File::Size(path) == 2,
+        "path resize preserves an open writer's position");
+  writer.Close();
+  update.Close();
+  read_write.Close();
+  Check(Common::File::Size(path) == 2,
+        "closing existing writers cannot undo a path truncation");
+}
 
 void CheckSaveRename(const std::filesystem::path &root,
                      std::string_view payload) {
@@ -132,6 +372,7 @@ void CheckSaveRename(const std::filesystem::path &root,
 }
 
 void TestRandomDevices() {
+  namespace Net = Libs::Network::Net;
   for (const auto* path : {"/dev/urandom", "/dev/random"}) {
     const int fd = FileSystem::KernelOpen(path, 0, 0);
     FileSystem::FileStat stat {};
@@ -141,7 +382,18 @@ void TestRandomDevices() {
     std::array<uint8_t, 32> entropy {};
     Check(FileSystem::KernelRead(fd, entropy.data(), entropy.size()) == entropy.size(),
           "character device supplies requested entropy");
+    // OpenSSL RAND_poll selects the device before reading it; a null timeout must not block.
+    std::array<uint64_t, 16> readable {};
+    readable[fd / 64] = uint64_t {1} << (fd % 64);
+    auto writable = readable;
+    const auto requested = readable;
+    Check(Net::Select(fd + 1, readable.data(), writable.data(), nullptr, nullptr) == 2 &&
+              readable == requested && writable == requested,
+          "select reports an entropy source ready at once");
     Check(FileSystem::KernelClose(fd) == OK, "close entropy source");
+    Check(Net::Select(fd + 1, readable.data(), nullptr, nullptr, nullptr) == -1 &&
+              *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EBADF,
+          "select rejects a closed descriptor");
   }
 }
 
@@ -188,6 +440,9 @@ void TestSysmoduleReferences() {
   const auto unload = resolve("eR2bZFAAU0Q");
   const auto is_loaded = resolve("fMP5NHUOaMk");
   constexpr int unloaded = static_cast<int>(0x805a1001u);
+  Check(load(0x115) == Libs::LibKernel::KERNEL_ERROR_ENOENT && is_loaded(0x115) == unloaded &&
+            unload(0x115) == unloaded,
+        "missing packaged NpCppWebApi fails without recording a loaded module");
   Check(load(0x113) == OK && is_loaded(0xb4) == unloaded,
         "loading entitlement access does not mark AppContent loaded");
   Check(unload(0x113) == OK, "release independent module reference");
@@ -208,6 +463,9 @@ void TestSysmoduleReferences() {
       reinterpret_cast<int (KYTY_SYSV_ABI *)(uint16_t, int, int, int, int*)>(
           internal_symbol->vaddr);
   int result = -1;
+  Check(internal_load(0x115, 0, 0, 0, &result) == Libs::LibKernel::KERNEL_ERROR_ENOENT &&
+            result == Libs::LibKernel::KERNEL_ERROR_ENOENT && is_loaded(0x115) == unloaded,
+        "internal module loading propagates missing native module failure");
   Check(internal_load(0xb4, 0, 0, 0, &result) == OK && result == OK &&
             is_loaded(0xb4) == OK && unload(0xb4) == OK && is_loaded(0xb4) == unloaded,
         "internal and public module operations share load state");
@@ -263,6 +521,177 @@ void TestSystemServiceEntitlementEvents() {
         "empty event queue reports NO_EVENT");
 }
 
+void TestAddContent(const std::filesystem::path& root) {
+  const auto folder = root / "add-ons";
+  const auto write = [](const std::filesystem::path& path, const std::string& text) {
+    std::filesystem::create_directories(path.parent_path());
+    Common::File file;
+    Check(file.Create(path), "create add-on fixture");
+    uint32_t written = 0;
+    file.Write(text.data(), static_cast<uint32_t>(text.size()), &written);
+    Check(written == text.size(), "write add-on fixture");
+  };
+  const auto label = [](unsigned index) {
+    std::array<char, 17> value {};
+    std::snprintf(value.data(), value.size(), "DLC%013u", index);
+    return std::string(value.data());
+  };
+  const auto param = [](const std::string& title, const std::string& entitlement) {
+    return "{\"contentId\":\"UP0001-" + title + "_00-" + entitlement + "\"}";
+  };
+  write(folder / "foreign" / "sce_sys" / "param.json", param("PPSA22222", label(0)));
+  write(folder / "foreign-label" / "sce_sys" / "param.json",
+        param("PPSA22222", "PPSA11111XXXXXXX"));
+  write(folder / "outside" / "param.json", param("PPSA11111", label(66)));
+  write(folder / "invalid" / "sce_sys" / "param.json", "{\"contentId\":17}");
+  write(folder / "malformed" / "sce_sys" / "param.json", "{broken");
+  write(folder / "short-id" / "sce_sys" / "param.json", param("PPSA11111", "SHORT"));
+  write(folder / "base-game" / "sce_sys" / "param.json",
+        "{\"contentId\":\"UP0001-PPSA11111_00-BASE000000000000\",\"applicationCategoryType\":0}");
+  for (unsigned i = 0; i < 65; ++i) {
+    write(folder / label(i) / "sce_sys" / "param.json", param("PPSA11111", label(i)));
+  }
+  write(folder / "duplicate" / "sce_sys" / "param.json", param("PPSA11111", label(1)));
+  write(folder / label(0) / "payload.txt", "DLC payload");
+
+  Loader::AddContentLoad(folder, {}, "");
+  Check(Loader::AddContentGetAll().empty(), "unknown title never exposes unrelated add-ons");
+  Loader::AddContentLoad(folder, {}, "PPSA11111");
+  Check(Loader::AddContentGetAll().size() == 65,
+        "scan filters title before deduplication and ignores invalid/non-package metadata");
+
+  struct Label { char data[17]; char padding[3]; };
+  struct Info { Label label; uint32_t package_type; uint32_t download_status; };
+  struct MountPoint { char data[16]; };
+  static_assert(sizeof(Label) == 20 && sizeof(Info) == 28 && sizeof(MountPoint) == 16);
+  Loader::SymbolDatabase symbols;
+  Libs::InitAppContent_1(&symbols);
+  Libs::LibNpEntitlementAccess::InitNet_1_NpEntitlementAccess(&symbols);
+  const auto resolve = [&](const char* nid) {
+    const auto* symbol = symbols.FindByNid(nid, Loader::SymbolType::Func);
+    Check(symbol != nullptr, "add-on export resolves");
+    return symbol->vaddr;
+  };
+  const auto initialize = reinterpret_cast<int (KYTY_SYSV_ABI *)(const void*, void*)>(
+      resolve("jO8DM8oyego"));
+  const auto list = reinterpret_cast<int (KYTY_SYSV_ABI *)(uint32_t, Info*, uint32_t, uint32_t*)>(
+      resolve("TFyU+KFBv54"));
+  const auto get = reinterpret_cast<int (KYTY_SYSV_ABI *)(uint32_t, const Label*, Info*)>(
+      resolve("xddD23+8TfQ"));
+  const auto mount = reinterpret_cast<int (KYTY_SYSV_ABI *)(uint32_t, const Label*, MountPoint*)>(
+      resolve("VANhIWcqYak"));
+  const auto unmount = reinterpret_cast<int (KYTY_SYSV_ABI *)(const MountPoint*)>(
+      resolve("3rHWaV-1KC4"));
+  std::array<char, 32> init {}, boot {};
+  Check(initialize(init.data(), boot.data()) == OK, "initialize add-on entitlements");
+  uint32_t count = 0;
+  Check(list(0, nullptr, 0, &count) == OK && count == 68,
+        "query existing and detected add-ons together");
+  Check(list(0, nullptr, 1, &count) == OK && count == 68,
+        "count-only query ignores output capacity");
+  Check(list(1, nullptr, 0, &count) == OK && count == 68,
+        "existing service-label handling remains unchanged");
+  std::array<Info, 5> info {};
+  info[4].package_type = 99;
+  Check(list(0, info.data(), 4, &count) == OK && count == 68 && info[4].package_type == 99,
+        "truncated entitlement list reports total and respects output capacity");
+  constexpr std::array<const char*, 3> existing {"85y-je", "5d5c48", "_mtqu6"};
+  Info single {};
+  for (size_t i = 0; i < existing.size(); ++i) {
+    Check(std::strcmp(info[i].label.data, existing[i]) == 0 &&
+              info[i].package_type == 3 && info[i].download_status == 4 &&
+              get(1, &info[i].label, &single) == OK &&
+              std::memcmp(&single, &info[i], sizeof(single)) == 0,
+          "GTA V entitlements retain their order, metadata, and individual lookups");
+  }
+  Check(std::strcmp(info[3].label.data, label(0).c_str()) == 0 &&
+            info[3].package_type == 2 && info[3].download_status == 4 &&
+            get(0, &info[3].label, &single) == OK &&
+            std::memcmp(&single, &info[3], sizeof(single)) == 0,
+        "detected add-ons follow existing entitlements with matching individual lookups");
+  Label missing {};
+  std::memcpy(missing.data, "MISSING000000000", 16);
+  MountPoint point {};
+  Check(get(0, &missing, &single) == static_cast<int>(0x817d0007u) &&
+            mount(0, &missing, &point) == static_cast<int>(0x80d90005u),
+        "unknown add-on returns entitlement and mount errors");
+  Check(mount(0, nullptr, &point) == static_cast<int>(0x80d90002u) &&
+            list(0, nullptr, 0, nullptr) == static_cast<int>(0x817d0002u),
+        "null add-on parameters return parameter errors");
+  Check(mount(0, &info[3].label, &point) == OK &&
+            !std::string_view(point.data).ends_with('/'),
+        "mount owned add-on without trailing slash");
+  MountPoint repeated {};
+  Check(mount(0, &info[3].label, &repeated) == static_cast<int>(0x80d90003u),
+        "duplicate mount reports BUSY");
+  const std::string mounted_file = std::string(point.data) + "/payload.txt";
+  const int fd = FileSystem::KernelOpen(mounted_file.c_str(), 0, 0);
+  std::array<char, 11> payload {};
+  Check(fd >= 3 && FileSystem::KernelRead(fd, payload.data(), payload.size()) == payload.size() &&
+            std::string_view(payload.data(), payload.size()) == "DLC payload" &&
+            FileSystem::KernelClose(fd) == OK,
+        "guest reads the original mount after a rejected duplicate mount");
+  Check(unmount(&point) == OK && FileSystem::GetRealFilename(mounted_file).empty() &&
+            unmount(&point) == static_cast<int>(0x80d90004u),
+        "unmount removes mapping and repeated unmount reports NOT_MOUNTED");
+  std::array<MountPoint, 64> mounts {};
+  for (unsigned i = 0; i < mounts.size(); ++i) {
+    Label entitlement {};
+    std::memcpy(entitlement.data, label(i).c_str(), 17);
+    Check(mount(0, &entitlement, &mounts[i]) == OK, "mount up to the simultaneous mount limit");
+  }
+  Label extra {};
+  std::memcpy(extra.data, label(64).c_str(), 17);
+  Check(mount(0, &extra, &point) == static_cast<int>(0x80d90006u),
+        "65th simultaneous mount returns MOUNT_FULL");
+  Check(unmount(&mounts[0]) == OK && mount(0, &extra, &point) == OK,
+        "freed mount slot can be reused");
+  Check(unmount(&point) == OK, "unmount reused slot");
+  for (size_t i = 1; i < mounts.size(); ++i) {
+    Check(unmount(&mounts[i]) == OK, "unmount fixture");
+  }
+
+  const auto user_dir = root / "user-add-on";
+  write(user_dir / "payload.txt", "user payload");
+  const auto user_arg = label(0) + "=" + Common::PathToString(user_dir);
+  Check(!Common::ParseAddContent("SHORT") && !Common::ParseAddContent("lowercase0000000") &&
+            !Common::ParseAddContent("LICENSE0000000001") &&
+            !Common::ParseAddContent(user_arg + "/missing"),
+        "user add-on needs a 16-character A-Z/0-9 label and an existing folder");
+  const auto licensed = Common::ParseAddContent("LICENSE000000001");
+  const auto replaced = Common::ParseAddContent(user_arg);
+  const auto duplicate =
+      Common::ParseAddContent("LICENSE000000001=" + Common::PathToString(user_dir));
+  Check(licensed && replaced && duplicate, "user add-ons parse with and without extra data");
+  Loader::AddContentLoad(folder, {*duplicate, *licensed, *replaced}, "PPSA11111");
+  Check(list(0, nullptr, 0, &count) == OK && count == 69,
+        "user add-ons replace detected labels and append new ones");
+  Label user {};
+  std::memcpy(user.data, "LICENSE000000001", 17);
+  Check(get(0, &user, &single) == OK && single.package_type == 3 && single.download_status == 0 &&
+            mount(0, &user, &point) == static_cast<int>(0x80d90005u),
+        "last entry of a label wins and a license-only add-on has no extra data to mount");
+  Check(mount(0, &info[3].label, &point) == OK, "user add-on mounts its extra data");
+  const std::string user_file = std::string(point.data) + "/payload.txt";
+  const int user_fd = FileSystem::KernelOpen(user_file.c_str(), 0, 0);
+  std::array<char, 12> user_payload {};
+  Check(user_fd >= 3 &&
+            FileSystem::KernelRead(user_fd, user_payload.data(), user_payload.size()) ==
+                user_payload.size() &&
+            std::string_view(user_payload.data(), user_payload.size()) == "user payload" &&
+            FileSystem::KernelClose(user_fd) == OK && unmount(&point) == OK,
+        "user add-on replaces the detected folder of its label");
+
+  Loader::AddContentLoad(folder / "missing", {}, "PPSA11111");
+  Check(list(0, info.data(), 4, &count) == OK && count == 3,
+        "missing add-ons folder retains GTA V entitlements");
+  for (size_t i = 0; i < existing.size(); ++i) {
+    Check(std::strcmp(info[i].label.data, existing[i]) == 0 &&
+              get(0, &info[i].label, &single) == OK,
+          "GTA V entitlement lookup works without detected add-ons");
+  }
+}
+
 void TestSaveOpenVisibility() {
   constexpr char Path[] = "/savedata0/visible-save.dat";
   constexpr char Payload[] = "saved progress";
@@ -288,6 +717,188 @@ void TestSaveOpenVisibility() {
   Check(FileSystem::KernelStat(Path, &stat) == OK && stat.st_size == 0,
         "save truncation is visible before close");
   Check(FileSystem::KernelClose(truncated) == OK, "close truncated save file");
+  Check(FileSystem::KernelUnlink("/savedata0") == Libs::LibKernel::KERNEL_ERROR_EPERM,
+        "unlink refuses a directory");
+  Check(FileSystem::KernelMkdir(Path, 0777) == Libs::LibKernel::KERNEL_ERROR_EEXIST &&
+            FileSystem::KernelMkdir("/savedata0", 0777) == Libs::LibKernel::KERNEL_ERROR_EEXIST,
+        "mkdir reports an existing file or directory");
+}
+
+bool HasTestWriteTime(const FileSystem::FileStat &stat) {
+  return stat.st_mtim.tv_sec == 1700000000 && stat.st_mtim.tv_nsec == 123456700 &&
+         stat.st_birthtim.tv_sec == 1700000000 && stat.st_birthtim.tv_nsec == 123456700 &&
+         stat.st_atim.tv_sec > 1700000000;
+}
+
+void TestStatTimes() {
+  constexpr char Path[] = "/savedata0/stat-times.dat";
+  const int fd = FileSystem::KernelOpen(Path, 0x602, 0777);
+  Check(fd >= 3, "create stat time fixture");
+  SetUnixWriteTime(FileSystem::GetRealFilename(Path), 1700000000123456700);
+  FileSystem::FileStat by_path {};
+  FileSystem::FileStat by_fd {};
+  Check(FileSystem::KernelStat(Path, &by_path) == OK && FileSystem::KernelFstat(fd, &by_fd) == OK &&
+            HasTestWriteTime(by_path) && HasTestWriteTime(by_fd),
+        "stat and fstat report exact host file times");
+  Check(FileSystem::KernelClose(fd) == OK, "close stat time fixture");
+}
+
+void TestFsync() {
+  Loader::SymbolDatabase symbols;
+  Libs::InitLibKernel_1(&symbols);
+  const auto* symbol = symbols.Find(
+      {"juWbTNM+8hw", "Posix", 1, "libkernel", 1, 1, Loader::SymbolType::Func});
+  Check(symbol != nullptr, "POSIX fsync export resolves");
+  const auto fsync = reinterpret_cast<int (KYTY_SYSV_ABI *)(int)>(symbol->vaddr);
+  Check(fsync(std::numeric_limits<int>::min()) == -1 &&
+            *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EBADF,
+        "invalid fsync descriptor reports POSIX EBADF");
+
+  constexpr char Path[] = "/savedata0/fsync.dat";
+  const int fd = FileSystem::KernelOpen(Path, 0x602, 0777);
+  Check(fd >= 3 && FileSystem::KernelWrite(fd, "save", 4) == 4 && fsync(fd) == OK &&
+            FileSystem::KernelLseek(fd, 0, 1) == 4,
+        "fsync flushes a writable file without changing its offset");
+  Check(FileSystem::KernelClose(fd) == OK && fsync(fd) == -1 &&
+            *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EBADF,
+        "closed fsync descriptor reports POSIX EBADF");
+
+  for (const auto& [path, flags] : {std::pair {"/savedata0", 0x00020000}, std::pair {Path, 0},
+                                    std::pair {"/dev/urandom", 0x2}}) {
+    const int descriptor = FileSystem::KernelOpen(path, flags, 0);
+    Check(descriptor >= 3 && fsync(descriptor) == OK && FileSystem::KernelClose(descriptor) == OK,
+          "fsync succeeds on a directory, a read-only file and a writable device");
+  }
+}
+
+void TestSaveTruncate() {
+  namespace Kernel = Libs::LibKernel;
+  Loader::SymbolDatabase symbols;
+  Libs::InitLibKernel_1(&symbols);
+  const auto* symbol = symbols.Find(
+      {"WlyEA-sLDf0", "libkernel", 1, "libkernel", 1, 1, Loader::SymbolType::Func});
+  Check(symbol != nullptr, "sceKernelTruncate export resolves");
+  const auto truncate =
+      reinterpret_cast<int (KYTY_SYSV_ABI *)(const char*, int64_t)>(symbol->vaddr);
+  constexpr char Path[] = "/savedata0/truncate-save.dat";
+  constexpr char Payload[] = "profile data";
+  const int fd = FileSystem::KernelOpen(Path, 0x602, 0777);
+  Check(fd >= 3 && FileSystem::KernelWrite(fd, Payload, sizeof(Payload) - 1) ==
+                       sizeof(Payload) - 1,
+        "populate path truncation fixture");
+  FileSystem::FileStat stat {};
+  std::array<char, 8> bytes {};
+  Check(truncate(Path, 3) == OK &&
+            FileSystem::KernelFstat(fd, &stat) == OK && stat.st_size == 3 &&
+            FileSystem::KernelLseek(fd, 0, 1) == sizeof(Payload) - 1 &&
+            FileSystem::KernelPread(fd, bytes.data(), bytes.size(), 0) == 3 &&
+            std::memcmp(bytes.data(), Payload, 3) == 0,
+        "path truncate discards the tail without moving an open descriptor");
+  bytes.fill('x');
+  Check(truncate(Path, bytes.size()) == OK &&
+            FileSystem::KernelFstat(fd, &stat) == OK && stat.st_size == bytes.size() &&
+            FileSystem::KernelPread(fd, bytes.data(), bytes.size(), 0) == bytes.size() &&
+            std::memcmp(bytes.data(), Payload, 3) == 0 &&
+            std::all_of(bytes.begin() + 3, bytes.end(), [](char byte) { return byte == 0; }) &&
+            FileSystem::KernelLseek(fd, 0, 1) == sizeof(Payload) - 1,
+        "path truncate extends with zero bytes and preserves the descriptor position");
+  Check(truncate(Path, -1) == Kernel::KERNEL_ERROR_EINVAL &&
+            truncate(nullptr, 0) == Kernel::KERNEL_ERROR_EFAULT &&
+            truncate("truncate-save.dat", 0) == Kernel::KERNEL_ERROR_EINVAL &&
+            truncate("/savedata0/missing-save.dat", 0) == Kernel::KERNEL_ERROR_ENOENT &&
+            truncate("/savedata0", 0) == Kernel::KERNEL_ERROR_EISDIR &&
+            truncate("/savedata0/truncate-save.dat/child", 0) == Kernel::KERNEL_ERROR_ENOTDIR &&
+            FileSystem::KernelFstat(fd, &stat) == OK && stat.st_size == bytes.size() &&
+            FileSystem::KernelLseek(fd, 0, 1) == sizeof(Payload) - 1,
+        "path truncate errors preserve file size and descriptor position");
+  Check(truncate("/dev/urandom", 0) == OK,
+        "path truncate is a no-op for a nonregular nondirectory file");
+  std::string long_path = "/savedata0";
+  long_path.resize(1024, '/');
+  Check(truncate(long_path.c_str(), 0) == Kernel::KERNEL_ERROR_ENAMETOOLONG,
+        "path truncate rejects a pathname beyond the guest length limit");
+  long_path.pop_back();
+  Check(truncate(long_path.c_str(), 0) == Kernel::KERNEL_ERROR_EISDIR &&
+            truncate((std::string("/savedata0/") + std::string(256, 'a')).c_str(), 0) ==
+                Kernel::KERNEL_ERROR_ENAMETOOLONG,
+        "path truncate permits the pathname length limit and bounds each component");
+  Check(FileSystem::KernelClose(fd) == OK, "close path truncation fixture");
+}
+
+void TestSaveWritev() {
+  namespace Kernel = Libs::LibKernel;
+  Loader::SymbolDatabase symbols;
+  Libs::InitLibKernel_1(&symbols);
+  const auto resolve = [&](const char* nid) {
+    const auto* symbol = symbols.Find(
+        {nid, "libkernel", 1, "libkernel", 1, 1, Loader::SymbolType::Func});
+    Check(symbol != nullptr, "vectored write export resolves");
+    return symbol->vaddr;
+  };
+  const auto writev = reinterpret_cast<int64_t (KYTY_SYSV_ABI *)(
+      int, const FileSystem::KernelIovec*, int)>(resolve("kAt6VDbHmro"));
+  const auto pwritev = reinterpret_cast<int64_t (KYTY_SYSV_ABI *)(
+      int, const FileSystem::KernelIovec*, int, int64_t)>(resolve("mBd4AfLP+u8"));
+  constexpr char Path[] = "/savedata0/vector-save.dat";
+  char first[] = "abc";
+  char second[] = "DE";
+  const std::array<FileSystem::KernelIovec, 3> buffers {{
+      {first, 3}, {nullptr, 0}, {second, 2}}};
+  const int fd = FileSystem::KernelOpen(Path, 0x602, 0777);
+  Check(fd >= 3 && FileSystem::KernelWrite(fd, "_", 1) == 1 &&
+            writev(fd, buffers.data(), buffers.size()) == 5 &&
+            FileSystem::KernelLseek(fd, 0, 1) == 6,
+        "writev writes consecutive segments and advances the descriptor position");
+  std::array<char, 6> bytes {};
+  Check(FileSystem::KernelPread(fd, bytes.data(), bytes.size(), 0) == bytes.size() &&
+            std::memcmp(bytes.data(), "_abcDE", bytes.size()) == 0,
+        "writev preserves the prefix and writes every nonempty segment in order");
+  char replacement[] = "12";
+  const std::array<FileSystem::KernelIovec, 2> patch {{
+      {replacement, 1}, {replacement + 1, 1}}};
+  Check(pwritev(fd, patch.data(), patch.size(), 1) == 2 &&
+            FileSystem::KernelLseek(fd, 0, 1) == 6 &&
+            FileSystem::KernelPread(fd, bytes.data(), bytes.size(), 0) == bytes.size() &&
+            std::memcmp(bytes.data(), "_12cDE", bytes.size()) == 0,
+        "pwritev shares segment ordering while preserving the descriptor position");
+
+  const std::array<FileSystem::KernelIovec, 2> invalid {{
+      {first, 1}, {nullptr, 1}}};
+  const std::array<FileSystem::KernelIovec, 2> oversized {{
+      {first, 1}, {second, static_cast<size_t>(std::numeric_limits<int>::max())}}};
+  Check(writev(fd, nullptr, 1) == Kernel::KERNEL_ERROR_EFAULT &&
+            writev(fd, invalid.data(), invalid.size()) == Kernel::KERNEL_ERROR_EFAULT &&
+            writev(fd, buffers.data(), -1) == Kernel::KERNEL_ERROR_EINVAL &&
+            writev(fd, buffers.data(), 1025) == Kernel::KERNEL_ERROR_EINVAL &&
+            writev(fd, oversized.data(), oversized.size()) == Kernel::KERNEL_ERROR_EINVAL &&
+            pwritev(fd, patch.data(), patch.size(), -1) == Kernel::KERNEL_ERROR_EINVAL &&
+            writev(-1, buffers.data(), buffers.size()) == Kernel::KERNEL_ERROR_EBADF &&
+            writev(fd, nullptr, 0) == 0 &&
+            FileSystem::KernelLseek(fd, 0, 1) == 6 &&
+            FileSystem::KernelPread(fd, bytes.data(), bytes.size(), 0) == bytes.size() &&
+            std::memcmp(bytes.data(), "_12cDE", bytes.size()) == 0,
+        "invalid vectors fail before writing any segment or moving the descriptor");
+  const int reader = FileSystem::KernelOpen(Path, 0, 0);
+  Check(reader >= 3 && writev(reader, buffers.data(), buffers.size()) ==
+                           Kernel::KERNEL_ERROR_EBADF &&
+            FileSystem::KernelLseek(reader, 0, 1) == 0 &&
+            FileSystem::KernelClose(reader) == OK,
+        "writev rejects a read-only descriptor without moving it");
+
+  const int append = FileSystem::KernelOpen(Path, 0xa, 0);
+  Check(append >= 3 && FileSystem::KernelLseek(append, 1, 0) == 1 &&
+            writev(append, buffers.data(), buffers.size()) == 5 &&
+            FileSystem::KernelLseek(append, 0, 1) == 11 &&
+            FileSystem::KernelLseek(append, 1, 0) == 1 &&
+            pwritev(append, patch.data(), patch.size(), 0) == 2 &&
+            FileSystem::KernelLseek(append, 0, 1) == 1,
+        "append vectored writes target EOF while positional writes preserve the cursor");
+  std::array<char, 13> appended {};
+  Check(FileSystem::KernelPread(fd, appended.data(), appended.size(), 0) == appended.size() &&
+            std::memcmp(appended.data(), "_12cDEabcDE12", appended.size()) == 0,
+        "append writes retain the original contents and ordered segments");
+  Check(FileSystem::KernelClose(append) == OK && FileSystem::KernelClose(fd) == OK,
+        "close vectored write fixtures");
 }
 
 void TestAioBatches() {
@@ -571,6 +1182,8 @@ void CheckUnmappedPaths(const std::filesystem::path &root) {
   fixture.Close();
 
   FileSystem::FileStat stat {};
+  Check(FileSystem::KernelStat("/", &stat) == OK && (stat.st_mode & 0170000u) == 0040000u,
+        "the guest root is a directory without a mount");
   Check(FileSystem::GetRealFilename(host_path).empty() &&
             FileSystem::KernelOpen(host_path.c_str(), 0, 0) ==
                 Libs::LibKernel::KERNEL_ERROR_ENOENT &&
@@ -650,6 +1263,9 @@ void CheckArchiveMount(const std::filesystem::path &root) {
             std::equal(bytes.begin(), bytes.begin() + 9, payload.end() - 9) &&
             FileSystem::KernelRead(fd, bytes.data(), bytes.size()) == 0,
         "archive reads stop at the member boundary");
+  Check(FileSystem::KernelFsync(fd) == OK &&
+            FileSystem::KernelLseek(fd, 0, 1) == payload.size(),
+        "fsync succeeds on an immutable archive member without changing its offset");
   Check(FileSystem::KernelWrite(fd, bytes.data(), 1) ==
             Libs::LibKernel::KERNEL_ERROR_EBADF &&
             FileSystem::KernelPwrite(fd, bytes.data(), 1, 0) ==
@@ -657,6 +1273,12 @@ void CheckArchiveMount(const std::filesystem::path &root) {
             FileSystem::KernelFtruncate(fd, 0) ==
             Libs::LibKernel::KERNEL_ERROR_EBADF,
         "archive read-only descriptors reject write and truncate");
+  Check(FileSystem::KernelTruncate(GuestMember, 0) ==
+            Libs::LibKernel::KERNEL_ERROR_EROFS &&
+            FileSystem::KernelFstat(fd, &descriptor_stat) == OK &&
+            descriptor_stat.st_size == payload.size() &&
+            FileSystem::KernelLseek(fd, 0, 1) == payload.size(),
+        "path truncate rejects a read-only archive and preserves its member");
 
   const auto unicode_guest = std::string("/app0/") + std::string(ArchiveTests::UnicodeFilename);
   const int unicode = FileSystem::KernelOpen(unicode_guest.c_str(), 0, 0);
@@ -766,8 +1388,8 @@ void CheckUnicodeLogPath(const std::filesystem::path &root) {
   Config::Load(options);
   Log::Initialize();
   constexpr std::string_view Payload = "Unicode log path\n";
-  Log::Write(Payload);
-  Log::Shutdown();
+  Log::Write({}, Payload);
+  Log::Flush();
 
   Common::File result(options.printf_output_file, Common::File::Mode::Read);
   Check(!result.IsInvalid(), "open Unicode log file");
@@ -798,11 +1420,15 @@ void CheckDirectoryStream(const std::filesystem::path &root) {
         "directory SEEK_END uses padded stream size");
   FileSystem::FileStat stat{};
   Check(FileSystem::KernelFstat(fd, &stat) == OK && stat.st_size == end &&
-            stat.st_blksize == 512,
+            stat.st_blksize == 0x10000,
         "directory stat agrees with seek and enumeration");
   Check(FileSystem::KernelStat("/app0/", &stat) == OK && stat.st_size == end &&
-            stat.st_blocks == end / 512,
+            stat.st_blocks == end / 512 && stat.st_blksize == 0x10000,
         "path and descriptor directory stat agree");
+  std::vector<char> whole(stat.st_blksize);
+  Check(FileSystem::KernelLseek(fd, 0, 0) == 0 &&
+            FileSystem::KernelGetdents(fd, whole.data(), whole.size()) == end,
+        "one getdents of st_blksize bytes reads the whole directory");
   Check(FileSystem::KernelLseek(fd, 0, 0) == 0,
         "rewind directory for asset read");
   std::vector<char> raw(static_cast<size_t>(end));
@@ -814,6 +1440,8 @@ void CheckDirectoryStream(const std::filesystem::path &root) {
 
   std::array<char, 512> block{};
   int64_t base = -1;
+  std::set<uint32_t> filenos;
+  size_t entries = 0;
   for (int64_t offset = 0; offset < end; offset += block.size()) {
     Check(FileSystem::KernelGetdirentries(fd, block.data(), block.size(),
                                           &base) == block.size() &&
@@ -829,9 +1457,15 @@ void CheckDirectoryStream(const std::filesystem::path &root) {
       Check(length >= 9 + name_length && length <= block.size() - pos &&
                 block[pos + 8 + name_length] == '\0',
             "directory entries remain complete within every block");
+      uint32_t fileno = 0;
+      std::memcpy(&fileno, block.data() + pos, sizeof(fileno));
+      filenos.insert(fileno);
+      entries++;
       pos += length;
     }
   }
+  Check(entries > 2 && filenos.size() == entries,
+        "directory entries carry distinct file numbers");
   Check(FileSystem::KernelGetdirentries(fd, block.data(), block.size(),
                                         &base) == 0 &&
             base == end,
@@ -890,6 +1524,12 @@ void CheckAmprOrdering(Loader::SymbolDatabase &symbols, uint32_t file_id) {
     Check(symbol != nullptr, "AMPR command and submission exports resolve");
     return symbol->vaddr;
   };
+  using GetFileStat = int (KYTY_SYSV_ABI *)(uint32_t, FileSystem::FileStat *);
+  FileSystem::FileStat stat {};
+  Check(reinterpret_cast<GetFileStat>(find("ApkYaHb8Sek"))(file_id, &stat) == OK &&
+            (stat.st_mode & 0170000u) == 0100000u && stat.st_size == 3 && stat.st_blocks == 1 &&
+            HasTestWriteTime(stat),
+        "APR file stat reports a regular file with its size and host times");
   using Unary = void (KYTY_SYSV_ABI *)(void *);
   using AprConstructor = void (KYTY_SYSV_ABI *)(void *, void *, void *);
   using SetBuffer = int (KYTY_SYSV_ABI *)(void *, void *, uint32_t);
@@ -1230,6 +1870,14 @@ void CheckAprPaths(const std::filesystem::path &root) {
               stat.st_size == static_cast<int64_t>(sizes[i]) && size == sizes[i],
           "APR re-resolution preserves each file's ID, host path and cached size");
   }
+  const char *directory_path[] = {"perf-audit"};
+  uint64_t directory_size = 0, cached_size = 1;
+  Check(resolve("/app0/", directory_path, 1, ids, &directory_size, &error_index) == OK &&
+            directory_size == 0x10000 &&
+            reinterpret_cast<Size>(size_symbol->vaddr)(ids[0], &cached_size) == OK &&
+            cached_size == 0 &&
+            reinterpret_cast<Size>(size_symbol->vaddr)(0xfffffffeu, &cached_size) != OK,
+        "APR resolves a directory and reports sizes only for known IDs");
 
   // PATH_MAX includes NUL; all components remain below NAME_MAX (255).
   std::string longest = "/app0/";
@@ -1254,6 +1902,7 @@ void CheckAprPaths(const std::filesystem::path &root) {
   Check(resolve(unterminated.data(), paths, 1, ids, sizes, &error_index) == -1 &&
             *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_ENAMETOOLONG,
         "APR rejects an unterminated prefix");
+  SetUnixWriteTime(root / collision_paths[0], 1700000000123456700);
   CheckAmprOrdering(symbols, collision_ids[0]);
   FileSystem::Umount("/app0");
 }
@@ -1540,6 +2189,256 @@ void TestNetCtlHostIpv4() {
 }
 #endif
 
+template <int Mode>
+void KYTY_SYSV_ABI RecordNpState(int user_id, uint32_t state, void* arg) {
+  auto& event = *static_cast<std::array<int, 3>*>(arg);
+  ++event[0];
+  event[1] = user_id;
+  event[2] = static_cast<int>(state);
+}
+
+void TestNpEmulation() {
+  using namespace Libs::Network::NpManager;
+  using namespace Libs::Network::NetCtl;
+  constexpr int SignedOut = static_cast<int>(0x80550006u);
+  constexpr int NetworkUnavailable = static_cast<int>(0x8055a02au);
+  constexpr int Aborted = static_cast<int>(0x80550012u);
+  struct AsyncParameters {
+    size_t size = sizeof(AsyncParameters);
+    uint64_t affinity = 0;
+    int priority = 0;
+    uint8_t padding[4] {};
+  } async_parameters;
+  struct PremiumParameters {
+    size_t size = sizeof(PremiumParameters);
+    int user_id = 0;
+    uint8_t padding[4] {};
+    uint64_t features = 1;
+    uint8_t reserved[32] {};
+  } premium_parameters;
+  struct PremiumResult {
+    bool authorized = true;
+    uint8_t reserved[32] {};
+  } premium_result;
+
+  const auto create_request = [&] (bool async) {
+    const int request = async
+        ? NpCreateAsyncRequest(reinterpret_cast<const NpCreateAsyncRequestParameter*>(
+              &async_parameters))
+        : NpCreateRequest();
+    Check(request > 0, "create NP request");
+    return request;
+  };
+  const auto check_request = [&] (bool async, int expected, auto operation) {
+    const int request = create_request(async);
+    Check(operation(request) == (async ? OK : expected),
+          "NP call separates asynchronous submission from its execution result");
+    if (async) {
+      int result = 123;
+      Check(NpPollAsync(request, &result) == OK && result == expected,
+            "NP polling reports the completed operation result");
+    }
+    Check(NpDeleteRequest(request) == OK, "release completed NP request");
+  };
+
+  Config::ConfigOptions options;
+  options.printf_direction = Config::LogDirection::Silent;
+  Check(!options.network_connected && !options.psn_emulation_enabled,
+        "host networking and PSN emulation both require explicit opt-in");
+  static std::array<std::array<int, 3>, 4> events {};
+  const std::array<NpStateCallbackA, 4> callbacks {
+      RecordNpState<0>, RecordNpState<1>, RecordNpState<2>, RecordNpState<3>};
+  int mode = 0;
+  for (bool network : {false, true}) {
+    int previous_network_state = -1;
+    for (bool emulate : {false, true}) {
+      options.network_connected = network;
+      options.psn_emulation_enabled = emulate;
+      Config::Load(options);
+      Check(Config::IsNetworkConnected() == network && Config::PsnEmulationEnabled() == emulate,
+            "loading PSN emulation does not change the independent network option");
+      Check(NetCtlInit() == OK, "initialize network state for NP mode");
+      int network_state = -1;
+      Check(NetCtlGetState(&network_state) == OK && (network || network_state == 0),
+            "PSN emulation cannot connect disabled host networking");
+      Check(previous_network_state == -1 || previous_network_state == network_state,
+            "PSN emulation does not change host network connectivity");
+      previous_network_state = network_state;
+      const bool connected = network_state == 3;
+
+      Check(NpRegisterStateCallbackA(callbacks[mode], &events[mode]) > 0 &&
+                NpCheckCallback() == OK && events[mode][0] == 1 &&
+                events[mode][1] == Config::GetUserId() &&
+                events[mode][2] == (emulate ? 2 : 1),
+            "initial NP callback matches the selected emulated sign-in state");
+      ++mode;
+      for (int player = 0; player < Config::MAX_PLAYERS; ++player) {
+        const int user_id = Config::GetPlayerUserId(player);
+        const bool signed_in = emulate && player == 0;
+        const int identity_result = signed_in ? OK : SignedOut;
+        const int online_result = !signed_in ? SignedOut : connected ? OK : NetworkUnavailable;
+        uint32_t state = 99;
+        bool signed_up = false;
+        Check(NpGetState(user_id, &state) == OK && state == (signed_in ? 2u : 1u) &&
+                  NpHasSignedUp(user_id, &signed_up) == OK && signed_up == signed_in,
+              "only the primary emulated user has a persistent signed-in account");
+        Check(NpGetNpReachabilityState(user_id, &state) == OK &&
+                  state == (signed_in && connected ? 2u : 0u),
+              "NP reachability requires both the emulated account and host connectivity");
+
+        uint64_t account_id = 0;
+        std::array<char, 20> online_id {};
+        std::array<char, 36> np_id {};
+        std::array<char, 4> country {};
+        Check(NpGetAccountIdA(user_id, &account_id) == identity_result &&
+                  NpGetOnlineId(user_id, reinterpret_cast<NpOnlineId*>(online_id.data())) ==
+                      identity_result &&
+                  NpGetNpId(user_id, reinterpret_cast<NpId*>(np_id.data())) == identity_result &&
+                  NpGetAccountCountryA(user_id, country.data()) == identity_result,
+              "NP identity and account-country getters agree on primary and guest sign-in");
+        if (signed_in) {
+          Check(account_id != 0 && online_id[0] != 0 && online_id[16] == 0 &&
+                    std::strcmp(online_id.data(), np_id.data()) == 0 &&
+                    country[0] != 0 && country[1] != 0 && country[2] == 0,
+                "emulated account identity and country remain usable while disconnected");
+        }
+
+        for (bool async : {false, true}) {
+          check_request(async, online_result, [&] (int request) {
+            return NpCheckNpReachability(request, user_id);
+          });
+          uint8_t age = 0;
+          check_request(async, identity_result, [&] (int request) {
+            return NpGetAccountAge(request, user_id, &age);
+          });
+          std::array<char, 48> language {};
+          check_request(async, identity_result, [&] (int request) {
+            return NpGetAccountLanguage2(request, user_id, language.data());
+          });
+          Check(!signed_in || (age > 0 && language[0] != 0 && language[35] == 0),
+                "signed-in account metadata is available independently of host networking");
+          premium_parameters.user_id = user_id;
+          premium_result.authorized = true;
+          check_request(async, online_result, [&] (int request) {
+            return NpCheckPremium(request,
+                reinterpret_cast<const NpCheckPremiumParameter*>(&premium_parameters),
+                reinterpret_cast<NpCheckPremiumResult*>(&premium_result));
+          });
+          Check(!premium_result.authorized, "PSN emulation does not grant premium eligibility");
+          if (player == 0) {
+            check_request(async, online_result, [&] (int request) {
+              return NpCheckNpAvailability(request, "Kyty", nullptr);
+            });
+          }
+        }
+      }
+      const int aborted = create_request(true);
+      int result = 123;
+      Check(NpAbortRequest(aborted) == OK &&
+                NpCheckNpReachability(aborted, Config::GetUserId()) == Aborted &&
+                NpPollAsync(aborted, &result) == OK && result == Aborted &&
+                NpDeleteRequest(aborted) == OK,
+            "NP emulation does not turn an aborted request into a successful one");
+      NetCtlTerm();
+    }
+  }
+  Config::Load(Config::ConfigOptions {});
+}
+
+void TestNpAuthEmulation() {
+  Loader::SymbolDatabase symbols;
+  Libs::LibNpAuth::InitNet_1_NpAuth(&symbols);
+  const auto resolve = [&] (const char* nid) {
+    const auto* symbol = symbols.FindByNid(nid, Loader::SymbolType::Func);
+    Check(symbol != nullptr, "resolve NP authentication exports");
+    return symbol->vaddr;
+  };
+  const auto create = reinterpret_cast<int(KYTY_SYSV_ABI*)()>(resolve("6bwFkosYRQg"));
+  const auto create_async = reinterpret_cast<int(KYTY_SYSV_ABI*)(const void*)>(
+      resolve("N+mr7GjTvr8"));
+  const auto destroy = reinterpret_cast<int(KYTY_SYSV_ABI*)(int)>(resolve("H8wG9Bk-nPc"));
+  const auto poll = reinterpret_cast<int(KYTY_SYSV_ABI*)(int, int*)>(resolve("gjSyfzSsDcE"));
+  const auto get_code = reinterpret_cast<int(KYTY_SYSV_ABI*)(int, const void*, void*, int*)>(
+      resolve("KI4dHLlTNl0"));
+  const auto get_token = reinterpret_cast<int(KYTY_SYSV_ABI*)(int, const void*, void*)>(
+      resolve("RdsFVsgSpZY"));
+  constexpr int InvalidArgument = static_cast<int>(0x80550301u);
+  constexpr int InvalidSize = static_cast<int>(0x80550302u);
+  constexpr int ServiceUnavailable = static_cast<int>(0x80550401u);
+  constexpr int SignedOut = static_cast<int>(0x80550006u);
+  struct AuthorizationCodeParameters {
+    size_t size = sizeof(AuthorizationCodeParameters);
+    int user_id = 0;
+    uint8_t padding[4] {};
+    const void* client_id = "test-client";
+    const char* scope = "test-scope";
+  } code_parameters;
+  struct IdTokenParameters {
+    size_t size = sizeof(IdTokenParameters);
+    int user_id = 0;
+    uint8_t padding[4] {};
+    const void* client_id = "test-client";
+    const void* client_secret = "test-secret";
+    const char* scope = "test-scope";
+  } token_parameters;
+  std::array<uint8_t, 136> code {};
+  std::array<uint8_t, 4104> token {};
+  const std::array<uint64_t, 3> async_parameters {24, 0, 0};
+  int issuer = 0;
+  const int invalid_request = create();
+  code_parameters.size = 0;
+  token_parameters.size = 0;
+  Check(invalid_request > 0 &&
+            get_code(invalid_request, nullptr, code.data(), &issuer) == InvalidArgument &&
+            get_token(invalid_request, nullptr, token.data()) == InvalidArgument &&
+            get_code(invalid_request, &code_parameters, code.data(), &issuer) == InvalidSize &&
+            get_token(invalid_request, &token_parameters, token.data()) == InvalidSize &&
+            destroy(invalid_request) == OK,
+        "NP authentication rejects missing and undersized user parameters");
+  code_parameters.size = sizeof(code_parameters);
+  token_parameters.size = sizeof(token_parameters);
+
+  Config::ConfigOptions options;
+  options.printf_direction = Config::LogDirection::Silent;
+  for (bool network : {false, true}) {
+    for (bool emulate : {false, true}) {
+      options.network_connected = network;
+      options.psn_emulation_enabled = emulate;
+      Config::Load(options);
+      for (int player = 0; player < Config::MAX_PLAYERS; ++player) {
+        code_parameters.user_id = Config::GetPlayerUserId(player);
+        token_parameters.user_id = code_parameters.user_id;
+        const int expected = emulate && player == 0 ? ServiceUnavailable : SignedOut;
+        for (bool async : {false, true}) {
+          for (bool id_token : {false, true}) {
+            const int request = async ? create_async(async_parameters.data()) : create();
+            Check(request > 0, "create NP authentication request");
+            code.fill(0xff);
+            token.fill(0xff);
+            issuer = -1;
+            const int result = id_token
+                ? get_token(request, &token_parameters, token.data())
+                : get_code(request, &code_parameters, code.data(), &issuer);
+            Check(result == (async ? OK : expected),
+                  "NP authentication distinguishes an unavailable service from sign-out");
+            if (async) {
+              int completion = 123;
+              Check(poll(request, &completion) == OK && completion == expected,
+                    "asynchronous NP authentication delivers the actual failure");
+            }
+            const auto zero = [] (uint8_t value) { return value == 0; };
+            Check(id_token ? std::all_of(token.begin(), token.end(), zero)
+                           : std::all_of(code.begin(), code.end(), zero) && issuer == 0,
+                  "PSN emulation does not fabricate authorization codes or ID tokens");
+            Check(destroy(request) == OK, "release NP authentication request");
+          }
+        }
+      }
+    }
+  }
+  Config::Load(Config::ConfigOptions {});
+}
+
 void CheckEtherAddressFormatting() {
   Loader::SymbolDatabase symbols;
   Libs::LibNet::InitNet_1_Net(&symbols);
@@ -1576,6 +2475,11 @@ void CheckSocketWakeup() {
   namespace Net = Libs::Network::Net;
   Loader::SymbolDatabase symbols;
   Libs::LibNet::InitNet_1_Net(&symbols);
+  Libs::InitLibKernel_1(&symbols);
+  const auto *shutdown_symbol = symbols.Find(
+      {"TUuiYS2kE8s", "Posix", 1, "libkernel", 1, 1, Loader::SymbolType::Func});
+  Check(shutdown_symbol != nullptr, "POSIX shutdown export resolves");
+  const auto shutdown = reinterpret_cast<int (KYTY_SYSV_ABI *)(int, int)>(shutdown_symbol->vaddr);
   const auto *connect_symbol = symbols.Find(
       {"OXXX4mUk3uk", "Net", 1, "Net", 1, 1, Loader::SymbolType::Func});
   const auto *getsockopt_symbol = symbols.Find(
@@ -1840,6 +2744,76 @@ void CheckSocketWakeup() {
   CheckSocketReceiveBuffer(reader, writer);
   CheckSocketReceiveConcurrency();
 #endif
+  const auto [shutdown_reader, shutdown_writer] = CreateTcpPair();
+  const auto ready_to_read = [](int fd) {
+    std::array<uint64_t, 16> readable {};
+    readable[fd / 64] = uint64_t {1} << (fd % 64);
+    const std::array<int64_t, 2> timeout {2, 0};
+    return Net::Select(fd + 1, readable.data(), nullptr, nullptr, timeout.data()) == 1;
+  };
+  Check(shutdown(-1, 1) == -1 &&
+            *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EBADF &&
+            shutdown(shutdown_writer, 3) == -1 &&
+            *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EINVAL,
+        "shutdown rejects invalid descriptors and directions");
+  Check(Net::Send(shutdown_writer, "x", 1, 0) == 1 && shutdown(shutdown_writer, 1) == 0 &&
+            ready_to_read(shutdown_reader) &&
+            Net::Recv(shutdown_reader, received.data(), 1, 0) == 1 && received[0] == 'x' &&
+            ready_to_read(shutdown_reader) &&
+            Net::Recv(shutdown_reader, received.data(), 1, 0) == 0 &&
+            Net::Send(shutdown_reader, "y", 1, 0) == 1 &&
+            ready_to_read(shutdown_writer) &&
+            Net::Recv(shutdown_writer, received.data(), 1, 0) == 1 && received[0] == 'y',
+        "write shutdown drains queued bytes, signals EOF, and preserves reverse traffic");
+  Check(Net::SocketClose(shutdown_reader) == 0 && Net::SocketClose(shutdown_writer) == 0,
+        "close half-shutdown sockets");
+  const int encrypted = Net::Socket(2, 6, 0);
+  int crypto = -1;
+  uint32_t crypto_size = sizeof(crypto);
+  Check(encrypted >= 0 &&
+            Net::Getsockopt(encrypted, 0xffff, 0x20000, &crypto, &crypto_size) == 0 &&
+            crypto == 0,
+        "UDPP2P encryption defaults to disabled");
+  for (const int setting : {7, 0}) {
+    Check(Net::Setsockopt(encrypted, 0xffff, 0x20000, &setting, sizeof(setting)) == 0 &&
+              Net::Getsockopt(encrypted, 0xffff, 0x20000, &crypto, &crypto_size) == 0 &&
+              crypto == (setting != 0),
+          "UDPP2P encryption configuration retains normalized enable and disable values");
+    Check(Net::Send(encrypted, "x", 1, 0) == -1 &&
+              *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EOPNOTSUPP,
+          "UDPP2P configuration never exposes unframed plaintext transport");
+  }
+  std::array<uint8_t, 16> p2p_address {16, 2, 0x0e, 0x4a, 127, 0, 0, 1, 0x1e, 0x61};
+  Check(Net::Bind(encrypted, p2p_address.data(), p2p_address.size()) == 0,
+        "bind UDPP2P physical and virtual ports");
+  char untouched = '!';
+  auto source = p2p_address;
+  uint32_t source_size = source.size();
+  Check(Net::Recvfrom(encrypted, &untouched, 1, 0x80, source.data(), &source_size) == -1 &&
+            *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EWOULDBLOCK,
+        "per-call nonblocking UDPP2P receive reports an actually empty queue");
+  Check(Net::Setsockopt(encrypted, 0xffff, 0x1200, &enabled, sizeof(enabled)) == 0 &&
+            Net::Setsockopt(encrypted, 0xffff, 0x20000, &enabled, sizeof(enabled)) == 0 &&
+            Net::Recvfrom(encrypted, &untouched, 1, 0, source.data(), &source_size) == -1 &&
+            *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EWOULDBLOCK &&
+            untouched == '!' && source == p2p_address && source_size == source.size(),
+        "empty encrypted nonblocking receive preserves all caller outputs");
+  const int raw_sender = Net::Socket(2, 2, 0);
+  Check(raw_sender >= 0 &&
+            Net::Sendto(raw_sender, "pending", 7, 0, p2p_address.data(), p2p_address.size()) == 7,
+        "queue a datagram requiring unsupported UDPP2P processing");
+  const auto pending_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (Net::Recv(encrypted, &untouched, 1, 0) == -1 &&
+         *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EWOULDBLOCK &&
+         std::chrono::steady_clock::now() < pending_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  Check(*Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EOPNOTSUPP &&
+            Net::Recv(encrypted, &untouched, 1, 0) == -1 &&
+            *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EOPNOTSUPP && untouched == '!',
+        "queued packets remain queued and unsupported instead of masquerading as empty");
+  Check(Net::SocketClose(encrypted) == 0 && Net::SocketClose(raw_sender) == 0,
+        "close UDPP2P readiness fixtures");
   Check(Net::SocketClose(writer) == 0, "close wake writer");
   *net_errno = Libs::Posix::POSIX_EINVAL;
   Check(net_recv(reader, received.data(), received.size(), 0) == 0 &&
@@ -1856,7 +2830,7 @@ void CheckSocketWakeup() {
 
 } // namespace
 
-int main(int, char**) {
+int main(int argc, char** argv) {
   Common::InitializeThreads();
   Common::Subsystems subsystems;
   subsystems.Initialize<Config::Lifecycle>();
@@ -1864,6 +2838,26 @@ int main(int, char**) {
   options.printf_direction = Config::LogDirection::Silent;
   Config::Load(options);
   subsystems.Initialize<Log::Lifecycle>();
+
+  if (argc == 2 && std::string_view(argv[1]) == "--network-only") {
+#if defined(__linux__)
+    TestNetCtlHostIpv4();
+#endif
+    TestNpEmulation();
+    TestNpAuthEmulation();
+    subsystems.Destroy();
+    std::printf("KernelFileSystemTests: network cases passed\n");
+    return 0;
+  }
+
+  TestMutexHandoff();
+  TestStaticRwlockDestroy();
+  TestPendingSignalDispatch();
+  if (argc == 2 && std::string_view(argv[1]) == "--mutex-only") {
+    subsystems.Destroy();
+    std::printf("KernelFileSystemTests: mutex cases passed\n");
+    return 0;
+  }
 
   Check(SDL_InitSubSystem(SDL_INIT_VIDEO), "initialize Vulkan test video");
   auto graphics = std::make_unique<Libs::Graphics::WindowContext>();
@@ -1875,9 +2869,11 @@ int main(int, char**) {
   graphics->CreateVulkan();
 
   TempDirectory temporary;
+  CheckOpenFileCoherence(temporary.Path());
   FileSystem::Initialize();
   TestSysmoduleReferences();
   TestSystemServiceEntitlementEvents();
+  TestAddContent(temporary.Path());
   TestRandomDevices();
   TestFileDescriptorFlags();
   CheckMountRoot(temporary.Path());
@@ -1889,15 +2885,21 @@ int main(int, char**) {
   CheckAprPaths(temporary.Path());
   FileSystem::Mount(temporary.Path(), "/savedata0");
   TestSaveOpenVisibility();
+  TestStatTimes();
+  TestFsync();
+  TestSaveTruncate();
+  TestSaveWritev();
   TestAioBatches();
   CheckSaveRename(temporary.Path(), "first-save");
   CheckSaveRename(temporary.Path(), "replacement-save");
-  FileSystem::Shutdown();
   CheckSocketWakeup();
+  FileSystem::Shutdown();
   CheckEtherAddressFormatting();
 #if defined(__linux__)
   TestNetCtlHostIpv4();
 #endif
+  TestNpEmulation();
+  TestNpAuthEmulation();
   TestNpWebApi2Memory();
   TestNpCommerceDialog();
   graphics.reset();

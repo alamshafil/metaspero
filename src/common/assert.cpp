@@ -1,6 +1,5 @@
 #include "common/assert.h"
 
-#include "common/logging/log.h"
 #include "common/subsystems.h"
 #include "kytyGitVersion.h"
 
@@ -39,12 +38,12 @@ const char* GetLastFatalMessage() {
 
 static std::string BuildFatalReport(const char* title, std::string_view text, const char* file,
                                     int line) {
-	std::string report = fmt::format("--- Build ---\n{}\n{}\n{} in {}:{}\n", KYTY_BUILD_LABEL, title, text, file,
-	                   line);
+	std::string report = fmt::format("--- Build ---\n{}\n{}\n{} in {}:{}\n", KYTY_BUILD_LABEL, title,
+	                                 text, file, line);
 #if defined(__APPLE__)
 	void* callstack[64];
-	int frames = backtrace(callstack, 64);
-	char** strs = backtrace_symbols(callstack, frames);
+	int   frames = backtrace(callstack, 64);
+	char** strs  = backtrace_symbols(callstack, frames);
 	if (strs != nullptr) {
 		report += "--- Host Call Stack ---\n";
 		for (int i = 0; i < frames; ++i) {
@@ -56,41 +55,11 @@ static std::string BuildFatalReport(const char* title, std::string_view text, co
 	return report;
 }
 
-static int DbgReport(const char* title, std::string_view text, const char* file, int line) {
-	g_last_fatal_message = BuildFatalReport(title, text, file, line);
-	Log::WriteFatal(g_last_fatal_message);
-	Subsystems::EmergencyShutdownActive();
-	InvokeFatalHandler(321, g_last_fatal_message.c_str());
-	return 1;
-}
-
-int DbgExitIfHandler(const char* expr, const char* file, int line) {
-	return DbgReport("--- Fatal Error ---", fmt::format("Error: condition ({}) is true", expr),
-	                 file, line);
-}
-
-int DbgNotImplementedHandler(const char* expr, const char* file, int line) {
-	return DbgReport("--- Fatal Error ---", fmt::format("Not implemented ({})", expr), file, line);
-}
-
-int DbgExitHandler(const char* file, int line, std::string_view text) {
-	g_last_fatal_message = BuildFatalReport("--- Error ---", text, file, line);
-	Log::WriteFatal(g_last_fatal_message);
-	InvokeFatalHandler(321, g_last_fatal_message.c_str());
-	return 1;
-}
-
-int DbgExitHandler(const char* file, int line, fmt::text_style style, std::string_view text) {
-	g_last_fatal_message = BuildFatalReport("--- Error ---", text, file, line);
-	Log::WriteFatal(style, g_last_fatal_message);
-	InvokeFatalHandler(321, g_last_fatal_message.c_str());
-	return 1;
-}
-
-void DbgExit(int status) {
+[[noreturn]] static void Terminate(int status) {
 	Subsystems::EmergencyShutdownActive();
 	std::fflush(nullptr);
-	InvokeFatalHandler(status, g_last_fatal_message.empty() ? "Fatal error: DbgExit called" : g_last_fatal_message.c_str());
+	InvokeFatalHandler(status, g_last_fatal_message.empty() ? "Fatal error: DbgExit called"
+	                                                        : g_last_fatal_message.c_str());
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 	if (pthread_main_np() == 0) {
 		pthread_exit(nullptr);
@@ -101,6 +70,37 @@ void DbgExit(int status) {
 #else
 	std::_Exit(status);
 #endif
+}
+
+[[noreturn]] static void DbgReport(const char* title, std::string_view text, const char* file,
+                                   int line) {
+	g_last_fatal_message = BuildFatalReport(title, text, file, line);
+	Log::WriteToConsoleAndLog(g_last_fatal_message);
+	Terminate(321);
+}
+
+[[noreturn]] void DbgExitIfHandler(const char* expr, const char* file, int line) {
+	DbgReport("--- Fatal Error ---", fmt::format("Error: condition ({}) is true", expr), file,
+	          line);
+}
+
+[[noreturn]] void DbgNotImplementedHandler(const char* expr, const char* file, int line) {
+	DbgReport("--- Fatal Error ---", fmt::format("Not implemented ({})", expr), file, line);
+}
+
+[[noreturn]] void DbgExitHandler(const char* file, int line, std::string_view text) {
+	DbgReport("--- Error ---", text, file, line);
+}
+
+[[noreturn]] void DbgExitHandler(const char* file, int line, fmt::text_style style,
+                                 std::string_view text) {
+	g_last_fatal_message = BuildFatalReport("--- Error ---", text, file, line);
+	Log::WriteToConsoleAndLog(fmt::format(style, "{}", g_last_fatal_message));
+	Terminate(321);
+}
+
+[[noreturn]] void DbgExit(int status) {
+	Terminate(status);
 }
 
 } // namespace Common

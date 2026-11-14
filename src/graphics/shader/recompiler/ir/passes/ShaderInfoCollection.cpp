@@ -4,6 +4,7 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fmt/format.h>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
@@ -47,26 +48,17 @@ void ValidateOptions(const Program& program, ShaderStageInputInfo input_info) {
 		case ShaderType::TessellationControl:
 		case ShaderType::TessellationEvaluation:
 		case ShaderType::Mesh:
-			if (input_info.vertex == nullptr) {
-				return Fail("vertex shader has no input metadata");
-			}
 			if (input_info.vertex->resources_num < 0 ||
 			    input_info.vertex->resources_num > ShaderVertexInputInfo::RES_MAX) {
 				return Fail("vertex resource count is out of range");
 			}
 			return;
 		case ShaderType::Pixel:
-			if (input_info.pixel == nullptr) {
-				return Fail("pixel shader has no input metadata");
-			}
 			if (input_info.pixel->input_num > std::size(input_info.pixel->interpolator_settings)) {
 				return Fail("pixel input count is out of range");
 			}
 			return;
 		case ShaderType::Compute:
-			if (input_info.compute == nullptr) {
-				return Fail("compute shader has no input metadata");
-			}
 			if (input_info.compute->thread_ids_num < 0 || input_info.compute->thread_ids_num > 3) {
 				return Fail("compute thread ID count is out of range");
 			}
@@ -184,6 +176,8 @@ void AddBuiltinInput(ShaderInfo& info, StageInputKind kind) {
 		case StageInputKind::GlobalInvocationId:
 			AddInput(info, kind, 0, 3, "gl_GlobalInvocationID");
 			break;
+		case StageInputKind::BaseVertex: AddInput(info, kind, 0, 1, "gl_BaseVertex"); break;
+		case StageInputKind::BaseInstance: AddInput(info, kind, 0, 1, "gl_BaseInstance"); break;
 		case StageInputKind::PackedAncillary:
 		case StageInputKind::Parameter: break;
 	}
@@ -191,7 +185,7 @@ void AddBuiltinInput(ShaderInfo& info, StageInputKind kind) {
 
 void CollectOutput(const Program& program, ShaderStageInputInfo input_info,
                    ShaderInfo& info, const Inst& inst) {
-	const bool alpha_remap = program.stage == ShaderType::Pixel && input_info.pixel != nullptr &&
+	const bool alpha_remap = program.stage == ShaderType::Pixel &&
 	                         input_info.pixel->alpha_blend_source != ShaderAlphaBlendSource::None;
 	const auto& export_info = program.export_info[inst.Flags<ExportFlags>().index];
 	if (export_info.kind == ExportTargetKind::MrtZ) {
@@ -308,15 +302,15 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				info.uses_lds |= kind == ResourceKind::Lds;
 				info.uses_gds |= kind == ResourceKind::Gds;
 			} else if (kind == ResourceKind::Buffer || kind == ResourceKind::ScalarBuffer) {
-				if (memory.resource >= info.buffers.size() || memory.resource >= ShaderInfo::MaxBuffers) {
+				if (memory.resource >= info.buffers.size()) {
 					return Fail("buffer operation has invalid resource metadata");
 				}
-				info.live_buffers |= uint64_t{1} << memory.resource;
+				info.buffers[memory.resource].live = true;
 				for (const auto child: info.buffers[memory.resource].indirect_resources) {
 					if (child >= info.buffers.size()) {
 						return Fail("indirect buffer operation has invalid resource metadata");
 					}
-					info.live_buffers |= uint64_t{1} << child;
+					info.buffers[child].live = true;
 				}
 			}
 		}
@@ -332,20 +326,30 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				return Fail("writable FLAT/GLOBAL addresses require GPU ownership tracking");
 			} else {
 				info.coherent_buffers |= memory.coherent;
+				info.uses_dma |= !memory.planning_only;
 			}
 		}
 		if (buffer_access != BufferAccess::None) {
-			if (kind == ResourceKind::IndirectBuffer && op != ValueOpcode::ReadConstBuffer) {
-				info.subgroup_local_invocation_id = true;
+			if (kind == ResourceKind::IndirectBuffer) {
+				info.uses_dma = true;
+				info.subgroup_local_invocation_id |= op != ValueOpcode::ReadConstBuffer;
 			}
 			if (kind == ResourceKind::Buffer) {
 				info.coherent_buffers |= memory.coherent;
+				info.buffer_int64_atomics |= memory.IsCoherentBufferPairLoad(op);
 				if (memory.resource >= info.buffers.size()) {
 					return Fail("buffer operation has invalid resource metadata");
 				}
-				const auto bits = StorageBufferElementBits(program, memory);
-				info.buffer_u8 |= bits == 8u;
-				info.buffer_u16 |= bits == 16u;
+				const auto collect_element = [&](uint32_t resource) {
+					auto selected = memory;
+					selected.resource = resource;
+					const auto bits = StorageBufferElementBits(program, selected);
+					info.buffer_u8 |= bits == 8u;
+					info.buffer_u16 |= bits == 16u;
+				};
+				collect_element(memory.resource);
+				for (const auto child: info.buffers[memory.resource].indirect_resources)
+					collect_element(child);
 				if ((info.buffers[memory.resource].packed_stride & (1u << 20u)) != 0u) {
 					if (program.stage != ShaderType::Compute) {
 						return Fail("buffer ADD_TID is only valid for compute shaders");
@@ -367,14 +371,14 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 			info.function_lds |= kind == ResourceKind::Lds &&
 			                     program.stage != ShaderType::Compute && program.stage != ShaderType::Mesh;
 			if (shared_access == SharedAccess::Append || shared_access == SharedAccess::Consume) {
-				info.subgroup_ballot = true;
 				info.subgroup_shuffle = true;
 				info.subgroup_local_invocation_id = true;
 			}
 		}
 	}
 	switch (inst.GetOpcode()) {
-		case ValueOpcode::GetAttribute: {
+		case ValueOpcode::GetAttribute:
+		case ValueOpcode::GetAttributeF16: {
 			if (!inst.Arg(0).IsImmediate() || inst.Arg(0).GetType() != Type::U32 ||
 			    !inst.Arg(1).IsImmediate() || inst.Arg(1).GetType() != Type::U32) {
 				return Fail("typed attribute reference is not constant");
@@ -395,6 +399,15 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 			    program.stage == ShaderType::Pixel) {
 				auto& components = inputs.components[inst.Arg(0).U32()];
 				components = std::max(components, static_cast<uint8_t>(inst.Arg(1).U32() + 1u));
+			}
+			if (inst.GetOpcode() == ValueOpcode::GetAttributeF16) {
+				if (program.stage != ShaderType::Pixel || !inst.Arg(2).IsImmediate()) {
+					return Fail("f16 attribute reference is invalid");
+				}
+				// FP16_INTERP_MODE packs two halves per dword, so smooth inputs blend unpacked
+				// vertices; flat inputs unpack the provoking vertex.
+				const auto input = inst.Arg(0).U32();
+				inputs.per_vertex[input] |= !ShaderPixelParameterIsFlat(*input_info.pixel, input);
 			}
 			break;
 		}
@@ -436,6 +449,8 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				case StageInputKind::InstanceIndex:
 				case StageInputKind::FrontFacing:
 				case StageInputKind::LocalInvocationIndex:
+				case StageInputKind::BaseVertex:
+				case StageInputKind::BaseInstance:
 					if (component != 0u) {
 						return Fail("typed scalar builtin component is out of range");
 					}
@@ -501,12 +516,20 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 		case ValueOpcode::ReadConst: info.uses_flattened_srt = true; break;
 		case ValueOpcode::BitwiseXor32: info.has_bitwise_xor = true; break;
 		case ValueOpcode::StoreCompletion: info.subgroup_barrier = true; break;
-		case ValueOpcode::BvhIntersect: info.bvh = true; break;
+		case ValueOpcode::DataCacheInvalidate: info.coherent_buffers = true; break;
+		case ValueOpcode::BvhIntersect: info.bvh = info.uses_dma = true; break;
+		case ValueOpcode::Bvh8Intersect: info.bvh8 = info.uses_dma = true; break;
+		case ValueOpcode::BvhStack: info.bvh_stack = true; break;
+		case ValueOpcode::LoadDeviceAddressU32: info.uses_device_address = true; break;
 		case ValueOpcode::ConditionRef:
-			info.subgroup_ballot |=
+			info.subgroup_vote |=
 			    inst.Flags<CFG::BranchCondition>() != CFG::BranchCondition::ScalarInstruction;
 			break;
 		case ValueOpcode::Ballot: info.subgroup_ballot = true; break;
+		case ValueOpcode::LiveMask: info.subgroup_ballot = info.helper_invocation = true; break;
+		case ValueOpcode::SubgroupUMinU32:
+		case ValueOpcode::SubgroupUMaxU32:
+		case ValueOpcode::SubgroupOrU32: info.subgroup_arithmetic = true; break;
 		case ValueOpcode::DppMoveU32:
 		case ValueOpcode::ReadFirstLane:
 		case ValueOpcode::ReadLane: {
@@ -558,16 +581,15 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
 	}
 	ValidateOptions(program, input_info);
 	auto& info = program.info;
-	if (info.buffers.size() > ShaderInfo::MaxBuffers) {
-		return Fail("buffer resource limit exceeded");
-	}
 	info.inputs.clear();
 	info.outputs.clear();
 	info.user_data_registers.clear();
-	info.live_buffers = 0;
+	for (auto& buffer: info.buffers) buffer.live = false;
 	info.has_bitwise_xor = info.uses_lds = info.uses_gds = info.uses_flattened_srt =
-	    info.uses_dispatch_threads = info.uses_swizzle = false;
-	info.bvh = info.subgroup_ballot = info.subgroup_barrier = info.subgroup_shuffle =
+	    info.uses_dispatch_threads = info.uses_swizzle = info.uses_dma = info.uses_device_address =
+	        false;
+	info.bvh = info.subgroup_ballot = info.subgroup_vote = info.subgroup_barrier =
+	    info.subgroup_shuffle = info.subgroup_arithmetic = info.helper_invocation =
 	    info.subgroup_local_invocation_id = info.compute_derivatives = info.image_gather_extended =
 	    info.function_lds = info.function_scratch = info.pixel_valid_mask = info.buffer_int64_atomics =
 	    info.buffer_u8 = info.buffer_u16 = info.shared_int64_atomics = info.coherent_buffers = info.float64 = false;
@@ -584,7 +606,9 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
 		return resource.indirect_root != UINT32_MAX;
 	};
 	info.uses_flattened_srt |= std::ranges::any_of(info.buffers, uses_mapping) ||
-	                           std::ranges::any_of(info.images, uses_mapping);
+	                           std::ranges::any_of(info.images, uses_mapping) ||
+	                           std::ranges::any_of(info.samplers, uses_mapping);
+	info.uses_image_heap = std::ranges::any_of(info.images, &ImageResource::heap);
 	switch (program.stage) {
 		case ShaderType::Vertex:
 		case ShaderType::Local: CollectVertexInputs(input_info.vertex, info, inputs.components); break;
@@ -593,6 +617,15 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
 		case ShaderType::Mesh: break;
 		case ShaderType::Pixel:
 			CollectPixelInputs(input_info.pixel, info, inputs.per_vertex, inputs.components);
+			if (input_info.pixel->object_primitive_id) {
+				if (std::ranges::any_of(info.outputs, [](const StageOutput& output) {
+					    return output.kind == StageOutputKind::Mrt && output.location == 7u;
+				    })) {
+					return Fail("explicit MRT7 export overlaps automatic object/primitive ID");
+				}
+				AddBuiltinInput(info, StageInputKind::PrimitiveId);
+				AddOutput(info, StageOutputKind::ObjectPrimitiveId, 0, 7, "out_object_primitive_id");
+			}
 			break;
 		case ShaderType::Compute: CollectComputeInputs(input_info.compute, info); break;
 		default: return Fail("unsupported shader stage for info collection");

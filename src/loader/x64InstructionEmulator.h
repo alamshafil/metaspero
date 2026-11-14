@@ -1,6 +1,7 @@
 #ifndef KYTY_LOADER_X64_INSTRUCTION_EMULATOR_H_
 #define KYTY_LOADER_X64_INSTRUCTION_EMULATOR_H_
 
+#include <cstddef>
 #include <cstdint>
 
 namespace Loader::X64InstructionEmulator {
@@ -21,6 +22,9 @@ struct WideStoreSplitResult {
 // Trampolines go from *cursor to trampoline_end, within +/-2 GiB of the code.
 WideStoreSplitResult SplitWideStores(uint64_t address, uint64_t size, uint64_t* cursor,
                                      uint64_t trampoline_end);
+
+// Completes a faulting load into EAX as a zero read and resumes after it.
+void SkipLoad(void* native_context, size_t length);
 
 } // namespace Loader::X64InstructionEmulator
 

@@ -18,6 +18,7 @@ namespace AudioOut {
 
 struct AudioOutOutputParam;
 struct AudioOutPortState;
+struct AudioOutSystemState;
 
 int KYTY_SYSV_ABI AudioOutInit();
 int KYTY_SYSV_ABI AudioOutOpen(int user_id, int type, int index, uint32_t len, uint32_t freq,
@@ -27,6 +28,7 @@ int KYTY_SYSV_ABI AudioOutOutputs(AudioOutOutputParam* param, uint32_t num);
 int KYTY_SYSV_ABI AudioOutOutput(int handle, const void* ptr);
 int KYTY_SYSV_ABI AudioOutClose(int handle);
 int KYTY_SYSV_ABI AudioOutGetPortState(int handle, AudioOutPortState* state);
+int KYTY_SYSV_ABI AudioOutGetSystemState(AudioOutSystemState* state);
 
 } // namespace AudioOut
 
@@ -133,11 +135,24 @@ struct AjmDecAt9ConfigDataInfo {
 	uint32_t superframe_size;
 };
 
+struct AjmDecMp3ParseFrameInfo {
+	size_t   frame_size;
+	uint32_t num_channels;
+	uint32_t samples_per_channel;
+	uint32_t bitrate;
+	uint32_t sample_rate;
+	uint32_t encoder_delay;
+	uint32_t num_frames;
+	uint32_t total_samples;
+	uint32_t ofl_type;
+};
+
 int KYTY_SYSV_ABI AjmInitialize(int64_t reserved, uint32_t* context);
 int KYTY_SYSV_ABI AjmModuleRegister(uint32_t context, uint32_t codec, int64_t reserved);
 int KYTY_SYSV_ABI AjmModuleUnregister(uint32_t context, uint32_t codec);
 int KYTY_SYSV_ABI AjmFinalize(uint32_t context);
-int KYTY_SYSV_ABI AjmInstanceCreate(uint32_t context, uint32_t codec, uint64_t flags);
+int KYTY_SYSV_ABI AjmInstanceCreate(uint32_t context, uint32_t codec, uint64_t flags,
+                                   uint32_t* instance);
 int KYTY_SYSV_ABI AjmInstanceDestroy(uint32_t context, uint32_t instance);
 int KYTY_SYSV_ABI AjmMemoryRegister(uint32_t context, void* ptr, size_t pages);
 int KYTY_SYSV_ABI AjmMemoryUnregister(uint32_t context, void* ptr);
@@ -192,6 +207,8 @@ int KYTY_SYSV_ABI AjmBatchJobRunSplit(AjmBatchInfo* info, uint32_t instance, uin
                                       void* sideband_output, size_t sideband_output_size);
 int KYTY_SYSV_ABI AjmDecAt9ParseConfigData(const void*              config_data,
                                            AjmDecAt9ConfigDataInfo* config_info);
+int KYTY_SYSV_ABI AjmDecMp3ParseFrame(const void* bitstream, size_t size, int parse_ofl,
+                                      AjmDecMp3ParseFrameInfo* frame_info);
 const char* KYTY_SYSV_ABI AjmStrError(int error);
 
 } // namespace Ajm

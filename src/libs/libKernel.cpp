@@ -3,6 +3,8 @@
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/fpEnv.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/singleton.h"
 #include "common/stringUtils.h"
@@ -11,6 +13,7 @@
 #include "kernel/eventQueue.h"
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
+#include "kernel/module.h"
 #include "kernel/pthread.h"
 #include "kernel/semaphore.h"
 #include "kernel/syncOnAddress.h"
@@ -19,6 +22,7 @@
 #include "libs/network.h"
 #include "loader/elf.h"
 #include "loader/runtimeLinker.h"
+#include "loader/systemContent.h"
 #include "loader/symbolDatabase.h"
 
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
@@ -42,12 +46,10 @@
 #include <vector>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
 #include <windows.h>
 #elif defined(__APPLE__)
 #include <csignal>
+#include <dlfcn.h>
 #include <pthread.h>
 #include <sys/ucontext.h>
 #else
@@ -71,7 +73,6 @@ LIB_DEFINE(InitLibKernel_1_Apr);
 
 namespace LibKernel {
 
-using KernelModule                   = int32_t;
 using get_thread_atexit_count_func_t = KYTY_SYSV_ABI int (*)(KernelModule);
 using thread_atexit_report_func_t    = KYTY_SYSV_ABI void (*)(KernelModule);
 
@@ -1008,17 +1009,6 @@ static void ApplySignalUcontextToHost(ucontext_t* dst_ctx, const SignalUcontext&
 #endif
 }
 
-static int SignalDispatchHostSignal() {
-#if defined(__APPLE__)
-	// macOS has no realtime signals; SIGUSR1 is otherwise unused on the host side (the
-	// guest's SIGUSR1 is an emulated signal number, not a host registration).
-	static const int host_signal = SIGUSR1;
-#else
-	static const int host_signal = SIGRTMIN + 3;
-#endif
-	return host_signal;
-}
-
 static void HostSignalDispatchHandler(int /*host_signal*/, siginfo_t* /*info*/,
                                       void* native_context) {
 	Pthread current = PthreadSelfOrNull();
@@ -1056,7 +1046,8 @@ static bool EnsureHostSignalDispatchInstalled() {
 		action.sa_sigaction = HostSignalDispatchHandler;
 		sigemptyset(&action.sa_mask);
 		action.sa_flags = SA_SIGINFO | SA_RESTART;
-		return ::sigaction(SignalDispatchHostSignal(), &action, nullptr) == 0;
+		const int signal_number = Common::HostException::GuestSignalDispatchSignal();
+		return ::sigaction(signal_number, &action, nullptr) == 0;
 	}();
 	return installed;
 }
@@ -1125,6 +1116,15 @@ static void ExecuteGuestExceptionHandler(exception_handler_func_t handler, int s
 		return;
 	}
 
+#if defined(__APPLE__)
+	Dl_info host_info {};
+	if (dladdr(reinterpret_cast<void*>(handler), &host_info) != 0 &&
+	    host_info.dli_fname != nullptr) {
+		handler(signum, ctx);
+		return;
+	}
+#endif
+
 	std::thread helper([handler, signum, ctx, thread]() {
 		SignalDispatchScope scope;
 		auto* previous_self = (thread != nullptr) ? PthreadSwapSelfForSignal(thread) : nullptr;
@@ -1177,7 +1177,7 @@ static void ExecuteGuestExceptionHandler(exception_handler_func_t handler, int s
 
 void KernelDispatchPendingSignalForCurrentThread() {
 	Pthread current = PthreadSelfOrNull();
-	if (current == nullptr || !PthreadHasAnyPendingSignal(current)) {
+	if (!PthreadHasAnyPendingSignal(current)) {
 		return;
 	}
 
@@ -1311,7 +1311,7 @@ static int KYTY_SYSV_ABI KernelRaiseException(Pthread thread, int signum) {
 		}
 
 		PthreadQueuePendingSignal(thread, signum);
-		if (!PthreadKillHost(thread, SignalDispatchHostSignal())) {
+		if (!PthreadKillHost(thread, Common::HostException::GuestSignalDispatchSignal())) {
 			PthreadTakePendingSignal(thread, signum);
 			LOGF("\t pthread_kill failed for target thread\n");
 			return KERNEL_ERROR_EINVAL;
@@ -1329,9 +1329,9 @@ static int KYTY_SYSV_ABI KernelRaiseException(Pthread thread, int signum) {
 	return OK;
 }
 
-static KYTY_SYSV_ABI KernelModule KernelLoadStartModule(const char* module_file_name, size_t args,
-                                                        const void* argp, uint32_t flags,
-                                                        const KernelLoadModuleOpt* opt, int* res) {
+KernelModule KYTY_SYSV_ABI KernelLoadStartModule(const char* module_file_name, size_t args,
+                                                 const void* argp, uint32_t flags,
+                                                 const KernelLoadModuleOpt* opt, int* res) {
 	PRINT_NAME();
 
 	// EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
@@ -1383,9 +1383,9 @@ static KYTY_SYSV_ABI KernelModule KernelLoadStartModule(const char* module_file_
 	return static_cast<KernelModule>(handle);
 }
 
-static int KYTY_SYSV_ABI KernelStopUnloadModule(KernelModule handle, size_t args, const void* argp,
-                                                uint32_t flags, const KernelUnloadModuleOpt* opt,
-                                                int* res) {
+int KYTY_SYSV_ABI KernelStopUnloadModule(KernelModule handle, size_t args, const void* argp,
+                                        uint32_t flags, const KernelUnloadModuleOpt* opt,
+                                        int* res) {
 	PRINT_NAME();
 
 	// EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
@@ -1451,31 +1451,12 @@ static void* KYTY_SYSV_ABI KernelGetProcParam() {
 }
 
 static int KYTY_SYSV_ABI KernelIsTrinityMode() {
-	static std::atomic_uint32_t call_count {0};
-
-	auto count = call_count.fetch_add(1, std::memory_order_relaxed);
-	if (count < 8 || (count % 1024) == 0) {
-		PRINT_NAME();
-		LOGF("\tcall = %u, return = 0 (base PS5 mode)\n", count + 1);
-	}
-
-	return 0;
+	return Loader::SystemContentIsTrinityMode() ? 1 : 0;
 }
 
 static int KYTY_SYSV_ABI KernelGetOperationMode(int* mode, int* submode) {
-	PRINT_NAME();
-
-	*mode    = 2; // PS5 Base
+	*mode    = Loader::SystemContentIsTrinityMode() ? 3 : 2;
 	*submode = 0; // None
-	LOGF("\t mode = %d, submode = %d\n", *mode, *submode);
-	return OK;
-}
-
-static int KYTY_SYSV_ABI KernelFsync(int fd) {
-	PRINT_NAME();
-
-	LOGF("\t fd = %d\n", fd);
-
 	return OK;
 }
 
@@ -1508,22 +1489,8 @@ static void KYTY_SYSV_ABI KernelRtldSetApplicationHeapAPI(void* api[]) {
 	[[maybe_unused]] auto* heap_posix_memalign = api[6];
 }
 
-static int64_t KYTY_SYSV_ABI write(int d, const char* str, int64_t size) {
-	// PRINT_NAME();
-
-	EXIT_NOT_IMPLEMENTED(d < 0);
-
-	if (Network::Net::IsSocket(d)) {
-		return Network::Net::Send(d, str, static_cast<uint64_t>(size), 0);
-	}
-
-	if (d > 2) {
-		return POSIX_N_CALL(FileSystem::KernelWrite(d, str, size));
-	}
-
-	int size_int = static_cast<int>(size);
-
-	return size_int;
+static int64_t KYTY_SYSV_ABI write(int d, const void* buf, size_t nbytes) {
+	return POSIX_N_CALL(FileSystem::KernelWrite(d, buf, nbytes));
 }
 
 static int KYTY_SYSV_ABI open(const char* path, int flags, int mode) {
@@ -2087,6 +2054,12 @@ void* KYTY_SYSV_ABI mmap(void* addr, size_t len, int prot, int flags, int fd, in
 	return result;
 }
 
+int KYTY_SYSV_ABI rmdir(const char* path) {
+	PRINT_NAME();
+
+	return POSIX_CALL(LibKernel::FileSystem::KernelRmdir(path));
+}
+
 int64_t KYTY_SYSV_ABI lseek(int d, int64_t offset, int whence) {
 	PRINT_NAME();
 
@@ -2147,6 +2120,12 @@ int KYTY_SYSV_ABI ftruncate(int d, int64_t length) {
 	return POSIX_CALL(LibKernel::FileSystem::KernelFtruncate(d, length));
 }
 
+int KYTY_SYSV_ABI fsync(int d) {
+	PRINT_NAME();
+
+	return POSIX_CALL(LibKernel::FileSystem::KernelFsync(d));
+}
+
 int KYTY_SYSV_ABI socket(int family, int type, int protocol) {
 	PRINT_NAME();
 	return Network::Net::Socket(family, type, protocol);
@@ -2165,6 +2144,11 @@ int KYTY_SYSV_ABI connect(int s, const void* addr, uint32_t addrlen) {
 int KYTY_SYSV_ABI listen(int s, int backlog) {
 	PRINT_NAME();
 	return Network::Net::Listen(s, backlog);
+}
+
+int KYTY_SYSV_ABI shutdown(int s, int how) {
+	PRINT_NAME();
+	return Network::Net::Shutdown(s, how);
 }
 
 int KYTY_SYSV_ABI accept(int s, void* addr, uint32_t* addrlen) {
@@ -2332,6 +2316,7 @@ LIB_DEFINE(InitLibKernel_1_Posix) {
 	LIB_FUNC("NN01qLRhiqU", rename);
 	LIB_FUNC("BPE9s9vQQXo", mmap);
 	LIB_FUNC("ih4CD9-gghM", Posix::ftruncate);
+	LIB_FUNC("juWbTNM+8hw", Posix::fsync);
 	LIB_FUNC("8nY19bKoiZk", Posix::fcntl);
 	LIB_FUNC("pDuPEf3m4fI", Posix::sem_init);
 	LIB_FUNC("cDW233RAwWo", Posix::sem_destroy);
@@ -2405,6 +2390,7 @@ LIB_DEFINE(InitLibKernel_1_Posix) {
 	LIB_FUNC("KuOmgKoqCdY", Posix::bind);
 	LIB_FUNC("XVL8So3QJUk", Posix::connect);
 	LIB_FUNC("pxnCmagrtao", Posix::listen);
+	LIB_FUNC("TUuiYS2kE8s", Posix::shutdown);
 	LIB_FUNC("3e+4Iv7IJ8U", Posix::accept);
 	LIB_FUNC("RenI1lL1WFk", Posix::getsockname);
 	LIB_FUNC("6O8EwYOgH9Y", Posix::getsockopt);
@@ -2483,19 +2469,20 @@ struct FiberOptParam {
 };
 
 struct FiberCpuContext {
-	uint64_t rbx;
-	uint64_t rbp;
-	uint64_t rdi;
-	uint64_t rsi;
-	uint64_t r12;
-	uint64_t r13;
-	uint64_t r14;
-	uint64_t r15;
-	uint64_t rsp;
-	uint64_t rip;
+	uint64_t      rbx;
+	uint64_t      rbp;
+	uint64_t      rdi;
+	uint64_t      rsi;
+	uint64_t      r12;
+	uint64_t      r13;
+	uint64_t      r14;
+	uint64_t      r15;
+	uint64_t      rsp;
+	uint64_t      rip;
+	Common::FpEnv fp_env;
 };
 
-static_assert(sizeof(FiberCpuContext) == 80);
+static_assert(sizeof(FiberCpuContext) == 88);
 
 struct FiberObject {
 	uint32_t        magic_start;
@@ -2697,6 +2684,8 @@ static void FiberSwitchToTargetGuest(FiberObject* fiber) {
 	             "movq %r11, 64(%r10)\n\t"
 	             "movq (%rsp), %r11\n\t"
 	             "movq %r11, 72(%r10)\n\t"
+	             "stmxcsr 80(%r10)\n\t"
+	             "fnstcw 84(%r10)\n\t"
 	             "xorl %eax, %eax\n\t"
 	             "retq\n");
 }
@@ -2714,6 +2703,16 @@ FiberRestoreContext(FiberCpuContext* /*ctx*/, uint64_t /*ret*/) {
 	             "movq 40(%r10), %r13\n\t"
 	             "movq 48(%r10), %r14\n\t"
 	             "movq 56(%r10), %r15\n\t"
+	             "subq $8, %rsp\n\t"
+	             "stmxcsr (%rsp)\n\t"
+	             "movl (%rsp), %ecx\n\t"
+	             "andl $0x3f, %ecx\n\t"
+	             "movl 80(%r10), %edx\n\t"
+	             "andl $0xffffffc0, %edx\n\t"
+	             "orl %ecx, %edx\n\t"
+	             "movl %edx, (%rsp)\n\t"
+	             "ldmxcsr (%rsp)\n\t"
+	             "fldcw 84(%r10)\n\t"
 	             "movq 64(%r10), %rsp\n\t"
 	             "jmp *%r11\n");
 }
@@ -2743,6 +2742,10 @@ static void FiberRestoreContext(FiberCpuContext* ctx, uint64_t ret) {
 	ctx.rsp = rsp;
 	ctx.rip = reinterpret_cast<uint64_t>(&FiberStartTrampoline);
 	ctx.rdi = reinterpret_cast<uint64_t>(fiber);
+	if ((fiber->flags & FIBER_FLAG_SET_FPU_REGS) != 0) {
+		Common::WriteFpEnv(Common::GuestFpEnv);
+	}
+	ctx.fp_env = Common::ReadFpEnv();
 
 	FiberRestoreContext(&ctx, 1);
 }
@@ -3390,6 +3393,7 @@ LIB_DEFINE(InitLibKernel_1_FS) {
 	LIB_FUNC("UK2Tl2DWUns", FileSystem::KernelClose);
 	LIB_FUNC("Cg4srZ6TKbU", FileSystem::KernelRead);
 	LIB_FUNC("4wSze92BhLI", FileSystem::KernelWrite);
+	LIB_FUNC("kAt6VDbHmro", FileSystem::KernelWritev);
 	LIB_FUNC("+r3rMFwItV4", FileSystem::KernelPread);
 	LIB_FUNC("yTj62I7kw4s", FileSystem::KernelPreadv);
 	LIB_FUNC("nKWi-N2HBV4", FileSystem::KernelPwrite);
@@ -3397,6 +3401,7 @@ LIB_DEFINE(InitLibKernel_1_FS) {
 	LIB_FUNC("eV9wAD2riIA", FileSystem::KernelStat);
 	LIB_FUNC("kBwCPsYX-m4", FileSystem::KernelFstat);
 	LIB_FUNC("VW3TVZiM4-E", FileSystem::KernelFtruncate);
+	LIB_FUNC("WlyEA-sLDf0", FileSystem::KernelTruncate);
 	LIB_FUNC("AUXVxWeJU-A", FileSystem::KernelUnlink);
 	LIB_FUNC("52NcYU9+lEo", FileSystem::KernelRename);
 	LIB_FUNC("taRWhTJFTgE", FileSystem::KernelGetdirentries);
@@ -3462,6 +3467,7 @@ LIB_DEFINE(InitLibKernel_1_Equeue) {
 	LIB_FUNC("F6e0kwo4cnk", EventQueue::KernelTriggerUserEvent);
 	LIB_FUNC("LJDwdSNTnDg", EventQueue::KernelDeleteUserEvent);
 	LIB_FUNC("57ZK+ODEXWY", EventQueue::KernelAddTimerEvent);
+	LIB_FUNC("YWQFUyXIVdU", EventQueue::KernelDeleteTimerEvent);
 	LIB_FUNC("R74tt43xP6k", EventQueue::KernelAddHRTimerEvent);
 	LIB_FUNC("J+LF6LwObXU", EventQueue::KernelDeleteHRTimerEvent);
 	LIB_FUNC("bBfz7kMF2Ho", EventQueue::KernelAddAmprEvent);
@@ -3538,6 +3544,7 @@ LIB_DEFINE(InitLibKernel_1_Pthread) {
 	LIB_FUNC("8+s5BzZjxSg", LibKernel::PthreadAttrGetaffinity);
 	LIB_FUNC("nsYoNRywwNg", LibKernel::PthreadAttrInit);
 	LIB_FUNC("JaRMy+QcpeU", LibKernel::PthreadAttrGetdetachstate);
+	LIB_FUNC("lpMP8HhkBbg", LibKernel::PthreadAttrGetinheritsched);
 	LIB_FUNC("-quPa4SEJUw", LibKernel::PthreadAttrGetstack);
 	LIB_FUNC("Ru36fiTtJzA", LibKernel::PthreadAttrGetstackaddr);
 	LIB_FUNC("-fA+7ZlGDQs", LibKernel::PthreadAttrGetstacksize);
@@ -3620,6 +3627,7 @@ LIB_DEFINE(InitLibKernel_1_Pthread) {
 	LIB_FUNC("z0dtnPxYgtg", chmod);
 	LIB_FUNC("VAzswvTOCzI", FileSystem::KernelUnlink);
 	LIB_FUNC("JGMio+21L4c", Posix::mkdir);
+	LIB_FUNC("c7ZnT7V1B98", Posix::rmdir);
 	LIB_FUNC("wuCroIGjt2g", FileSystem::KernelOpen);
 	LIB_FUNC("bY-PO6JhzhQ", FileSystem::KernelClose);
 	LIB_FUNC("FN4gaPmuFV8", FileSystem::KernelWrite);
@@ -3676,7 +3684,7 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("959qrazPIrg", LibKernel::KernelGetProcParam);
 	LIB_FUNC("tU5e3f9gSiU", LibKernel::KernelIsTrinityMode);
 	LIB_FUNC("NH6xARDOVv8", LibKernel::KernelGetOperationMode);
-	LIB_FUNC("fTx66l5iWIA", LibKernel::KernelFsync);
+	LIB_FUNC("fTx66l5iWIA", FileSystem::KernelFsync);
 	LIB_FUNC("uvT2iYBBnkY", LibKernel::KernelSync);
 	LIB_FUNC("HoLVWNanBBc", LibKernel::getpid);
 	LIB_FUNC("9BcDykPmo1I", LibKernel::get_error_addr);

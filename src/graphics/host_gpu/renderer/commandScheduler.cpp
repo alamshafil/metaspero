@@ -1,35 +1,17 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 
 #include "common/assert.h"
+#include "common/debugCounters.h"
 #include "common/hostException.h"
 #include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <optional>
 
 namespace Libs::Graphics {
 
 static thread_local CommandScheduler* g_deferred_callback_scheduler = nullptr;
-
-namespace {
-
-void ReportVulkanFatal(const char* what, vk::Result result, uint64_t tick, uint32_t debug_op,
-                       uint64_t debug_submit, uint32_t arg0, uint32_t arg1, uint32_t arg2,
-                       uint32_t arg3, uint64_t arg4) {
-	LOGF("%s failed: %s (%d), tick=%" PRIu64 " debug_op=%u debug_submit=%" PRIu64
-	     " args=%u,%u,%u,%u,0x%016" PRIx64 "\n",
-	     what, vk::to_string(result).c_str(), static_cast<int>(result), tick, debug_op,
-	     debug_submit, arg0, arg1, arg2, arg3, arg4);
-	std::printf("%s failed: %s (%d), tick=%" PRIu64 " debug_op=%u debug_submit=%" PRIu64
-	            " args=%u,%u,%u,%u,0x%016" PRIx64 "\n",
-	            what, vk::to_string(result).c_str(), static_cast<int>(result), tick, debug_op,
-	            debug_submit, arg0, arg1, arg2, arg3, arg4);
-	std::fflush(stdout);
-}
-
-} // namespace
 
 CommandScheduler::CommandPool::CommandPool(GraphicContext& graphics, MasterSemaphore& master)
     : m_graphics(graphics), m_master(master) {
@@ -137,7 +119,7 @@ void CommandScheduler::Shutdown() {
 	{
 		std::lock_guard lock(m_operation_mutex);
 		EXIT_IF(!m_pending_operations.empty() || !m_priority_operations.empty() ||
-		        m_priority_active);
+		        m_priority_active_tick != 0);
 		m_operation_state = OperationState::Closed;
 	}
 	m_operation_available.notify_all();
@@ -156,16 +138,6 @@ void CommandScheduler::Begin(HW::Context& registers, HW::UserConfig& user_config
 	}
 }
 
-void CommandScheduler::BeginRendering(const RenderState& state) {
-	Current().BeginRendering(state);
-}
-
-void CommandScheduler::EndRendering() {
-	if (Active() && !m_command.IsInvalid()) {
-		Current().EndRendering();
-	}
-}
-
 void CommandScheduler::Flush() {
 	SubmitInfo submit;
 	Flush(submit);
@@ -173,12 +145,6 @@ void CommandScheduler::Flush() {
 
 void CommandScheduler::Flush(SubmitInfo& submit) {
 	Submit(submit);
-	BeginNext();
-}
-
-void CommandScheduler::FlushAndWait() {
-	const auto tick = Submit();
-	m_master.Wait(tick);
 	BeginNext();
 }
 
@@ -261,7 +227,7 @@ void CommandScheduler::QueueOperation(Common::UniqueFunction<void>&& operation, 
 
 bool CommandScheduler::HasPendingPriorityOperations() {
 	std::lock_guard lock(m_operation_mutex);
-	return !m_priority_operations.empty() || m_priority_active;
+	return !m_priority_operations.empty() || m_priority_active_tick != 0;
 }
 
 void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
@@ -277,7 +243,6 @@ void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
 			}
 			operation = std::move(m_priority_operations.front());
 			m_priority_operations.pop();
-			m_priority_active      = true;
 			m_priority_active_tick = operation.tick;
 		}
 		m_master.Wait(operation.tick);
@@ -286,7 +251,6 @@ void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
 		}
 		{
 			std::lock_guard lock(m_operation_mutex);
-			m_priority_active      = false;
 			m_priority_active_tick = 0;
 		}
 		m_operation_available.notify_all();
@@ -302,7 +266,7 @@ void CommandScheduler::DrainPriorityOperations() {
 	m_operation_available.wait_for(
 	    lock, std::chrono::milliseconds(200), [this] {
 		    return Common::HostException::IsEmulationShuttingDown() ||
-		           (m_priority_operations.empty() && !m_priority_active);
+		           (m_priority_operations.empty() && m_priority_active_tick == 0);
 	    });
 }
 
@@ -316,7 +280,8 @@ void CommandScheduler::WaitPriorityOperations(uint64_t tick) {
 		if (Common::HostException::IsEmulationShuttingDown()) {
 			return true;
 		}
-		const bool active_before_or_at = m_priority_active && m_priority_active_tick <= tick;
+		const bool active_before_or_at =
+		    m_priority_active_tick != 0 && m_priority_active_tick <= tick;
 		const bool queued_before_or_at =
 		    !m_priority_operations.empty() && m_priority_operations.front().tick <= tick;
 		return !active_before_or_at && !queued_before_or_at;
@@ -358,8 +323,6 @@ CommandBuffer& CommandScheduler::BeginCommand() {
 
 uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	EXIT_IF(m_command.IsInvalid());
-	EXIT_IF(submit.num_wait_semaphores > SubmitInfo::MaxSemaphores ||
-	        submit.num_signal_semaphores >= SubmitInfo::MaxSemaphores);
 
 	m_command.End();
 	const auto buffer   = m_command.m_buffer;
@@ -391,14 +354,11 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 
 		result = graphics.queue.submit(1, &submit_info, nullptr);
 	}
+	Common::DebugCounters::Add(Common::DebugCounters::Counter::QueueSubmits);
 
 	if (result != vk::Result::eSuccess) {
-		ReportVulkanFatal("vkQueueSubmit", result, tick, m_command.m_debug_op,
-		                  m_command.m_debug_submit_id, m_command.m_debug_arg0,
-		                  m_command.m_debug_arg1, m_command.m_debug_arg2, m_command.m_debug_arg3,
-		                  m_command.m_debug_arg4);
+		EXIT("vkQueueSubmit failed: %s, tick=%" PRIu64 "\n", vk::to_string(result).c_str(), tick);
 	}
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
 	m_command.m_buffer = nullptr;
 	return tick;

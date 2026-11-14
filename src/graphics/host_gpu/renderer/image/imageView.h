@@ -31,29 +31,21 @@ namespace ImageViewOps {
 	       ImageViewOps::IsFormatDepthCompatible(view_format);
 }
 
-[[nodiscard]] inline bool IsValidImageSwizzle(uint32_t swizzle,
-                                             uint32_t component_count = 4) noexcept {
-	if ((swizzle & ~0xfffu) != 0) {
-		return false;
-	}
-	for (uint32_t channel = 0; channel < 4; channel++) {
-		const auto selector = GetDstSel(swizzle, channel);
-		if (selector > 1 && (selector < 4 || selector >= 4 + component_count)) return false;
-	}
-	return true;
-}
-
 [[noreturn]] inline void UnsupportedColorView(const char* usage, vk::Format image_format,
                                               vk::Format view_format, uint32_t swizzle) noexcept {
 	EXIT("unsupported %s color image view: image_format=%d view_format=%d swizzle=0x%03x\n", usage,
 	     static_cast<int>(image_format), static_cast<int>(view_format), swizzle);
 }
 
-[[nodiscard]] inline vk::Format SrgbStorageViewFormat(vk::Format image_format) noexcept {
+[[nodiscard]] inline vk::Format SrgbUnormViewFormat(vk::Format image_format) noexcept {
 	switch (image_format) {
 		case vk::Format::eR8G8B8A8Srgb:
 		case vk::Format::eB8G8R8A8Srgb: return vk::Format::eR8G8B8A8Unorm;
-		default: return vk::Format::eUndefined;
+		case vk::Format::eBc1RgbaSrgbBlock: return vk::Format::eBc1RgbaUnormBlock;
+		case vk::Format::eBc2SrgbBlock: return vk::Format::eBc2UnormBlock;
+		case vk::Format::eBc3SrgbBlock: return vk::Format::eBc3UnormBlock;
+		case vk::Format::eBc7SrgbBlock: return vk::Format::eBc7UnormBlock;
+		default: return image_format;
 	}
 }
 
@@ -113,6 +105,7 @@ IsSupportedStorageImageResource(const ShaderRecompiler::IR::ImageResource& resou
 	       (resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim1D ||
 	        resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim1DArray ||
 	        resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D ||
+	        resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2DMsaa ||
 	        resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim3D ||
 	        resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2DArray) &&
 	       ((resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::None &&

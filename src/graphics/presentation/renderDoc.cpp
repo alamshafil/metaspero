@@ -12,12 +12,7 @@
 #include <string>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
 #include <windows.h>
-#undef min
-#undef max
 #else
 #include <dlfcn.h>
 #endif
@@ -158,11 +153,12 @@ static void StartCapture() {
 
 void RenderDocOnGuestFlip(RenderContext& renderer) {
 	const auto state = g_state.load(std::memory_order_acquire);
-	if (g_api == nullptr || state == RenderDocState::Idle) {
+	if (state == RenderDocState::Idle) {
 		return;
 	}
 	if (state == RenderDocState::Capturing) {
-		LOGF("RenderDoc: captured guest flip %u/2\n", ++g_captured_flips);
+		++g_captured_flips;
+		LOGF("RenderDoc: captured guest flip %u/2\n", g_captured_flips);
 		if (g_captured_flips < 2) {
 			return;
 		}

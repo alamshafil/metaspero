@@ -131,6 +131,7 @@ LIB_DEFINE(InitAudio_1_AudioOut) {
 	LIB_FUNC("QOQtbeDqsT4", AudioOut::AudioOutOutput);
 	LIB_FUNC("s1--uE9mBFw", AudioOut::AudioOutClose);
 	LIB_FUNC("GrQ9s4IrNaQ", AudioOut::AudioOutGetPortState);
+	LIB_FUNC("R5hemoKKID8", AudioOut::AudioOutGetSystemState);
 }
 
 } // namespace LibAudioOut
@@ -522,6 +523,22 @@ LIB_DEFINE(InitAudio_1_Voice) {
 
 } // namespace LibVoice
 
+namespace LibVoiceChat {
+
+LIB_VERSION("VoiceChat", 1, "VoiceChat", 1, 1);
+
+static int KYTY_SYSV_ABI VoiceChatStub() {
+	return OK;
+}
+
+LIB_DEFINE(InitAudio_1_VoiceChat) {
+	LIB_FUNC("spdS-hedavE", VoiceChatStub);
+	LIB_FUNC("Ptmkf9UnWBg", VoiceChatStub);
+	LIB_FUNC("CscDZAFA5+c", VoiceChatStub);
+}
+
+} // namespace LibVoiceChat
+
 namespace LibAjm {
 
 LIB_VERSION("Ajm", 1, "Ajm", 1, 1);
@@ -561,6 +578,7 @@ LIB_DEFINE(InitAudio_1_Ajm) {
 	LIB_FUNC("jVCWcthifr8", Ajm::AjmBatchJobRun);
 	LIB_FUNC("Z9NVCesiP0Q", Ajm::AjmBatchJobRunSplit);
 	LIB_FUNC("1t3ixYNXyuc", Ajm::AjmDecAt9ParseConfigData);
+	LIB_FUNC("eDFeTyi+G3Y", Ajm::AjmDecMp3ParseFrame);
 }
 
 } // namespace LibAjm
@@ -578,6 +596,7 @@ LIB_DEFINE(InitAudio_1_Acm) {
 	LIB_FUNC("8fe55ktlNVo", Acm::AcmBatchStartBuffers);
 	LIB_FUNC("RLN3gRlXJLE", Acm::AcmBatchWait);
 	LIB_FUNC("r7z5YQFZo+U", Acm::AcmBatchJobNotification);
+	LIB_FUNC("GTfJ64qFCPw", Acm::AcmBatchJobPriority);
 	LIB_FUNC("u70oWo92SYQ", Acm::AcmConvReverbSharedInput);
 	LIB_FUNC("9nLbWmRDpa8", Acm::AcmConvReverbSharedIr);
 	LIB_FUNC("KovqaFbmtsM", Acm::AcmFft);
@@ -1147,6 +1166,8 @@ LIB_DEFINE(InitAudio_1_Ngs2) {
 	LIB_FUNC("mPYgU4oYpuY", Ngs2::Ngs2SystemCreateWithAllocator);
 	LIB_FUNC("u-WrYDaJA3k", Ngs2::Ngs2SystemDestroy);
 	LIB_FUNC("vU7TQ62pItw", Ngs2::Ngs2SystemGetInfo);
+	LIB_FUNC("gThZqM5PYlQ", Ngs2::Ngs2SystemLock);
+	LIB_FUNC("JXRC5n0RQls", Ngs2::Ngs2SystemUnlock);
 	LIB_FUNC("U546k6orxQo", Ngs2::Ngs2RackCreateWithAllocator);
 	LIB_FUNC("cLV4aiT9JpA", Ngs2::Ngs2RackCreate);
 	LIB_FUNC("0eFLVCfWVds", Ngs2::Ngs2RackQueryBufferSize);
@@ -1158,6 +1179,8 @@ LIB_DEFINE(InitAudio_1_Ngs2) {
 	LIB_FUNC("AbYvTOZ8Pts", Ngs2::Ngs2VoiceRunCommands);
 	LIB_FUNC("-TOuuAQ-buE", Ngs2::Ngs2VoiceGetState);
 	LIB_FUNC("rEh728kXk3w", Ngs2::Ngs2VoiceGetStateFlags);
+	LIB_FUNC("9eic4AmjGVI", Ngs2::Ngs2VoiceQueryInfo);
+	LIB_FUNC("WCayTgob7-o", Ngs2::Ngs2VoiceGetPortInfo);
 	LIB_FUNC("i0VnXM-C9fc", Ngs2::Ngs2SystemRender);
 	LIB_FUNC("l4Q2dWEH6UM", Ngs2::Ngs2SystemSetGrainSamples);
 	LIB_FUNC("hyVLT2VlOYk", Ngs2::Ngs2ParseWaveformData);
@@ -1178,6 +1201,7 @@ LIB_DEFINE(InitAudio_1) {
 	LibAudioIn::InitAudio_1_AudioIn(s);
 	LibVoiceQoS::InitAudio_1_VoiceQoS(s);
 	LibVoice::InitAudio_1_Voice(s);
+	LibVoiceChat::InitAudio_1_VoiceChat(s);
 	LibAjm::InitAudio_1_Ajm(s);
 	LibAcm::InitAudio_1_Acm(s);
 	LibAvPlayer::InitAudio_1_AvPlayer(s);

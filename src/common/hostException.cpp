@@ -126,6 +126,15 @@ bool InitializeThreadSignalStack() {
 	return signal_stack.IsInitialized();
 }
 
+int GuestSignalDispatchSignal() {
+#if defined(__APPLE__)
+	// macOS has no realtime signals, and the host uses SIGUSR1 for nothing else.
+	return SIGUSR1;
+#else
+	return SIGRTMIN + 3;
+#endif
+}
+
 #endif
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -729,6 +738,7 @@ bool InstallHandler(Handler handler) {
 	action.sa_sigaction = SignalHandler;
 	sigemptyset(&action.sa_mask);
 	action.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
+	sigaddset(&action.sa_mask, GuestSignalDispatchSignal());
 
 	for (const int signal_number: {SIGSEGV, SIGBUS, SIGILL, SIGTRAP}) {
 		if (::sigaction(signal_number, &action, nullptr) != 0) {

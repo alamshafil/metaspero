@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
 
 #include "common/assert.h"
+#include "common/debugCounters.h"
 #include "common/hostException.h"
 #include "graphics/host_gpu/graphicContext.h"
 
@@ -19,9 +20,7 @@ MasterSemaphore::MasterSemaphore(GraphicContext& graphics): m_graphics(graphics)
 }
 
 MasterSemaphore::~MasterSemaphore() {
-	if (m_semaphore != nullptr) {
-		m_graphics.device.destroySemaphore(m_semaphore, nullptr);
-	}
+	m_graphics.device.destroySemaphore(m_semaphore, nullptr);
 }
 
 void MasterSemaphore::Refresh() {
@@ -55,6 +54,8 @@ void MasterSemaphore::Wait(uint64_t tick) {
 		wait_info.pSemaphores    = &m_semaphore;
 		wait_info.pValues        = &tick;
 
+		Common::DebugCounters::ScopedTimer timer(Common::DebugCounters::Counter::GpuWaits,
+		                                         Common::DebugCounters::Counter::GpuWaitNs);
 		const auto result = m_graphics.device.waitSemaphores(&wait_info, TIMEOUT_NS);
 		Refresh();
 		if (result == vk::Result::eSuccess || IsFree(tick)) {

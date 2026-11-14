@@ -4,6 +4,7 @@
 
 #include <fmt/format.h>
 #include <xbyak/xbyak.h>
+#include <cstdlib>
 #include <map>
 #include <new>
 #include <unordered_map>
@@ -118,15 +119,14 @@ ResourcePlan& ResourcePlan::operator=(ResourcePlan&& other) noexcept {
 }
 
 Program::~Program() {
-	// Planning expressions can refer to block values but outlive block storage in the base class.
+	// Planning expressions can refer to block values but outlive block storage in the base class,
+	// and values cross block boundaries: detach everything before any storage is destroyed.
 	for (auto& inst: value_storage) {
-		inst.Invalidate();
+		inst.DropArgs();
 	}
-	// Values may cross block boundaries. Detach all arguments before any block starts destroying
-	// its instruction storage so reverse-use links always point to live definitions.
 	for (auto* block: blocks) {
 		for (auto& inst: *block) {
-			inst.Invalidate();
+			inst.DropArgs();
 		}
 	}
 }
@@ -141,15 +141,13 @@ Program& Program::operator=(Program&& other) noexcept {
 
 CompiledShaderInfo Program::TakeCompiledInfo() && {
 	CompiledShaderInfo result {
-	    .stage           = stage,
-	    .shader_hash     = shader_hash,
-	    .wave_size       = wave_size,
-	    .user_data_base  = user_data_base,
-	    .user_data_count = user_data_count,
-	    .scratch_dwords  = scratch_dwords,
+	    .stage              = stage,
+	    .shader_hash        = shader_hash,
+	    .wave_size          = wave_size,
+	    .user_data_base     = user_data_base,
 	    .has_address_writes = has_address_writes,
-	    .info            = std::move(info),
-	    .bindings        = std::move(bindings),
+	    .info               = std::move(info),
+	    .bindings           = std::move(bindings),
 	};
 	for (const auto& output: result.info.outputs) {
 		if (output.kind == StageOutputKind::Parameter && output.index < 32) {
@@ -162,6 +160,18 @@ CompiledShaderInfo Program::TakeCompiledInfo() && {
 bool EquivalentValue(const ResourcePlan& program, Value left, Value right) {
 	std::vector<std::pair<const Inst*, const Inst*>> visited;
 	return EquivalentValue(program, left, right, visited);
+}
+
+bool EquivalentSelectorDomain(const ResourcePlan& program,
+                              const DescriptorSource::IndirectDescriptor& left,
+                              const DescriptorSource::IndirectDescriptor& right) {
+	return left.selector == right.selector && left.signed_count == right.signed_count &&
+	       left.workgroup_axis == right.workgroup_axis &&
+	       left.workgroup_multiplier == right.workgroup_multiplier &&
+	       left.workgroup_shift == right.workgroup_shift &&
+	       EquivalentValue(program, left.key_count, right.key_count) &&
+	       EquivalentValue(program, left.selector_first, right.selector_first) &&
+	       EquivalentValue(program, left.selector_mask, right.selector_mask);
 }
 
 Value ResolveInvariantPhi(const ResourcePlan& program, Value value) {
@@ -471,10 +481,15 @@ void ValidateProgram(const Program& program, bool require_ssa) {
 				}
 				if (memory.kind == ResourceKind::IndirectBuffer &&
 				    !memory.SupportsIndirectBufferLoad(inst.GetOpcode())) {
-					return Fail("indirect buffer requires a scalar, raw DWORD x1/x2/x3/x4, or formatted X load");
+					return Fail("indirect buffer requires a scalar, raw 8/16-bit, raw DWORD x1/x2/x3/x4, "
+					            "or formatted X load");
 				}
+				const auto access = BufferAccessOf(inst.GetOpcode());
+				const bool packed_formatted =
+				    (access == BufferAccess::Read || access == BufferAccess::Write) && memory.formatted &&
+				    memory.data_bits == 16u && (memory.component_count + 1u) / 2u == buffer_components;
 				if (buffer_components > 1u &&
-				    (!vector_buffer || memory.data_bits != 32u ||
+				    (!vector_buffer || (memory.data_bits != 32u && !packed_formatted) ||
 				     memory.data_dwords != buffer_components || memory.component_index != 0u)) {
 					return Fail(fmt::format("{} has inconsistent native-wide metadata",
 					                        ValueOpcodeName(inst.GetOpcode())));
@@ -661,13 +676,6 @@ void ValidateProgram(const Program& program, bool require_ssa) {
 		if (!info.indirect_target.IsEmpty() && !control_dominates(info.indirect_target, block)) {
 			return Fail("value IR indirect selector definition does not dominate its use");
 		}
-	}
-}
-
-void ResolveControlFlowIdentities(Program& program) {
-	for (auto* block: program.blocks) {
-		block->condition       = block->condition.Resolve();
-		block->indirect_target = block->indirect_target.Resolve();
 	}
 }
 

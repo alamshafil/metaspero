@@ -47,6 +47,9 @@ bool IsEmulationShuttingDown();
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 bool InitializeThreadSignalStack();
+// The host signal that delivers guest signals. Fault handling blocks it, so a guest handler runs
+// only once the faulting instruction is resolved.
+int GuestSignalDispatchSignal();
 #endif
 
 // Allocator selftest guard: protects VerifyExecutableCode against hardware execution faults

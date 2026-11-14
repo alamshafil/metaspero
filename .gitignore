@@ -26,3 +26,5 @@ frontend/android/app/libs/
 frontend/android/app/src/main/jniLibs/
 .build/
 **/.build/
+
+CMakeUserPresets.json

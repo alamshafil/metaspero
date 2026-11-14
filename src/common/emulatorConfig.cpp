@@ -1,6 +1,7 @@
 #include "common/emulatorConfig.h"
 
 #include "common/assert.h"
+#include "common/debugCounters.h"
 
 #include <algorithm>
 #include <memory>
@@ -18,6 +19,7 @@ void Initialize() {
 }
 
 void Shutdown() {
+	Common::DebugCounters::SetEnabled(false);
 	g_config.reset();
 }
 
@@ -26,8 +28,10 @@ void Load(const ConfigOptions& cfg) {
 	EXIT_IF(cfg.user_name.empty() || cfg.user_name.size() > MAX_USER_NAME_LENGTH);
 	EXIT_IF(!IsConfiguredUserIdValid(cfg.user_id));
 	EXIT_IF(cfg.controller_speaker_volume > 100 || cfg.controller_vibration_intensity > 100);
+	EXIT_IF(cfg.keyboard_player > static_cast<uint32_t>(MAX_PLAYERS));
 
 	*g_config = cfg;
+	Common::DebugCounters::SetEnabled(cfg.perf_overlay_enabled);
 }
 
 uint32_t GetScreenWidth() {
@@ -62,6 +66,27 @@ uint32_t GetControllerVibrationIntensity() {
 	return g_config->controller_vibration_intensity;
 }
 
+uint32_t GetKeyboardPlayer() {
+	return g_config->keyboard_player;
+}
+
+int32_t GetPlayerUserId(int player) {
+	return g_config->user_id + player * PLAYER_USER_ID_STEP;
+}
+
+int GetPlayerFromUserId(int32_t user_id) {
+	for (int player = 0; player < MAX_PLAYERS; player++) {
+		if (user_id == GetPlayerUserId(player)) {
+			return player;
+		}
+	}
+	return -1;
+}
+
+bool IsGuestUserId(int32_t user_id) {
+	return GetPlayerFromUserId(user_id) > 0;
+}
+
 PresentMode GetPresentMode() {
 	return g_config->present_mode;
 }
@@ -82,12 +107,40 @@ bool HideCursorEnabled() {
 	return g_config->hide_cursor_enabled;
 }
 
+bool StretchEnabled() {
+	return g_config->stretch_enabled;
+}
+
 bool VrEnabled() {
 	return g_config->vr_enabled;
 }
 
+bool Ps5ProEnabled() {
+	return g_config->pro_enabled;
+}
+
+PssrUpscaler GetPssrUpscaler() {
+	return g_config->pssr_upscaler;
+}
+
+const std::filesystem::path& GetDlssFolder() {
+	return g_config->dlss_folder;
+}
+
+uint32_t GetDlssPreset() {
+	return g_config->dlss_preset;
+}
+
+const std::filesystem::path& GetFsrFolder() {
+	return g_config->fsr_folder;
+}
+
 bool AmdCpuEnabled() {
 	return g_config->amd_cpu_enabled;
+}
+
+bool GuestTscEnabled() {
+	return g_config->guest_tsc_enabled;
 }
 
 uint32_t GetVblankFrequency() {
@@ -106,12 +159,16 @@ bool IsNetworkConnected() {
 	return g_config->network_connected;
 }
 
+bool PsnEmulationEnabled() {
+	return g_config->psn_emulation_enabled;
+}
+
 bool ShaderValidationEnabled() {
 	return g_config->shader_validation_enabled;
 }
 
-ShaderOptimizationType GetShaderOptimizationType() {
-	return g_config->shader_optimization_type;
+bool ShaderCacheEnabled() {
+	return g_config->shader_cache_enabled;
 }
 
 LogDirection GetShaderLogDirection() {
@@ -162,16 +219,48 @@ bool ReadbackLinearImagesEnabled() {
 	return g_config->readback_linear_images;
 }
 
+bool ReadbackTiledImagesEnabled() {
+	return g_config->readback_tiled_images;
+}
+
+bool ReadbackStorageImagesEnabled() {
+	return g_config->readback_storage_images;
+}
+
 bool SyncRawImageBuffersEnabled() {
 	return g_config->sync_raw_image_buffers;
+}
+
+uint32_t GetFlushDraws() {
+	return g_config->flush_draws;
 }
 
 bool TessellationEnabled() {
 	return g_config->tessellation_enabled;
 }
 
+bool OcclusionQueriesEnabled() {
+	return g_config->occlusion_queries_enabled;
+}
+
+bool RelaxedShaderFloatEnabled() {
+	return g_config->relaxed_shader_float;
+}
+
+bool NativeRtEnabled() {
+	return g_config->native_rt;
+}
+
+bool LodStatsEnabled() {
+	return g_config->lod_stats_enabled;
+}
+
 bool TrophyEnabled() {
 	return g_config->trophy_enabled;
+}
+
+uint32_t GetTrophyDurationSeconds() {
+	return std::clamp(g_config->trophy_duration_seconds, 5u, 10u);
 }
 
 bool PlayGoHackEnabled() {
