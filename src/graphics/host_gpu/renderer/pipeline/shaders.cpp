@@ -183,7 +183,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		tess_eval_shader_module    = CompileSPV(shaders.evaluation, graphics.device);
 	}
 
-	vk::PipelineShaderStageCreateInfo shader_stages[4] {};
+	vk::PipelineShaderStageCreateInfo shader_stages[8] {};
 	uint32_t                          shader_stage_count = 0;
 	for (const auto* stage: stages) {
 		if (stage != nullptr) {
