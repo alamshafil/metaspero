@@ -243,7 +243,7 @@ struct InGameOverlayView: View {
             LogView()
         }
         .sheet(isPresented: $showSettingsSheet) {
-            SettingsView()
+            SettingsView(isSheet: true)
         }
     }
 }
@@ -328,6 +328,9 @@ struct EmulatorMetalSurface: UIViewRepresentable {
 #elseif os(macOS)
 final class HostMetalView: NSView {
     let metalLayer = CAMetalLayer()
+    private var previousModifierFlags: NSEvent.ModifierFlags = []
+
+    override var acceptsFirstResponder: Bool { true }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -341,6 +344,61 @@ final class HostMetalView: NSView {
         layer?.addSublayer(metalLayer)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window = self.window {
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self = self, let window = window else { return }
+                window.makeFirstResponder(self)
+            }
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        KytyBridge.sendKeyEvent(
+            withMacKeyCode: event.keyCode,
+            characters: event.charactersIgnoringModifiers,
+            modifierFlags: event.modifierFlags.rawValue,
+            down: true,
+            isRepeat: event.isARepeat
+        )
+    }
+
+    override func keyUp(with event: NSEvent) {
+        KytyBridge.sendKeyEvent(
+            withMacKeyCode: event.keyCode,
+            characters: event.charactersIgnoringModifiers,
+            modifierFlags: event.modifierFlags.rawValue,
+            down: false,
+            isRepeat: false
+        )
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        let changed = event.modifierFlags.symmetricDifference(previousModifierFlags)
+        let checks: [(NSEvent.ModifierFlags, UInt16)] = [
+            (.shift, 0x38),
+            (.control, 0x3B),
+            (.option, 0x3A),
+            (.command, 0x37)
+        ]
+        for (flag, code) in checks where changed.contains(flag) {
+            KytyBridge.sendKeyEvent(
+                withMacKeyCode: code,
+                characters: nil,
+                modifierFlags: event.modifierFlags.rawValue,
+                down: event.modifierFlags.contains(flag),
+                isRepeat: false
+            )
+        }
+        previousModifierFlags = event.modifierFlags
+    }
 
     override func layout() {
         super.layout()

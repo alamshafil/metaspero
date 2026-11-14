@@ -175,6 +175,15 @@ typedef NS_ENUM(NSInteger, KytyButton) {
 /// Called by the crash / signal handler when an unhandled fault occurs
 + (void)handleCrashWithReason:(NSString *)reason detail:(NSString *)detail;
 
+#if TARGET_OS_OSX
+/// Forwards a macOS NSEvent keyboard press/release into SDL's event queue
++ (void)sendKeyEventWithMacKeyCode:(uint16_t)keyCode
+                        characters:(nullable NSString *)characters
+                     modifierFlags:(NSUInteger)modifierFlags
+                              down:(BOOL)down
+                          isRepeat:(BOOL)isRepeat;
+#endif
+
 @end
 
 NS_ASSUME_NONNULL_END

@@ -1438,4 +1438,145 @@ static NSString *g_last_memory_warning_level = nil;
     ];
 }
 
+#if TARGET_OS_OSX
+static void MapMacKeyCodeToSDL(uint16_t macKeyCode, NSString *characters,
+                               SDL_Scancode *outScancode, SDL_Keycode *outKeycode) {
+    SDL_Scancode sc = SDL_SCANCODE_UNKNOWN;
+    SDL_Keycode  kc = SDLK_UNKNOWN;
+    switch (macKeyCode) {
+        // Letters (ANSI layout)
+        case 0x00: sc = SDL_SCANCODE_A; kc = SDLK_A; break;
+        case 0x0B: sc = SDL_SCANCODE_B; kc = SDLK_B; break;
+        case 0x08: sc = SDL_SCANCODE_C; kc = SDLK_C; break;
+        case 0x02: sc = SDL_SCANCODE_D; kc = SDLK_D; break;
+        case 0x0E: sc = SDL_SCANCODE_E; kc = SDLK_E; break;
+        case 0x03: sc = SDL_SCANCODE_F; kc = SDLK_F; break;
+        case 0x05: sc = SDL_SCANCODE_G; kc = SDLK_G; break;
+        case 0x04: sc = SDL_SCANCODE_H; kc = SDLK_H; break;
+        case 0x22: sc = SDL_SCANCODE_I; kc = SDLK_I; break;
+        case 0x26: sc = SDL_SCANCODE_J; kc = SDLK_J; break;
+        case 0x28: sc = SDL_SCANCODE_K; kc = SDLK_K; break;
+        case 0x25: sc = SDL_SCANCODE_L; kc = SDLK_L; break;
+        case 0x2E: sc = SDL_SCANCODE_M; kc = SDLK_M; break;
+        case 0x2D: sc = SDL_SCANCODE_N; kc = SDLK_N; break;
+        case 0x1F: sc = SDL_SCANCODE_O; kc = SDLK_O; break;
+        case 0x23: sc = SDL_SCANCODE_P; kc = SDLK_P; break;
+        case 0x0C: sc = SDL_SCANCODE_Q; kc = SDLK_Q; break;
+        case 0x0F: sc = SDL_SCANCODE_R; kc = SDLK_R; break;
+        case 0x01: sc = SDL_SCANCODE_S; kc = SDLK_S; break;
+        case 0x11: sc = SDL_SCANCODE_T; kc = SDLK_T; break;
+        case 0x20: sc = SDL_SCANCODE_U; kc = SDLK_U; break;
+        case 0x09: sc = SDL_SCANCODE_V; kc = SDLK_V; break;
+        case 0x0D: sc = SDL_SCANCODE_W; kc = SDLK_W; break;
+        case 0x07: sc = SDL_SCANCODE_X; kc = SDLK_X; break;
+        case 0x10: sc = SDL_SCANCODE_Y; kc = SDLK_Y; break;
+        case 0x06: sc = SDL_SCANCODE_Z; kc = SDLK_Z; break;
+        // Digits
+        case 0x1D: sc = SDL_SCANCODE_0; kc = SDLK_0; break;
+        case 0x12: sc = SDL_SCANCODE_1; kc = SDLK_1; break;
+        case 0x13: sc = SDL_SCANCODE_2; kc = SDLK_2; break;
+        case 0x14: sc = SDL_SCANCODE_3; kc = SDLK_3; break;
+        case 0x15: sc = SDL_SCANCODE_4; kc = SDLK_4; break;
+        case 0x17: sc = SDL_SCANCODE_5; kc = SDLK_5; break;
+        case 0x16: sc = SDL_SCANCODE_6; kc = SDLK_6; break;
+        case 0x1A: sc = SDL_SCANCODE_7; kc = SDLK_7; break;
+        case 0x1C: sc = SDL_SCANCODE_8; kc = SDLK_8; break;
+        case 0x19: sc = SDL_SCANCODE_9; kc = SDLK_9; break;
+        // Control & whitespace
+        case 0x24: sc = SDL_SCANCODE_RETURN; kc = SDLK_RETURN; break;
+        case 0x4C: sc = SDL_SCANCODE_KP_ENTER; kc = SDLK_KP_ENTER; break;
+        case 0x30: sc = SDL_SCANCODE_TAB; kc = SDLK_TAB; break;
+        case 0x31: sc = SDL_SCANCODE_SPACE; kc = SDLK_SPACE; break;
+        case 0x33: sc = SDL_SCANCODE_BACKSPACE; kc = SDLK_BACKSPACE; break;
+        case 0x75: sc = SDL_SCANCODE_DELETE; kc = SDLK_DELETE; break;
+        case 0x35: sc = SDL_SCANCODE_ESCAPE; kc = SDLK_ESCAPE; break;
+        // Arrows
+        case 0x7E: sc = SDL_SCANCODE_UP; kc = SDLK_UP; break;
+        case 0x7D: sc = SDL_SCANCODE_DOWN; kc = SDLK_DOWN; break;
+        case 0x7B: sc = SDL_SCANCODE_LEFT; kc = SDLK_LEFT; break;
+        case 0x7C: sc = SDL_SCANCODE_RIGHT; kc = SDLK_RIGHT; break;
+        // Modifiers
+        case 0x38: sc = SDL_SCANCODE_LSHIFT; kc = SDLK_LSHIFT; break;
+        case 0x3C: sc = SDL_SCANCODE_RSHIFT; kc = SDLK_RSHIFT; break;
+        case 0x3B: sc = SDL_SCANCODE_LCTRL; kc = SDLK_LCTRL; break;
+        case 0x3E: sc = SDL_SCANCODE_RCTRL; kc = SDLK_RCTRL; break;
+        case 0x3A: sc = SDL_SCANCODE_LALT; kc = SDLK_LALT; break;
+        case 0x3D: sc = SDL_SCANCODE_RALT; kc = SDLK_RALT; break;
+        case 0x37: sc = SDL_SCANCODE_LGUI; kc = SDLK_LGUI; break;
+        case 0x36: sc = SDL_SCANCODE_RGUI; kc = SDLK_RGUI; break;
+        // Function keys
+        case 0x7A: sc = SDL_SCANCODE_F1; kc = SDLK_F1; break;
+        case 0x78: sc = SDL_SCANCODE_F2; kc = SDLK_F2; break;
+        case 0x63: sc = SDL_SCANCODE_F3; kc = SDLK_F3; break;
+        case 0x76: sc = SDL_SCANCODE_F4; kc = SDLK_F4; break;
+        case 0x60: sc = SDL_SCANCODE_F5; kc = SDLK_F5; break;
+        case 0x61: sc = SDL_SCANCODE_F6; kc = SDLK_F6; break;
+        case 0x62: sc = SDL_SCANCODE_F7; kc = SDLK_F7; break;
+        case 0x64: sc = SDL_SCANCODE_F8; kc = SDLK_F8; break;
+        case 0x65: sc = SDL_SCANCODE_F9; kc = SDLK_F9; break;
+        case 0x6D: sc = SDL_SCANCODE_F10; kc = SDLK_F10; break;
+        case 0x67: sc = SDL_SCANCODE_F11; kc = SDLK_F11; break;
+        case 0x6F: sc = SDL_SCANCODE_F12; kc = SDLK_F12; break;
+        // Punctuation
+        case 0x1B: sc = SDL_SCANCODE_MINUS; kc = SDLK_MINUS; break;
+        case 0x18: sc = SDL_SCANCODE_EQUALS; kc = SDLK_EQUALS; break;
+        case 0x21: sc = SDL_SCANCODE_LEFTBRACKET; kc = SDLK_LEFTBRACKET; break;
+        case 0x1E: sc = SDL_SCANCODE_RIGHTBRACKET; kc = SDLK_RIGHTBRACKET; break;
+        case 0x2A: sc = SDL_SCANCODE_BACKSLASH; kc = SDLK_BACKSLASH; break;
+        case 0x29: sc = SDL_SCANCODE_SEMICOLON; kc = SDLK_SEMICOLON; break;
+        case 0x27: sc = SDL_SCANCODE_APOSTROPHE; kc = SDLK_APOSTROPHE; break;
+        case 0x2B: sc = SDL_SCANCODE_COMMA; kc = SDLK_COMMA; break;
+        case 0x2F: sc = SDL_SCANCODE_PERIOD; kc = SDLK_PERIOD; break;
+        case 0x2C: sc = SDL_SCANCODE_SLASH; kc = SDLK_SLASH; break;
+        case 0x32: sc = SDL_SCANCODE_GRAVE; kc = SDLK_GRAVE; break;
+        default:
+            if (characters.length > 0) {
+                unichar ch = [[characters lowercaseString] characterAtIndex:0];
+                if (ch >= 0x20 && ch < 0x7F) {
+                    kc = static_cast<SDL_Keycode>(ch);
+                    sc = SDL_GetScancodeFromKey(kc, nullptr);
+                }
+            }
+            break;
+    }
+    *outScancode = sc;
+    *outKeycode  = kc;
+}
+
++ (void)sendKeyEventWithMacKeyCode:(uint16_t)keyCode
+                        characters:(nullable NSString *)characters
+                     modifierFlags:(NSUInteger)modifierFlags
+                              down:(BOOL)down
+                          isRepeat:(BOOL)isRepeat {
+#if HAS_KYTY_CORE
+    if (!g_is_running.load()) return;
+
+    SDL_Scancode scancode = SDL_SCANCODE_UNKNOWN;
+    SDL_Keycode  keycode  = SDLK_UNKNOWN;
+    MapMacKeyCodeToSDL(keyCode, characters, &scancode, &keycode);
+    if (keycode == SDLK_UNKNOWN && scancode == SDL_SCANCODE_UNKNOWN) {
+        return;
+    }
+
+    SDL_Keymod mod = SDL_KMOD_NONE;
+    if (modifierFlags & NSEventModifierFlagShift)   mod |= SDL_KMOD_LSHIFT;
+    if (modifierFlags & NSEventModifierFlagControl) mod |= SDL_KMOD_LCTRL;
+    if (modifierFlags & NSEventModifierFlagOption)  mod |= SDL_KMOD_LALT;
+    if (modifierFlags & NSEventModifierFlagCommand) mod |= SDL_KMOD_LGUI;
+
+    SDL_Event ev;
+    std::memset(&ev, 0, sizeof(ev));
+    ev.type         = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+    ev.key.scancode = scancode;
+    ev.key.key      = keycode;
+    ev.key.mod      = mod;
+    ev.key.down     = down ? true : false;
+    ev.key.repeat   = isRepeat ? 1 : 0;
+    SDL_PushEvent(&ev);
+#else
+    (void)keyCode; (void)characters; (void)modifierFlags; (void)down; (void)isRepeat;
+#endif
+}
+#endif
+
 @end

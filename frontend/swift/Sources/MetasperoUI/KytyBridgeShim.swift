@@ -87,8 +87,10 @@ public class KytyBridge {
     nonisolated(unsafe) public static var selectedDriverId: String = "system_default"
     nonisolated(unsafe) public static var onInstallDriverRequested: (() -> Void)? = nil
     nonisolated(unsafe) public static var onSelectDriverRequested: ((String) -> Void)? = nil
+    nonisolated(unsafe) public static var onCustomGamePathsChanged: (([String]) -> Void)? = nil
     #else
     public static var customGamePaths: [String] = []
+    public static var onCustomGamePathsChanged: (([String]) -> Void)? = nil
     public static var onLaunchGame: ((String) -> Void)? = nil
     public static var onPickFolderRequested: (() -> Void)? = nil
     public static var installedDrivers: [GpuDriverInfo] = [
@@ -129,6 +131,7 @@ public class KytyBridge {
     public static func addCustomGamePath(_ path: String) {
         if !customGamePaths.contains(path) {
             customGamePaths.append(path)
+            onCustomGamePathsChanged?(customGamePaths)
             NotificationCenter.default.post(name: Notification.Name("KytyGamePathsChanged"), object: nil)
         }
     }
@@ -160,6 +163,7 @@ public class KytyBridge {
     public static func configureAudioSession() {}
     public static func hostViewDidResize(toPixelWidth width: Int32, height: Int32) {}
     public static func startEmulation(withGamePath path: String, in view: Any?, completion: ((Bool, Error?) -> Void)?) {}
+    public static func sendKeyEvent(withMacKeyCode keyCode: UInt16, characters: String?, modifierFlags: UInt, down: Bool, isRepeat: Bool) {}
 }
 
 @MainActor

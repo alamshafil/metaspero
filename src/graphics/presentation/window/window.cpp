@@ -900,6 +900,8 @@ static void WindowCreate(WindowContext& context) {
 			}
 			context.host_layer = host_layer;
 			LOGF("WindowCreate(): using host Metal layer = %p\n", host_layer);
+			HostInputInit(nullptr);
+			InitializeSystemOverlayInput(nullptr);
 			if (g_window_created_cb != nullptr) {
 				g_window_created_cb(nullptr);
 			}
