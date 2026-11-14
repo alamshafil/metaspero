@@ -5,7 +5,7 @@ struct AboutKytyContentView: View {
     let appVersion: String
     
     // Upstream KytyPS5 commit this fork is currently based on. Update when merging upstream.
-    static let upstreamCommit = "df5b9b9"
+    static let upstreamCommit = "58ca8d1"
 
     private var defaultIconView: some View {
         PlatformIcon("gamecontroller.fill", size: 44)
