@@ -657,7 +657,7 @@ void HideSplashScreen() {
 }
 
 void InitializeSystemOverlayInput(SDL_Window* window) {
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__ANDROID__)
 	EXIT_IF(window == nullptr);
 #endif
 	const Uint32 type = SDL_RegisterEvents(1);

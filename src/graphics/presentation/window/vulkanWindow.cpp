@@ -302,7 +302,9 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 
 		check_feature(device_features2.features.shaderImageGatherExtended,
 		              "shaderImageGatherExtended");
+#if !defined(__ANDROID__)
 		check_feature(device_features2.features.shaderResourceMinLod, "shaderResourceMinLod");
+#endif
 
 		check_feature(device_features2.features.independentBlend, "independentBlend");
 		check_feature(device_features2.features.tessellationShader, "tessellationShader");
@@ -370,7 +372,14 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 			if (!skip_device && !CheckFormat(device, srgb, storage_features)) {
 				LOGF("Format vk::Format::e%s cannot be used as storage image\n",
 				     vk::to_string(srgb).c_str());
+#if !defined(__ANDROID__)
 				check_format(unorm, storage_features, "storage image");
+#else
+				if (!CheckFormat(device, unorm, storage_features)) {
+					LOGF("Format vk::Format::e%s cannot be used as storage image (non-fatal on Android)\n",
+					     vk::to_string(unorm).c_str());
+				}
+#endif
 			}
 		}
 
@@ -528,6 +537,10 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 #if defined(__APPLE__) || defined(__ANDROID__)
 	features12.shaderBufferInt64Atomics = supported12.shaderBufferInt64Atomics;
 #endif
+#if defined(__ANDROID__)
+	features12.shaderOutputLayer         = supported12.shaderOutputLayer;
+	features12.shaderOutputViewportIndex = supported12.shaderOutputViewportIndex;
+#endif
 	graphics.shader_buffer_int64_atomics_enabled =
 	    features12.shaderBufferInt64Atomics == VK_TRUE;
 	if (!features12.shaderSharedInt64Atomics || !workgroup_layout.workgroupMemoryExplicitLayout) {
@@ -604,24 +617,37 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 		     graphics.mesh_shader_properties.maxMeshSharedMemorySize);
 	}
 	// Device selection checks the other required features.
+#if !defined(__ANDROID__)
 	EXIT_NOT_IMPLEMENTED(supported2.features.shaderInt64 != VK_TRUE);
 	EXIT_NOT_IMPLEMENTED(supported2.features.vertexPipelineStoresAndAtomics != VK_TRUE);
 	EXIT_NOT_IMPLEMENTED(supported2.features.dualSrcBlend != VK_TRUE);
+#endif
 	vk::PhysicalDeviceFeatures device_features {};
 	device_features.fragmentStoresAndAtomics = VK_TRUE;
 	device_features.samplerAnisotropy        = VK_TRUE;
 	device_features.robustBufferAccess       = VK_TRUE;
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__ANDROID__)
 	device_features.depthBounds = VK_TRUE; // unsupported by MoltenVK
 	device_features.depthClamp  = VK_TRUE;
+#elif defined(__ANDROID__)
+	device_features.depthBounds = supported2.features.depthBounds;
+	device_features.depthClamp  = supported2.features.depthClamp;
 #endif
 	device_features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 	device_features.shaderStorageImageMultisample =
 	    supported2.features.shaderStorageImageMultisample;
 	device_features.shaderImageGatherExtended            = VK_TRUE;
+#if !defined(__ANDROID__)
 	device_features.shaderResourceMinLod                 = VK_TRUE;
+#else
+	device_features.shaderResourceMinLod                 = supported2.features.shaderResourceMinLod;
+#endif
 	device_features.independentBlend                     = VK_TRUE;
+#if !defined(__ANDROID__)
 	device_features.dualSrcBlend                         = VK_TRUE;
+#else
+	device_features.dualSrcBlend                         = supported2.features.dualSrcBlend;
+#endif
 	device_features.tessellationShader                   = VK_TRUE;
 	device_features.drawIndirectFirstInstance            = VK_TRUE;
 	device_features.multiDrawIndirect                    = VK_TRUE;
@@ -639,7 +665,11 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	device_features.largePoints                          = VK_TRUE;
 	device_features.multiViewport                        = VK_TRUE;
 	device_features.fillModeNonSolid                      = VK_TRUE;
+#if !defined(__ANDROID__)
 	device_features.vertexPipelineStoresAndAtomics       = VK_TRUE;
+#else
+	device_features.vertexPipelineStoresAndAtomics       = supported2.features.vertexPipelineStoresAndAtomics;
+#endif
 	// Storage image sample counts beyond 1x require the feature.
 	if (!device_features.shaderStorageImageMultisample) {
 		graphics.physical_device_properties.limits.storageImageSampleCounts =
@@ -656,7 +686,15 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	LOGF("Vulkan occlusion queries: %s, precise: %s\n",
 	     graphics.occlusion_queries_enabled ? "true" : "false",
 	     graphics.occlusion_query_precise_enabled ? "true" : "false");
+#if !defined(__ANDROID__)
 	device_features.shaderInt64 = VK_TRUE;
+#else
+	device_features.shaderInt64 = supported2.features.shaderInt64;
+	if (device_features.shaderInt64 != VK_TRUE) {
+		Log::WriteToConsoleAndLog(
+		    "WARNING: shaderInt64 is unavailable; shaders using 64-bit integer arithmetic will fail.\n");
+	}
+#endif
 	device_features.shaderFloat64 =
 	    supported2.features.shaderFloat64 && float_controls.shaderSignedZeroInfNanPreserveFloat64;
 
@@ -1012,6 +1050,15 @@ void WindowContext::CreateVulkan() {
 
 	auto get_instance_proc_addr =
 	    reinterpret_cast<PFN_vkGetInstanceProcAddr>(KytyGetVkGetInstanceProcAddr());
+#if defined(__ANDROID__)
+	if (get_instance_proc_addr == nullptr) {
+		static void* s_libvulkan = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+		if (s_libvulkan != nullptr) {
+			get_instance_proc_addr =
+			    reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(s_libvulkan, "vkGetInstanceProcAddr"));
+		}
+	}
+#endif
 	if (get_instance_proc_addr == nullptr) {
 		get_instance_proc_addr =
 		    reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
