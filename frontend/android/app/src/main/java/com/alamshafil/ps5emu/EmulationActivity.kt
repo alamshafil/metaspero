@@ -48,10 +48,12 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        org.libsdl.app.SDL.setContext(this)
-
         // Ensure native bridge and working directory are initialized
         NativeBridge.nativeInit(filesDir.absolutePath, cacheDir.absolutePath)
+
+        org.libsdl.app.SDL.setupJNI()
+        org.libsdl.app.SDL.initialize()
+        org.libsdl.app.SDL.setContext(this)
 
         // Apply selected GPU driver (Turnip or System Default)
         val savedDriverId = GpuDriverManager.getSelectedDriverId(this)

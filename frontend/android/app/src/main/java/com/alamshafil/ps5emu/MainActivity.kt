@@ -54,8 +54,9 @@ class MainActivity : ComponentActivity() {
         NativeBridge.nativeInit(filesDir.absolutePath, cacheDir.absolutePath)
 
         // Initialize SDL3 Android host context
-        SDL.setContext(this)
         SDL.setupJNI()
+        SDL.initialize()
+        SDL.setContext(this)
 
         // Initialize SkipFoundation process runtime context
         skip.foundation.ProcessInfo.launch(applicationContext)
