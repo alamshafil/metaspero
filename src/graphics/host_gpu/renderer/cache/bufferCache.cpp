@@ -78,7 +78,6 @@ void BufferCache::WriteDataBuffer(Buffer& buffer, uint64_t address, const void* 
 		before.offset        = destination_offset;
 		before.size          = chunk;
 		vk::DependencyInfo dependency {};
-		dependency.dependencyFlags          = vk::DependencyFlagBits::eByRegion;
 		dependency.bufferMemoryBarrierCount = 1;
 		dependency.pBufferMemoryBarriers    = &before;
 		command.pipelineBarrier2(dependency);
@@ -493,7 +492,7 @@ void BufferCache::UploadCopies(std::span<const BufferUpload> uploads,
 		                 vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite,
 	    .dstAccessMask = vk::AccessFlagBits::eTransferWrite};
 	native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-	                       vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,
+	                       vk::PipelineStageFlagBits::eTransfer, {},
 	                       1, &before, 0, nullptr, 0, nullptr);
 	size_t first = 0;
 	for (const auto& upload: uploads) {
@@ -506,7 +505,7 @@ void BufferCache::UploadCopies(std::span<const BufferUpload> uploads,
 	                                                vk::AccessFlagBits::eMemoryWrite};
 	native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
 	                       vk::PipelineStageFlagBits::eAllCommands,
-	                       vk::DependencyFlagBits::eByRegion, 1, &after, 0, nullptr, 0, nullptr);
+	                       {}, 1, &after, 0, nullptr, 0, nullptr);
 }
 
 std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t size,
