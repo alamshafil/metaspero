@@ -41,6 +41,8 @@ struct SrtRuntime {
 	std::span<const uint32_t> user_data;
 	uint64_t                  shader_base                = 0;
 	void*                     userdata                   = nullptr;
+	// Falls back to read_specialization_memory when null.
+	SrtMemoryReader           read_memory                = nullptr;
 	SrtMemoryReader           read_specialization_memory = nullptr;
 	std::span<const uint32_t> workgroup_counts;
 	// The host folds T# MinLod into the view base level (no VK_EXT_image_view_min_lod): RESINFO must be corrected.

@@ -1,5 +1,7 @@
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
+#include "graphics/shader/recompiler/ir/passes/SrtWalkerNative.h"
+
 #include "common/abi.h"
 #include "common/assert.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
@@ -8,6 +10,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -375,6 +378,8 @@ public:
 	WalkerCompiler(ResourcePlan& plan, Xbyak::CodeGenerator& code): m_plan(plan), m_code(code) {}
 
 	void Compile(std::span<const Value> values);
+	void BuildPlan(std::span<const Value> values, bool build_native = true);
+	std::shared_ptr<NativeWalkPlan> TakeNativePlan() { return std::move(m_native_plan); }
 
 private:
 	enum class Kind : uint8_t { Unknown, Constant, UserData, ShaderBase, Node };
@@ -408,6 +413,18 @@ private:
 	static bool MayBeUnknown(const Operand& operand) {
 		return operand.kind == Kind::Unknown || operand.kind == Kind::Node;
 	}
+	// One owner for "does EmitRead store a capture slot for this node?". BuildPlan counts
+	// them and EmitRead asserts the same answer before storing.
+	static bool EmitsCapture(const Node& node) {
+		const auto op = node.inst->GetOpcode();
+		if (op != ValueOpcode::LoadAddressU32 && op != ValueOpcode::ReadConstBuffer &&
+		    op != ValueOpcode::LoadBufferU32) {
+			return false;
+		}
+		const auto args =
+		    node.args.size() - (op == ValueOpcode::LoadBufferU32 && !node.args.empty() ? 1u : 0u);
+		return args != 0u;
+	}
 
 	uint32_t Context(Value mask) {
 		mask = mask.Resolve();
@@ -434,8 +451,19 @@ private:
 	void EmitRead(const Node& node);
 	void EmitStrict(const Node& node);
 
+	struct EmitPlan {
+		bool                               resources = false;
+		std::vector<std::vector<uint32_t>> gates;
+		std::vector<Operand>               conditions;
+		std::vector<Operand>               reads;
+		std::vector<std::vector<Operand>>  descriptors;
+		std::vector<Operand>               outputs;
+	};
+
 	ResourcePlan&                                     m_plan;
 	Xbyak::CodeGenerator&                             m_code;
+	EmitPlan                                          m_emit;
+	std::shared_ptr<NativeWalkPlan>                   m_native_plan;
 	std::vector<Value>                                m_masks {Value {}};
 	std::deque<Node>                                  m_nodes;
 	std::map<std::pair<const Inst*, uint32_t>, uint32_t> m_memo;
@@ -914,6 +942,7 @@ void WalkerCompiler::EmitRead(const Node& node) {
 		args = args.subspan(1);
 		if (args.empty()) c.jmp(m_ret, Near);
 	}
+	assert(args.empty() == !EmitsCapture(node));
 	if (!args.empty()) {
 		for (const auto& arg: args) Branch(arg, m_ret);
 		const auto immediate =
@@ -1195,28 +1224,125 @@ void WalkerCompiler::EmitStrict(const Node& node) {
 	Store(node);
 }
 
-void WalkerCompiler::Compile(std::span<const Value> values) {
-	auto&       c         = m_code;
+void WalkerCompiler::BuildPlan(std::span<const Value> values, bool build_native) {
 	const auto& sources   = m_plan.descriptor_sources;
 	const auto& blocks    = m_plan.control_flow;
 	const bool  resources = values.empty();
-	std::vector<std::vector<uint32_t>> gates(sources.size());
-	if (resources) Consume(gates);
+
+	m_emit = {};
+	m_emit.resources = resources;
+	m_emit.gates.assign(sources.size(), {});
+	m_emit.descriptors.resize(sources.size());
+
+	if (build_native) {
+		m_native_plan              = std::make_shared<NativeWalkPlan>();
+		m_native_plan->resources   = resources;
+		m_native_plan->gates.assign(sources.size(), {});
+		m_native_plan->descriptors.resize(sources.size());
+	} else {
+		m_native_plan = nullptr;
+	}
+
+	if (resources) Consume(m_emit.gates);
+	if (resources && m_native_plan != nullptr) m_native_plan->gates = m_emit.gates;
 	for (const auto value: values) AddOutput(value, UINT32_MAX);
 	// Analyze every root first, so thunk bodies only reuse finished operands.
-	std::vector<Operand>              conditions, reads, outputs;
-	std::vector<std::vector<Operand>> descriptors(sources.size());
 	if (resources) {
-		for (const auto& block: blocks) conditions.push_back(Evaluate(block.condition, 0).operand);
-		for (const auto& read: m_plan.srt_reads) reads.push_back(Evaluate(read.value, 0).operand);
+		for (const auto& block: blocks) {
+			m_emit.conditions.push_back(Evaluate(block.condition, 0).operand);
+		}
+		for (const auto& read: m_plan.srt_reads) {
+			m_emit.reads.push_back(Evaluate(read.value, 0).operand);
+		}
 		for (uint32_t source = 0; source < sources.size(); ++source) {
-			if (gates[source].empty()) continue;
-			for (uint32_t word = 0; word < sources[source].dword_count; ++word)
-				descriptors[source].push_back(Evaluate(sources[source].dwords[word], 0).operand);
+			if (m_emit.gates[source].empty()) continue;
+			for (uint32_t word = 0; word < sources[source].dword_count; ++word) {
+				const auto& value = sources[source].dwords[word];
+				m_emit.descriptors[source].push_back(Evaluate(value, 0).operand);
+				if (m_native_plan != nullptr) m_native_plan->descriptors[source].push_back(value);
+			}
 		}
 	}
-	for (const auto value: m_outputs) outputs.push_back(Evaluate(value, 0).operand);
+	for (const auto value: m_outputs) {
+		m_emit.outputs.push_back(Evaluate(value, 0).operand);
+		if (m_native_plan != nullptr) m_native_plan->outputs.push_back(value);
+	}
 	Layout();
+
+	if (m_native_plan != nullptr) {
+		const auto mark_unknown = [&](const Operand& operand, const Value& value) {
+			if (operand.kind != Kind::Unknown) return;
+			if (const auto* inst = value.Resolve().TryInstruction()) {
+				m_native_plan->unknown_nodes.insert(inst);
+			}
+		};
+		if (resources) {
+			for (size_t index = 0; index < m_emit.conditions.size(); ++index) {
+				mark_unknown(m_emit.conditions[index], blocks[index].condition);
+			}
+			for (size_t index = 0; index < m_emit.reads.size(); ++index) {
+				mark_unknown(m_emit.reads[index], m_plan.srt_reads[index].value);
+			}
+		}
+		for (size_t source = 0; source < m_emit.descriptors.size(); ++source) {
+			for (size_t index = 0; index < m_emit.descriptors[source].size(); ++index) {
+				mark_unknown(m_emit.descriptors[source][index],
+				             m_native_plan->descriptors[source][index]);
+			}
+		}
+		for (size_t index = 0; index < m_emit.outputs.size(); ++index) {
+			mark_unknown(m_emit.outputs[index], m_native_plan->outputs[index]);
+		}
+		// The lattice is per node, not per root. Native already propagates runtime-unknown
+		// arguments, so only a node the analysis itself classifies unknown at context 0 is gated.
+		for (const auto& node: m_nodes) {
+			if (node.context == 0 && node.result.kind == Kind::Unknown) {
+				m_native_plan->unknown_nodes.insert(node.inst);
+			}
+		}
+
+		uint32_t capture_count = 0;
+		for (uint32_t index = 0; index < m_nodes.size(); ++index) {
+			if (Thunk(index) && EmitsCapture(m_nodes[index])) ++capture_count;
+		}
+		m_native_plan->capture_count     = capture_count;
+		m_native_plan->descriptor_stride = DescriptorStride;
+		m_native_plan->active_off        = ActiveOffset(m_plan);
+		m_native_plan->output_off        = OutputOffset(m_plan);
+		m_native_plan->output_gates      = m_output_gates;
+		m_native_plan->scratch_bytes     = m_plan.srt_captures;
+
+		uint32_t                     user_data = 0;
+		std::unordered_set<uint32_t> visited_nodes;
+		const auto scan = [&](const auto& self, const Operand& operand) -> void {
+			if (operand.kind == Kind::UserData) {
+				user_data = std::max(user_data, static_cast<uint32_t>(operand.value) + 1u);
+			}
+			if (operand.kind == Kind::Node) {
+				if (!visited_nodes.insert(static_cast<uint32_t>(operand.value)).second) return;
+				for (const auto& arg: m_nodes[operand.value].args) self(self, arg);
+			}
+		};
+		for (const auto& operand: m_emit.conditions) scan(scan, operand);
+		for (const auto& operand: m_emit.reads) scan(scan, operand);
+		for (const auto& ops: m_emit.descriptors)
+			for (const auto& operand: ops) scan(scan, operand);
+		for (const auto& operand: m_emit.outputs) scan(scan, operand);
+		m_native_plan->user_data = user_data;
+	}
+}
+
+void WalkerCompiler::Compile(std::span<const Value> values) {
+	BuildPlan(values, /*build_native=*/false);
+	auto&       c           = m_code;
+	const auto& sources     = m_plan.descriptor_sources;
+	const auto& blocks      = m_plan.control_flow;
+	const bool  resources   = m_emit.resources;
+	auto&       gates       = m_emit.gates;
+	auto&       conditions  = m_emit.conditions;
+	auto&       reads       = m_emit.reads;
+	auto&       descriptors = m_emit.descriptors;
+	auto&       outputs     = m_emit.outputs;
 
 	Xbyak::Label pass, fail, reset;
 	c.mov(c.qword[c.rdx + m_shader_base], c.rcx);
@@ -1365,12 +1491,22 @@ void WalkerCompiler::Compile(std::span<const Value> values) {
 
 } // namespace
 
+std::shared_ptr<NativeWalkPlan> BuildNativeWalkPlan(ResourcePlan& plan,
+                                                    std::span<const Value> values) {
+	uint8_t              scratch[64] {};
+	Xbyak::CodeGenerator code(sizeof(scratch), scratch);
+	WalkerCompiler       compiler(plan, code);
+	compiler.BuildPlan(values);
+	auto native = compiler.TakeNativePlan();
+	if (native != nullptr) {
+		plan.srt_user_data = std::max(plan.srt_user_data, native->user_data);
+	}
+	return native;
+}
+
 void CompileSrtWalker(ResourcePlan& plan, std::span<const Value> values) {
-#if defined(__arm64__) || defined(__aarch64__)
-	// Xbyak emits x86-64 machine code, which a native ARM64 host cannot execute. Leaving srt_code
-	// null makes WalkSrt report an unavailable walk instead of faulting.
-	(void)plan;
-	(void)values;
+#if KYTY_SRT_NATIVE_WALKER
+	plan.srt_native = BuildNativeWalkPlan(plan, values);
 	return;
 #endif
 	plan.srt_code = std::make_unique<Xbyak::CodeGenerator>(4096, Xbyak::AutoGrow);
@@ -1379,6 +1515,10 @@ void CompileSrtWalker(ResourcePlan& plan, std::span<const Value> values) {
 
 bool WalkSrt(const ResourcePlan& plan, const SrtRuntime& runtime, std::vector<uint32_t>& flat,
              std::vector<std::pair<uint64_t, uint64_t>>* reads) {
+#if KYTY_SRT_NATIVE_WALKER
+	return plan.srt_native != nullptr &&
+	       RunNativeWalk(*plan.srt_native, plan, runtime, flat, reads);
+#endif
 	if (plan.srt_code == nullptr || runtime.user_data.size() < plan.srt_user_data) return false;
 	flat.assign(plan.srt_reads.size(), 0u);
 	using Walker = const uint64_t* KYTY_SYSV_ABI (*)(const uint32_t*, uint32_t*, uint64_t*, uint64_t);

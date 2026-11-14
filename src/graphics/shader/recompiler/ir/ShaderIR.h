@@ -27,6 +27,8 @@ class CodeGenerator;
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
+struct NativeWalkPlan;
+
 // Finite descriptor domains also bound the arithmetic used to prove their indices.
 constexpr uint32_t MaxIndirectDescriptorProbes = 65536u;
 
@@ -724,6 +726,9 @@ struct ResourcePlan {
 	mutable std::vector<uint64_t>           srt_scratch;
 	mutable std::vector<uint32_t>           material_keys;
 	mutable std::vector<SelectorKeys>       selector_keys;
+
+	std::shared_ptr<NativeWalkPlan> srt_native;
+	mutable std::vector<uint8_t>    visited_blocks;
 };
 
 struct Program: ResourcePlan {
