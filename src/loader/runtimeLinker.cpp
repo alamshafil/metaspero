@@ -739,14 +739,14 @@ static bool IsReadableRange(uint64_t addr, uint64_t size) {
 // Darwin reports GPU protection faults and FEX alignment faults both as SIGBUS/BUS_ADRALN.
 // Only a read-only page can be a protection fault.
 static bool IsPageWritable(uint64_t addr) {
-	mach_vm_address_t              region_addr = addr;
-	mach_vm_size_t                 region_size = 0;
+	vm_address_t                   region_addr = static_cast<vm_address_t>(addr);
+	vm_size_t                      region_size = 0;
 	vm_region_basic_info_data_64_t region_info {};
 	mach_msg_type_number_t         count       = VM_REGION_BASIC_INFO_COUNT_64;
 	mach_port_t                    object_name = MACH_PORT_NULL;
 	const kern_return_t            kr =
-	    mach_vm_region(mach_task_self(), &region_addr, &region_size, VM_REGION_BASIC_INFO_64,
-	                   reinterpret_cast<vm_region_info_t>(&region_info), &count, &object_name);
+	    vm_region_64(mach_task_self(), &region_addr, &region_size, VM_REGION_BASIC_INFO_64,
+	                 reinterpret_cast<vm_region_info_t>(&region_info), &count, &object_name);
 	if (object_name != MACH_PORT_NULL) {
 		mach_port_deallocate(mach_task_self(), object_name);
 	}

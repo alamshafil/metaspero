@@ -15,8 +15,11 @@
 #elif defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
+#include <TargetConditionals.h>
 #include <cstring>
+#if !TARGET_OS_IPHONE
 #include <libproc.h>
+#endif
 #include <mach/mach.h>
 #include <notify.h>
 #include <sys/resource.h>
@@ -299,11 +302,13 @@ void SamplePlatform(PlatformState& state, HostStats& stats, Counters& now) {
 		stats.process_file_backed = vm_info.external;
 		stats.process_virtual     = vm_info.virtual_size;
 	}
+#if !TARGET_OS_IPHONE
 	rusage_info_v2 usage {};
 	if (proc_pid_rusage(getpid(), RUSAGE_INFO_V2, reinterpret_cast<rusage_info_t*>(&usage)) == 0) {
 		now.disk_read  = usage.ri_diskio_bytesread;
 		now.disk_write = usage.ri_diskio_byteswritten;
 	}
+#endif
 
 	stats.system_memory_total   = SysctlValue<uint64_t>("hw.memsize");
 	vm_size_t              page = 0;

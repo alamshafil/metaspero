@@ -8,8 +8,9 @@
 #endif
 
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include <mach/vm_map.h>
 #include <mach/vm_region.h>
 #endif
 
@@ -61,14 +62,14 @@ bool HostMemoryQueryRange(uint64_t addr, uint64_t requested_size, HostMemoryAcce
 #if defined(__APPLE__)
 	// macOS has no /proc, so walk the Mach VM map.
 	while (current < end) {
-		mach_vm_address_t              region_addr = current;
-		mach_vm_size_t                 region_size = 0;
+		vm_address_t                   region_addr = static_cast<vm_address_t>(current);
+		vm_size_t                      region_size = 0;
 		vm_region_basic_info_data_64_t region_info {};
 		mach_msg_type_number_t         count       = VM_REGION_BASIC_INFO_COUNT_64;
 		mach_port_t                    object_name = MACH_PORT_NULL;
-		if (mach_vm_region(mach_task_self(), &region_addr, &region_size, VM_REGION_BASIC_INFO_64,
-		                   reinterpret_cast<vm_region_info_t>(&region_info), &count,
-		                   &object_name) != KERN_SUCCESS) {
+		if (vm_region_64(mach_task_self(), &region_addr, &region_size, VM_REGION_BASIC_INFO_64,
+		                 reinterpret_cast<vm_region_info_t>(&region_info), &count,
+		                 &object_name) != KERN_SUCCESS) {
 			break;
 		}
 		if (object_name != MACH_PORT_NULL) {
