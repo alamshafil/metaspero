@@ -524,9 +524,9 @@ void Swapchain::Destroy() {
 	}
 	auto& graphics = m_window.graphic_ctx;
 
-	if (!Common::HostException::IsEmulationShuttingDown()) {
+	if (graphics.device != nullptr && graphics.queue != nullptr) {
 		Common::LockGuard queue_lock(graphics.queue_mutex);
-		RequireVulkanSuccess(graphics.queue.waitIdle(), "wait for swapchain queue");
+		std::ignore = graphics.queue.waitIdle();
 	}
 	if (m_system_overlay != nullptr) {
 		m_system_overlay->ReleaseVulkan();

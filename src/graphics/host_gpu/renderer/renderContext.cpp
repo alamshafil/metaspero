@@ -24,6 +24,9 @@ RenderContext::RenderContext(GraphicContext& graphics, const std::filesystem::pa
 RenderContext::~RenderContext() {
 	ShutdownGpu();
 	m_command_scheduler.Shutdown();
+	if (m_graphics.device != nullptr) {
+		std::ignore = m_graphics.device.waitIdle();
+	}
 }
 
 void RenderContext::InitializeGpu(VideoOut::VideoOutDriver* video_out) {

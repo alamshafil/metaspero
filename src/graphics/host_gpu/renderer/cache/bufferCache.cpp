@@ -295,6 +295,9 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 }
 
 BufferCache::~BufferCache() {
+	if (m_graphics.device != nullptr) {
+		std::ignore = m_graphics.device.waitIdle();
+	}
 	m_gpu_modified_ranges.Clear();
 	for (const auto& [addr, id]: m_buffers) {
 		const auto& buffer = m_slot_buffers[id];

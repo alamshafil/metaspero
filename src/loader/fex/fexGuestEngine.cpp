@@ -542,8 +542,20 @@ void FexGuestEngine::StopAllThreads() {
     Common::HostException::SetEmulationShuttingDown(true);
     const uint64_t finished_session = s_current_session_id.fetch_add(1, std::memory_order_seq_cst);
 
-    // Give active threads in syscalls or condvar waits a cooperative window to notice shutdown and exit cleanly
-    for (int i = 0; i < 20; ++i) {
+    // Cancel guest threads first so they unblock from blocking waits/syscalls
+    {
+        std::lock_guard<std::mutex> lock(s_active_threads_mutex);
+        for (auto& entry : s_active_guest_threads) {
+            if (entry && entry->session_id <= finished_session && !entry->exited.load(std::memory_order_acquire)) {
+                if (entry->pthread_handle != 0 && entry->pthread_handle != pthread_self()) {
+                    pthread_cancel(entry->pthread_handle);
+                }
+            }
+        }
+    }
+
+    // Give active threads a cooperative window to notice shutdown and exit cleanly
+    for (int i = 0; i < 30; ++i) {
         bool any_running = false;
         {
             std::lock_guard<std::mutex> lock(s_active_threads_mutex);
@@ -580,14 +592,6 @@ void FexGuestEngine::StopAllThreads() {
 
     {
         std::lock_guard<std::mutex> lock(s_active_threads_mutex);
-        for (auto& entry : s_active_guest_threads) {
-            if (entry && entry->session_id <= finished_session) {
-                if (entry->pthread_handle != 0 && entry->pthread_handle != pthread_self()) {
-                    pthread_cancel(entry->pthread_handle);
-                }
-                entry->exited.store(true, std::memory_order_release);
-            }
-        }
         std::erase_if(s_active_guest_threads, [](const auto& entry) {
             return !entry || entry->exited.load(std::memory_order_acquire);
         });

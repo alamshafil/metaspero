@@ -1034,9 +1034,14 @@ bool HostInputWaitEvent(SDL_Event* event, int max_wait_ms) {
 		const auto start_ticks       = SDL_GetTicks();
 		const int  effective_timeout = std::max(0, timeout);
 		while (true) {
-			dispatch_sync(dispatch_get_main_queue(), ^{
-				SDL_PumpEvents();
-			});
+			if (Common::HostException::IsEmulationShuttingDown()) {
+				break;
+			}
+			if (g_mouse_window != nullptr) {
+				dispatch_sync(dispatch_get_main_queue(), ^{
+					SDL_PumpEvents();
+				});
+			}
 #if !TARGET_OS_IPHONE
 			SDL_UpdateJoysticks();
 #endif

@@ -140,6 +140,9 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 }
 
 TextureCache::~TextureCache() {
+	if (m_graphics.device != nullptr) {
+		std::ignore = m_graphics.device.waitIdle();
+	}
 	m_slot_images.ForEach([&](ImageId id, const Image& image) {
 		if (image.registered) {
 			UnregisterImage(id);

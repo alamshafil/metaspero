@@ -804,14 +804,22 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		total_wait -= frame_begin - sleep_begin;
 
 		VblankBegin();
+		if (token.stop_requested() || Common::HostException::IsEmulationShuttingDown()) {
+			break;
+		}
 		bool presented = m_flip_queue.Flip();
-		if (!presented && m_presenter.NeedsSystemOverlayRefresh()) {
+		if (token.stop_requested() || Common::HostException::IsEmulationShuttingDown()) {
+			break;
+		}
+		if (!presented && m_presenter.NeedsSystemOverlayRefresh() &&
+		    !Common::HostException::IsEmulationShuttingDown()) {
 			if (!m_presenter.PresentLastFrame()) {
 				m_presenter.Present(m_presenter.PrepareBlankFrame(width, height, true));
 			}
 			presented = true;
 		}
-		if (!presented && total_wait.count() < 0) {
+		if (!presented && total_wait.count() < 0 &&
+		    !Common::HostException::IsEmulationShuttingDown()) {
 			bool any_open = false;
 			{
 				Common::LockGuard lock(m_mutex);
@@ -819,7 +827,7 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 					any_open |= m_video_out_ctx[handle].opened;
 				}
 			}
-			if (!any_open) {
+			if (!any_open && !Common::HostException::IsEmulationShuttingDown()) {
 				m_presenter.Present(m_presenter.PrepareBlankFrame(width, height, true));
 			}
 		}
@@ -1048,10 +1056,13 @@ void FlipQueue::WaitForSubmitSlot(VideoOutConfig& cfg) {
 	while (std::count_if(m_requests.begin(), m_requests.end(), belongs_to_port) +
 	           std::count_if(m_cpu_requests.begin(), m_cpu_requests.end(), belongs_to_port) >=
 	       VIDEO_OUT_FLIP_QUEUE_CAPACITY) {
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			break;
+		}
 		if (m_requests.empty()) {
 			EXIT("video-out queue is saturated by CPU flips queued behind the current EOP\n");
 		}
-		m_submit_slot_cond_var.Wait(&m_mutex);
+		m_submit_slot_cond_var.WaitFor(&m_mutex, 10);
 	}
 }
 
@@ -1063,8 +1074,8 @@ void FlipQueue::Wait(VideoOutConfig& cfg, int index) {
 		return std::any_of(m_requests.begin(), m_requests.end(), matches) ||
 		       std::any_of(m_cpu_requests.begin(), m_cpu_requests.end(), matches);
 	};
-	while (has_request()) {
-		m_done_cond_var.Wait(&m_mutex);
+	while (has_request() && !Common::HostException::IsEmulationShuttingDown()) {
+		m_done_cond_var.WaitFor(&m_mutex, 10);
 	}
 }
 
@@ -1076,6 +1087,10 @@ bool FlipQueue::Flip() {
 	}
 
 	m_mutex.Lock();
+	if (Common::HostException::IsEmulationShuttingDown()) {
+		m_mutex.Unlock();
+		return false;
+	}
 	const auto owner = std::find_if(m_requests.begin(), m_requests.end(),
 	                               [](const auto& r) { return r.group == r.id; });
 	if (owner == m_requests.end()) {

@@ -1253,6 +1253,11 @@ void WindowContext::RecreateSurface() {
 WindowContext::~WindowContext() {
 	Vr::OpenXrShutdown();
 	ShutdownSystemOverlayInput();
+
+	if (graphic_ctx.device != nullptr) {
+		std::ignore = graphic_ctx.device.waitIdle();
+	}
+
 	presenter.reset();
 	LibKernel::Memory::InstallGpuResources(nullptr);
 	render_context.reset();
@@ -1260,9 +1265,7 @@ WindowContext::~WindowContext() {
 	Fsr::Shutdown();
 
 	if (graphic_ctx.device != nullptr) {
-		if (!Common::HostException::IsEmulationShuttingDown()) {
-			RequireVulkanSuccess(graphic_ctx.device.waitIdle(), "wait for Vulkan device shutdown");
-		}
+		std::ignore = graphic_ctx.device.waitIdle();
 		graphic_ctx.DestroyAllocator();
 		graphic_ctx.device.destroy(nullptr);
 		graphic_ctx.device = nullptr;

@@ -108,7 +108,9 @@ void CommandScheduler::Shutdown() {
 	if (!m_command.IsInvalid()) {
 		Submit();
 	}
-	m_master.Wait(CurrentTick() - 1);
+	if (CurrentTick() > 0) {
+		m_master.Wait(CurrentTick());
+	}
 	PopPendingOperations();
 	DrainPriorityOperations();
 	m_priority_thread.request_stop();
@@ -149,13 +151,15 @@ void CommandScheduler::Flush(SubmitInfo& submit) {
 }
 
 void CommandScheduler::Finish() {
-	if (!Active() || Common::HostException::IsEmulationShuttingDown()) {
+	if (!Active()) {
 		return;
 	}
 	if (!m_command.IsInvalid()) {
 		Submit();
 	}
-	m_master.Wait(CurrentTick() - 1);
+	if (CurrentTick() > 0) {
+		m_master.Wait(CurrentTick());
+	}
 	BeginNext();
 	PopPendingOperations();
 }

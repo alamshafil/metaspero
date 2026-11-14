@@ -36,11 +36,11 @@ void MasterSemaphore::Refresh() {
 }
 
 void MasterSemaphore::Wait(uint64_t tick) {
-	if (IsFree(tick) || Common::HostException::IsEmulationShuttingDown()) {
+	if (IsFree(tick)) {
 		return;
 	}
 	Refresh();
-	if (IsFree(tick) || Common::HostException::IsEmulationShuttingDown()) {
+	if (IsFree(tick)) {
 		return;
 	}
 
