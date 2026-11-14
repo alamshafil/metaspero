@@ -143,24 +143,47 @@ struct LibraryView: View {
                         .font(.title2)
                         .fontWeight(.bold)
                     
-                    Text("Copy PS5 game folders or ELFs into the Metaspero folder in Files app, or tap '+' to import.")
+#if os(macOS) || SKIP
+                    Text("Add a game folder in Settings -> Library, or click '+'.")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
+#else
+                    Text("Add games in the Files app under Metaspero, or add a folder in Settings -> Library.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+#endif
                     
-                    Button(action: { showImporter = true }) {
-                        PlatformLabel("Import Game / Folder", systemImage: "plus.circle.fill")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 12)
-                            .background(Color.blue)
-                            .clipShape(Capsule())
+                    Button(action: {
+                        #if os(iOS) && !SKIP
+                        openDocumentsInFilesApp()
+                        #elseif SKIP
+                        KytyBridge.requestPickFolder()
+                        #else
+                        showImporter = true
+                        #endif
+                    }) {
+                        Group {
+                            #if os(iOS) && !SKIP
+                            PlatformLabel("Open in Files App", systemImage: "folder.fill")
+                            #else
+                            PlatformLabel("Add Game Folder", systemImage: "plus.circle.fill")
+                            #endif
+                        }
+                        .font(.headline)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 12)
+                        .background(Color.blue)
+                        .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
                     .padding(.top, 8)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredGames.isEmpty {
                 VStack(spacing: 12) {
                     PlatformIcon("magnifyingglass", size: 48)
@@ -483,15 +506,13 @@ struct LibraryView: View {
     
     private func removeFromLibrary(_ game: GameItem) {
         games.removeAll { $0.id == game.id }
-#if os(macOS)
         #if !SKIP
-        var savedPaths = UserDefaults.standard.stringArray(forKey: "KytyImportedGamePaths") ?? []
-        #else
-        var savedPaths: [String] = []
+        var scanPaths = UserDefaults.standard.stringArray(forKey: "KytyGameScanPaths") ?? []
+        if scanPaths.contains(game.path) {
+            scanPaths.removeAll { $0 == game.path }
+            UserDefaults.standard.set(scanPaths, forKey: "KytyGameScanPaths")
+        }
         #endif
-        savedPaths.removeAll { $0 == game.path }
-        UserDefaults.standard.set(savedPaths, forKey: "KytyImportedGamePaths")
-#endif
         KytyBridge.addLogMessage("[LibraryView] Removed '\(game.title)' from library")
     }
     
@@ -587,7 +608,7 @@ struct LibraryView: View {
         return String(name[..<dotIndex])
     }
 
-    private static func readFileData(path: String) -> Data? {
+    static func readFileData(path: String) -> Data? {
         #if !SKIP
         return try? Data(contentsOf: URL(fileURLWithPath: path))
         #else
@@ -595,161 +616,121 @@ struct LibraryView: View {
         #endif
     }
 
+    private func makeStandaloneGameItem(filePath: String) -> GameItem? {
+        let name = Self.pathLastComponent(filePath)
+        let ext = Self.pathExtension(filePath).lowercased()
+        guard ext == "elf" || ext == "self" || ext == "zar" || (ext == "bin" && name.lowercased() == "eboot.bin") else {
+            return nil
+        }
+        var sizeStr = "ELF File"
+        #if !SKIP
+        let fileURL = URL(fileURLWithPath: filePath)
+        if let resourceValues = try? fileURL.resourceValues(forKeys: [.fileSizeKey]),
+           let size = resourceValues.fileSize {
+            sizeStr = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+        }
+        #endif
+        return GameItem(
+            title: Self.pathDeletingExtension(name),
+            titleId: ext.uppercased(),
+            appVersion: "Standalone",
+            rawVersion: "Standalone",
+            firmwareVersion: "N/A",
+            path: filePath,
+            sizeString: sizeStr,
+            isDirectory: false,
+            iconPath: nil,
+            isValidGame: true
+        )
+    }
+
+    private func scanFolderRecursively(rootPath: String, into items: inout [GameItem], seenPaths: inout Set<String>) {
+        let fileManager = FileManager.default
+        var isDir: ObjCBool = false
+        guard fileManager.fileExists(atPath: rootPath, isDirectory: &isDir) else { return }
+
+        if !isDir.boolValue {
+            if !seenPaths.contains(rootPath), let item = makeStandaloneGameItem(filePath: rootPath) {
+                seenPaths.insert(rootPath)
+                items.append(item)
+            }
+            return
+        }
+
+        // If the root path itself is a game directory, add it without recursing into its internal folders
+        if let directGame = parseGameDirectory(folderPath: rootPath) {
+            if !seenPaths.contains(directGame.path) {
+                seenPaths.insert(directGame.path)
+                items.append(directGame)
+            }
+            return
+        }
+
+        var pendingDirs: [String] = [rootPath]
+        while !pendingDirs.isEmpty {
+            let dirPath = pendingDirs.removeFirst()
+            guard let subpaths = try? fileManager.contentsOfDirectory(atPath: dirPath) else { continue }
+            for sub in subpaths {
+                let name = Self.pathLastComponent(sub)
+                if name.hasPrefix(".") || name.hasPrefix("_") { continue }
+                if Self.ignoredFolderNames.contains(name.lowercased()) { continue }
+
+                let fullPath = Self.joinPath(dirPath, sub)
+                var subIsDir: ObjCBool = false
+                guard fileManager.fileExists(atPath: fullPath, isDirectory: &subIsDir) else { continue }
+
+                if subIsDir.boolValue {
+                    if let gameItem = parseGameDirectory(folderPath: fullPath) {
+                        if !seenPaths.contains(gameItem.path) {
+                            seenPaths.insert(gameItem.path)
+                            items.append(gameItem)
+                        }
+                    } else {
+                        pendingDirs.append(fullPath)
+                    }
+                } else {
+                    if !seenPaths.contains(fullPath), let standalone = makeStandaloneGameItem(filePath: fullPath) {
+                        seenPaths.insert(fullPath)
+                        items.append(standalone)
+                    }
+                }
+            }
+        }
+    }
+
     private func loadGames() {
         var items: [GameItem] = []
+        var seenPaths = Set<String>()
+        var directoriesToScan: [String] = []
         let fileManager = FileManager.default
         
 #if os(macOS)
-        // On macOS: load in-place imported games without copying files
-        var validSavedPaths: [String] = []
         #if !SKIP
-        let savedPaths = UserDefaults.standard.stringArray(forKey: "KytyImportedGamePaths") ?? []
-        #else
-        let savedPaths: [String] = []
+        let scanPaths = UserDefaults.standard.stringArray(forKey: "KytyGameScanPaths") ?? []
+        for scanPath in scanPaths where !directoriesToScan.contains(scanPath) {
+            directoriesToScan.append(scanPath)
+        }
         #endif
-        for path in savedPaths {
-            let file = URL(fileURLWithPath: path)
-            var isDir: ObjCBool = false
-            guard fileManager.fileExists(atPath: file.path, isDirectory: &isDir) else {
-                continue
-            }
-            validSavedPaths.append(path)
-            if isDir.boolValue {
-                if let item = parseGameDirectory(folderPath: file.path) {
-                    items.append(item)
-                }
-            } else {
-                let name = file.lastPathComponent
-                let ext = file.pathExtension.lowercased()
-                if ext == "elf" || ext == "self" || ext == "zar" || (ext == "bin" && name.lowercased() == "eboot.bin") {
-                    let sizeStr: String
-                    if let resourceValues = try? file.resourceValues(forKeys: [.fileSizeKey]),
-                       let size = resourceValues.fileSize {
-                        sizeStr = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
-                    } else {
-                        sizeStr = "ELF File"
-                    }
-                    
-                    items.append(GameItem(
-                        title: file.deletingPathExtension().lastPathComponent,
-                        titleId: ext.uppercased(),
-                        appVersion: "Standalone",
-                        rawVersion: "Standalone",
-                        firmwareVersion: "N/A",
-                        path: file.path,
-                        sizeString: sizeStr,
-                        isDirectory: false,
-                        iconPath: nil,
-                        isValidGame: true
-                    ))
-                }
-            }
-        }
-        if validSavedPaths.count != savedPaths.count {
-            UserDefaults.standard.set(validSavedPaths, forKey: "KytyImportedGamePaths")
-        }
-
-        if let appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("Metaspero") {
-            try? fileManager.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
-            do {
-                let files = try fileManager.contentsOfDirectory(at: appSupportURL, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey])
-                for file in files {
-                    if items.contains(where: { $0.path == file.path }) { continue }
-                    let name = file.lastPathComponent
-                    if name.hasPrefix(".") || name.hasPrefix("_") { continue }
-                    if Self.ignoredFolderNames.contains(name.lowercased()) { continue }
-                    
-                    var isDir: ObjCBool = false
-                    fileManager.fileExists(atPath: file.path, isDirectory: &isDir)
-                    
-                    if isDir.boolValue {
-                        if let item = parseGameDirectory(folderPath: file.path) {
-                            items.append(item)
-                        }
-                    } else {
-                        let ext = file.pathExtension.lowercased()
-                        if ext == "elf" || ext == "self" || ext == "zar" || (ext == "bin" && name.lowercased() == "eboot.bin") {
-                            let sizeStr: String
-                            #if !SKIP
-                            if let resourceValues = try? file.resourceValues(forKeys: [.fileSizeKey]),
-                               let size = resourceValues.fileSize {
-                                sizeStr = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
-                            } else {
-                                sizeStr = "ELF File"
-                            }
-                            #else
-                            sizeStr = "ELF File"
-                            #endif
-                            
-                            items.append(GameItem(
-                                title: file.deletingPathExtension().lastPathComponent,
-                                titleId: ext.uppercased(),
-                                appVersion: "Standalone",
-                                rawVersion: "Standalone",
-                                firmwareVersion: "N/A",
-                                path: file.path,
-                                sizeString: sizeStr,
-                                isDirectory: false,
-                                iconPath: nil,
-                                isValidGame: true
-                            ))
-                        }
-                    }
-                }
-            } catch {
-                NSLog("[LibraryView] Error enumerating Application Support: %@", error.localizedDescription)
-            }
-        }
 #else
-        var directoriesToScan: [URL] = []
         #if !SKIP
         if let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
-            directoriesToScan.append(documentsURL)
+            directoriesToScan.append(documentsURL.path)
+        }
+        Self.restoreBookmarkedFolders()
+        let scanPaths = UserDefaults.standard.stringArray(forKey: "KytyGameScanPaths") ?? []
+        for scanPath in scanPaths where !directoriesToScan.contains(scanPath) {
+            directoriesToScan.append(scanPath)
         }
         #else
-        var seenDirPaths = Set<String>()
-        for customPath in KytyBridge.customGamePaths {
-            if !seenDirPaths.contains(customPath) {
-                seenDirPaths.insert(customPath)
-                directoriesToScan.append(URL(fileURLWithPath: customPath))
-            }
+        for customPath in KytyBridge.customGamePaths where !directoriesToScan.contains(customPath) {
+            directoriesToScan.append(customPath)
         }
         #endif
-
-        for dir in directoriesToScan {
-            guard fileManager.fileExists(atPath: dir.path) else { continue }
-            guard let subpaths = try? fileManager.contentsOfDirectory(atPath: dir.path) else { continue }
-            for sub in subpaths {
-                let filePath = Self.joinPath(dir.path, sub)
-                if items.contains(where: { $0.path == filePath }) { continue }
-                let name = Self.pathLastComponent(filePath)
-                if name.hasPrefix(".") || name.hasPrefix("_") { continue }
-                if Self.ignoredFolderNames.contains(name.lowercased()) { continue }
-                
-                if let item = parseGameDirectory(folderPath: filePath) {
-                    if !items.contains(where: { $0.path == item.path || (!item.titleId.isEmpty && $0.titleId == item.titleId) }) {
-                        items.append(item)
-                    }
-                } else {
-                    let ext = Self.pathExtension(filePath).lowercased()
-                    if ext == "elf" || ext == "self" || ext == "zar" || (ext == "bin" && name.lowercased() == "eboot.bin") {
-                        items.append(GameItem(
-                            title: Self.pathDeletingExtension(name),
-                            titleId: ext.uppercased(),
-                            appVersion: "Standalone",
-                            rawVersion: "Standalone",
-                            firmwareVersion: "N/A",
-                            path: filePath,
-                            sizeString: "ELF File",
-                            isDirectory: false,
-                            iconPath: nil,
-                            isValidGame: true
-                        ))
-                    }
-                }
-            }
-        }
 #endif
+
+        for dirPath in directoriesToScan {
+            scanFolderRecursively(rootPath: dirPath, into: &items, seenPaths: &seenPaths)
+        }
         
         // Sort alphabetically by title
         items.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
@@ -954,33 +935,65 @@ struct LibraryView: View {
     }
     
     #if !SKIP
+    private static var activeSecurityScopedURLs: [URL] = []
+
+    static func saveSecurityScopedBookmark(for url: URL) {
+        #if os(iOS)
+        if !activeSecurityScopedURLs.contains(where: { $0.path == url.path }) {
+            activeSecurityScopedURLs.append(url)
+        }
+        if let data = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
+            var bookmarks = UserDefaults.standard.array(forKey: "KytyGameBookmarks") as? [Data] ?? []
+            bookmarks.append(data)
+            UserDefaults.standard.set(bookmarks, forKey: "KytyGameBookmarks")
+        }
+        #endif
+    }
+
+    static func restoreBookmarkedFolders() {
+        #if os(iOS)
+        let bookmarks = UserDefaults.standard.array(forKey: "KytyGameBookmarks") as? [Data] ?? []
+        for data in bookmarks {
+            var isStale = false
+            if let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale),
+               !activeSecurityScopedURLs.contains(where: { $0.path == url.path }) {
+                if url.startAccessingSecurityScopedResource() {
+                    activeSecurityScopedURLs.append(url)
+                }
+            }
+        }
+        #endif
+    }
+
+    #if os(iOS)
+    private func openDocumentsInFilesApp() {
+        guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let path = documentsURL.path
+        if let filesURL = URL(string: "shareddocuments://\(path)") {
+            UIApplication.shared.open(filesURL)
+        }
+    }
+    #endif
+
     private func handleImport(result: Result<[URL], Error>) {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
-            guard url.startAccessingSecurityScopedResource() else { return }
-            defer { url.stopAccessingSecurityScopedResource() }
+            let accessed = url.startAccessingSecurityScopedResource()
+            #if os(macOS)
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            #else
+            if accessed {
+                Self.saveSecurityScopedBookmark(for: url)
+            }
+            #endif
             
-#if os(macOS)
-            // On macOS: Store the path to read in-place without copying files or duplicating storage
-            #if !SKIP
-        var savedPaths = UserDefaults.standard.stringArray(forKey: "KytyImportedGamePaths") ?? []
-        #else
-        var savedPaths: [String] = []
-        #endif
-            if !savedPaths.contains(url.path) {
-                savedPaths.append(url.path)
-                UserDefaults.standard.set(savedPaths, forKey: "KytyImportedGamePaths")
+            var scanPaths = UserDefaults.standard.stringArray(forKey: "KytyGameScanPaths") ?? []
+            if !scanPaths.contains(url.path) {
+                scanPaths.append(url.path)
+                UserDefaults.standard.set(scanPaths, forKey: "KytyGameScanPaths")
             }
             loadGames()
-#else
-            // On iOS: Copy to app Documents container due to app sandbox constraints
-            let fileManager = FileManager.default
-            guard let dest = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent(url.lastPathComponent) else { return }
-            
-            try? fileManager.copyItem(at: url, to: dest)
-            loadGames()
-#endif
         case .failure(let error):
             NSLog("[LibraryView] File import failed: %@", error.localizedDescription)
         }
@@ -1003,7 +1016,7 @@ struct GameCardView: View {
                 ZStack {
 #if os(iOS) || SKIP
                     if let iconPath = game.iconPath,
-                       let data = readFileData(path: iconPath),
+                       let data = LibraryView.readFileData(path: iconPath),
                        let uiImage = UIImage(data: data) {
                         Image(uiImage: uiImage)
                             .resizable()
@@ -1142,7 +1155,7 @@ struct GameListRowView: View {
                 Group {
 #if os(iOS) || SKIP
                     if let iconPath = game.iconPath,
-                       let data = readFileData(path: iconPath),
+                       let data = LibraryView.readFileData(path: iconPath),
                        let uiImage = UIImage(data: data) {
                         Image(uiImage: uiImage)
                             .resizable()

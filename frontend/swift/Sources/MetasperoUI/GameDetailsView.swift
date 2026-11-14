@@ -185,7 +185,7 @@ struct GameDetailsView: View {
     private var artworkView: some View {
 #if os(iOS) || SKIP
         if let iconPath = game.iconPath,
-           let data = readFileData(path: iconPath),
+           let data = LibraryView.readFileData(path: iconPath),
            let uiImage = UIImage(data: data) {
             Image(uiImage: uiImage)
                 .resizable()
@@ -444,7 +444,7 @@ struct CompatibilityReportView: View {
     private var compatArtworkView: some View {
 #if os(iOS) || SKIP
         if let iconPath = game.iconPath,
-           let data = readFileData(path: iconPath),
+           let data = LibraryView.readFileData(path: iconPath),
            let uiImage = UIImage(data: data) {
             Image(uiImage: uiImage)
                 .resizable()

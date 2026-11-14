@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import SwiftUI
+#if os(iOS) && !SKIP
+import UIKit
+#endif
+#if !SKIP
+import UniformTypeIdentifiers
+#endif
 
 struct ConsoleLanguage: Identifiable, Hashable {
     let id: Int
@@ -40,6 +46,7 @@ let kConsoleLanguages: [ConsoleLanguage] = [
 ]
 
 struct SettingsView: View {
+    var isSheet: Bool = false
     @Environment(\.dismiss) private var dismiss
     
     // Graphics
@@ -75,11 +82,13 @@ struct SettingsView: View {
     @State private var showLogSheet = false
     @State private var showAboutSheet = false
     @State private var showKeymapSheet = false
+    @State private var showFolderImporter = false
+    @State private var scanPaths: [String] = []
     @State private var controllers: [ControllerInfo] = []
-    @State private var isSdlActive: Bool = false
-    @State private var selectedTab: SettingsTab = .graphics
+    @State private var selectedTab: SettingsTab = .library
     
     enum SettingsTab: String, CaseIterable, Identifiable {
+        case library = "Library"
         case graphics = "Graphics"
         case controllers = "Controllers"
         case jit = "JIT"
@@ -91,6 +100,7 @@ struct SettingsView: View {
         
         var icon: String {
             switch self {
+            case .library: return "folder.fill"
             case .graphics: return "display"
             case .controllers: return "gamecontroller.fill"
             case .jit: return "cpu"
@@ -136,6 +146,8 @@ struct SettingsView: View {
             ScrollView {
                 Group {
                     switch selectedTab {
+                    case .library:
+                        macLibrarySection
                     case .graphics:
                         macGraphicsSection
                     case .controllers:
@@ -167,9 +179,77 @@ struct SettingsView: View {
         .sheet(isPresented: $showKeymapSheet) {
             InputMappingView()
         }
+        #if !SKIP
+        .fileImporter(
+            isPresented: $showFolderImporter,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            handleFolderImport(result: result)
+        }
+        #endif
         .onAppear {
+            loadScanPaths()
             refreshControllers()
             enableLogFileWriting = KytyBridge.isLogFileWritingEnabled()
+        }
+    }
+
+    private var macLibrarySection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Game Folders")
+                    .font(.headline)
+                Spacer()
+                Button(action: { showFolderImporter = true }) {
+                    Label("Add Game Folder", systemImage: "folder.badge.plus")
+                }
+            }
+            
+            GroupBox {
+                VStack(alignment: .leading, spacing: 10) {
+                    if scanPaths.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 32))
+                                .foregroundColor(.secondary)
+                            Text("No Game Folders")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                            Text("Add a folder with PS5 games, ELFs, or ZAR files to scan automatically.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 20)
+                    } else {
+                        ForEach(Array(scanPaths.enumerated()), id: \.offset) { index, path in
+                            if index > 0 {
+                                Divider()
+                            }
+                            HStack(spacing: 10) {
+                                Image(systemName: "folder.fill")
+                                    .foregroundColor(.blue)
+                                Text(path)
+                                    .font(.system(.body, design: .monospaced))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer()
+                                Button(role: .destructive) {
+                                    removeScanPath(at: index)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .foregroundColor(.red)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Remove Folder")
+                            }
+                        }
+                    }
+                }
+                .padding(8)
+            }
         }
     }
 
@@ -254,20 +334,6 @@ struct SettingsView: View {
             
             GroupBox {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Text("SDL3 Gamepad Subsystem")
-                        Spacer()
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(isSdlActive ? Color.green : Color.orange)
-                                .frame(width: 8, height: 8)
-                            Text(isSdlActive ? "Active" : "Standby / Initialized")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    
-                    Divider()
-                    
                     HStack {
                         Text("Connected Gamepads")
                         Spacer()
@@ -519,6 +585,9 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    NavigationLink { iosLibraryPage } label: {
+                        PlatformLabel("Library", systemImage: "folder.fill")
+                    }
                     NavigationLink { iosGraphicsPage } label: {
                         PlatformLabel("Graphics", systemImage: "display")
                     }
@@ -528,6 +597,9 @@ struct SettingsView: View {
                     NavigationLink { iosJitPage } label: {
                         PlatformLabel("JIT", systemImage: "cpu")
                     }
+                }
+                
+                Section {
                     NavigationLink { iosAdvancedPage } label: {
                         PlatformLabel("Advanced", systemImage: "slider.horizontal.3")
                     }
@@ -550,14 +622,96 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
             #endif
             .navigationTitle("Settings")
+            #if !SKIP
+            .navigationBarTitleDisplayMode(isSheet ? .inline : .large)
+            #endif
+            .toolbar {
+                if isSheet {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+            }
             .sheet(isPresented: $showLogSheet) {
                 LogView()
             }
+            #if !SKIP
+            .fileImporter(
+                isPresented: $showFolderImporter,
+                allowedContentTypes: [.folder],
+                allowsMultipleSelection: false
+            ) { result in
+                handleFolderImport(result: result)
+            }
+            #endif
             .onAppear {
+                loadScanPaths()
                 refreshControllers()
                 enableLogFileWriting = KytyBridge.isLogFileWritingEnabled()
             }
         }
+    }
+
+    private var iosLibraryPage: some View {
+        Form {
+            #if os(iOS) && !SKIP
+            Section {
+                Button(action: openDocumentsInFilesApp) {
+                    PlatformLabel("Open in Files App", systemImage: "folder.fill")
+                }
+            } header: {
+                Text("App Library Folder")
+            } footer: {
+                Text("Put games in On My iPhone/iPad -> Metaspero in Files to avoid copying.")
+            }
+            #endif
+
+            Section {
+                if scanPaths.isEmpty {
+                    Text("No Game Folders")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(Array(scanPaths.enumerated()), id: \.offset) { index, path in
+                        HStack {
+                            PlatformIcon("folder.fill")
+                                .foregroundColor(.blue)
+                            Text(path)
+                                .font(.system(.subheadline, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Button(role: .destructive) {
+                                removeScanPath(at: index)
+                            } label: {
+                                PlatformIcon("trash")
+                                    .foregroundColor(.red)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+                
+                Button(action: {
+                    #if SKIP
+                    KytyBridge.requestPickFolder()
+                    #else
+                    showFolderImporter = true
+                    #endif
+                }) {
+                    PlatformLabel("Add Game Folder", systemImage: "folder.badge.plus")
+                }
+            } header: {
+                Text("Game Folders")
+            } footer: {
+                Text("Games, ELFs, and ZAR files in these folders are scanned automatically.")
+            }
+        }
+        #if SKIP
+        .scrollContentBackground(.hidden)
+        #endif
+        .navigationTitle("Library")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     #if SKIP
@@ -635,7 +789,7 @@ struct SettingsView: View {
                 }
                 #endif
             } header: {
-                Text("Graphics & Display")
+                Text("Graphics")
             } footer: {
                 #if SKIP
                 Text("Performance HUD displays real-time frame rates, frame times, VmRSS physical memory usage, and active Vulkan GPU driver details.")
@@ -657,7 +811,7 @@ struct SettingsView: View {
     private var iosControllersPage: some View {
         Form {
             Section {
-                Toggle("On-Screen Touch Controls", isOn: $enableTouchOverlay)
+                Toggle("On-Screen Controls Overlay", isOn: $enableTouchOverlay)
                 Toggle("Controller Haptic Feedback", isOn: $enableHaptics)
             } header: {
                 Text("Touch & Haptics")
@@ -665,15 +819,27 @@ struct SettingsView: View {
                 Text("Enable or disable the on-screen virtual gamepad overlay during gameplay.")
             }
             
-            Section(header: Text("Connected Gamepads")) {
+            Section {
                 HStack {
-                    Text("SDL3 Subsystem")
+                    Text("Connected Gamepads")
                     Spacer()
-                    Text(isSdlActive ? "Active" : "Standby")
-                        .foregroundColor(isSdlActive ? .green : .secondary)
+                    Text("\(controllers.count) detected")
+                        .foregroundColor(.secondary)
                 }
                 
-                if !controllers.isEmpty {
+                if controllers.isEmpty {
+                    VStack(spacing: 6) {
+                        Text("No Physical Gamepads Connected")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        Text("Connect a DualSense, DualShock 4, Xbox, or MFi controller via Bluetooth or USB to play.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                } else {
                     ForEach(controllers) { ctrl in
                         HStack {
                             PlatformIcon("gamecontroller.fill")
@@ -681,7 +847,7 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(ctrl.name)
                                     .font(.subheadline)
-                                Text("\(ctrl.type) via \(ctrl.source)")
+                                Text("\(ctrl.type) - via \(ctrl.source)")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                             }
@@ -692,18 +858,27 @@ struct SettingsView: View {
                         }
                     }
                 }
+            } header: {
+                Text("Controllers")
             }
         }
         #if SKIP
         .scrollContentBackground(.hidden)
         #endif
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: refreshControllers) {
+                    PlatformIcon("arrow.clockwise")
+                }
+            }
+        }
         .navigationTitle("Controllers")
         .navigationBarTitleDisplayMode(.inline)
     }
 
     private var iosJitPage: some View {
         Form {
-            Section(header: Text("JIT Compilation")) {
+            Section(header: Text("JIT")) {
                 HStack {
                     Text("JIT Status")
                     Spacer()
@@ -721,6 +896,13 @@ struct SettingsView: View {
                     Spacer()
                     Text("\(KytyBridge.processId())")
                         .font(.system(.body, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+                
+                HStack {
+                    Text("CPU Core")
+                    Spacer()
+                    Text("FEXCore (x86_64 -> ARM64)")
                         .foregroundColor(.secondary)
                 }
                 
@@ -798,13 +980,13 @@ struct SettingsView: View {
                     }
                 }
                 
-                Toggle("Simulate Network Connected", isOn: $networkConnected)
-                Toggle("Skip Startup Notices", isOn: $skipNoticeScreen)
+                Toggle("Simulate Connected Network", isOn: $networkConnected)
+                Toggle("Skip Startup Logo & Notice Screens", isOn: $skipNoticeScreen)
             }
             
             Section(header: Text("Advanced Graphics")) {
-                Toggle("Tessellation", isOn: $tessellationEnabled)
-                Toggle("Sync Raw GPU Image Buffers", isOn: $syncRawImageBuffers)
+                Toggle("Enable Tessellation", isOn: $tessellationEnabled)
+                Toggle("Synchronize Raw GPU Image Buffers", isOn: $syncRawImageBuffers)
                 Toggle("Readback Linear Images", isOn: $readbackLinearImages)
                 Toggle("High Dynamic Range (HDR)", isOn: $hdrEnabled)
             }
@@ -814,7 +996,7 @@ struct SettingsView: View {
             } header: {
                 Text("Mesh Shaders")
             } footer: {
-                Text("Warning: Skipping mesh shaders bypasses geometry processing. This can cause missing 3D models, severe rendering glitches, or game crashes. Only enable if a title fails to render on unsupported GPU hardware.")
+                Text("Warning: Skipping mesh shaders bypasses geometry processing. This can cause missing 3D geometry, severe rendering glitches, or game crashes. Only enable if a title fails to render on unsupported GPU hardware.")
             }
         }
         #if SKIP
@@ -826,9 +1008,9 @@ struct SettingsView: View {
 
     private var iosDiagnosticsPage: some View {
         Form {
-            Section(header: Text("Diagnostics & Logs")) {
+            Section(header: Text("Diagnostics")) {
                 Button(action: { showLogSheet = true }) {
-                    PlatformLabel("View Runtime Logs", systemImage: "terminal.fill")
+                    PlatformLabel("View Recent Logs", systemImage: "terminal.fill")
                 }
                 
                 Toggle("Write Logs to Disk", isOn: $enableLogFileWriting)
@@ -836,7 +1018,7 @@ struct SettingsView: View {
                         KytyBridge.setLogFileWritingEnabled(enabled)
                     }
                 
-                Toggle("Memory Pressure Toast", isOn: $enableMemoryWarningToast)
+                Toggle("Memory Warning Toast", isOn: $enableMemoryWarningToast)
             }
             
             Section(header: Text("Memory Footprint")) {
@@ -866,8 +1048,60 @@ struct SettingsView: View {
     }
 #endif
 
+    private func loadScanPaths() {
+        #if !SKIP
+        scanPaths = UserDefaults.standard.stringArray(forKey: "KytyGameScanPaths") ?? []
+        #else
+        scanPaths = KytyBridge.customGamePaths
+        #endif
+    }
+
+    private func removeScanPath(at index: Int) {
+        guard index >= 0 && index < scanPaths.count else { return }
+        scanPaths.remove(at: index)
+        #if !SKIP
+        UserDefaults.standard.set(scanPaths, forKey: "KytyGameScanPaths")
+        #else
+        KytyBridge.customGamePaths = scanPaths
+        KytyBridge.onCustomGamePathsChanged?(scanPaths)
+        #endif
+        NotificationCenter.default.post(name: Notification.Name("KytyGamePathsChanged"), object: nil)
+    }
+
+    #if os(iOS) && !SKIP
+    private func openDocumentsInFilesApp() {
+        guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        if let filesURL = URL(string: "shareddocuments://\(documentsURL.path)") {
+            UIApplication.shared.open(filesURL)
+        }
+    }
+    #endif
+
+    #if !SKIP
+    private func handleFolderImport(result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let accessed = url.startAccessingSecurityScopedResource()
+            #if os(macOS)
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            #else
+            if accessed {
+                LibraryView.saveSecurityScopedBookmark(for: url)
+            }
+            #endif
+            if !scanPaths.contains(url.path) {
+                scanPaths.append(url.path)
+                UserDefaults.standard.set(scanPaths, forKey: "KytyGameScanPaths")
+                NotificationCenter.default.post(name: Notification.Name("KytyGamePathsChanged"), object: nil)
+            }
+        case .failure(let error):
+            NSLog("[SettingsView] Folder import failed: %@", error.localizedDescription)
+        }
+    }
+    #endif
+
     private func refreshControllers() {
-        isSdlActive = KytyBridge.isSDLGamepadSubsystemActive()
         let raw = KytyBridge.getConnectedControllers()
         var list: [ControllerInfo] = []
         for (i, d) in raw.enumerated() {
