@@ -210,10 +210,15 @@ static void PrintAbortPointerArrayCandidate(const char* name, uint64_t addr) {
 
 	uint64_t rbp = 0;
 	uint64_t rsp = 0;
-	// This assembly is x86-64-specific, not Windows-specific.
 #if defined(__x86_64__) || defined(_M_X64)
 	asm volatile("movq %%rbp, %0" : "=r"(rbp));
 	asm volatile("movq %%rsp, %0" : "=r"(rsp));
+#elif defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	Loader::Fex::GuestRegisterSnapshot regs;
+	if (Loader::Fex::FexGuestEngine::GetCurrentThreadRegisters(&regs)) {
+		rbp = regs.rbp;
+		rsp = regs.rsp;
+	}
 #endif
 
 	const auto ret = reinterpret_cast<uint64_t>(__builtin_return_address(0));
