@@ -108,8 +108,8 @@ void CommandScheduler::Shutdown() {
 	if (!m_command.IsInvalid()) {
 		Submit();
 	}
-	if (CurrentTick() > 0) {
-		m_master.Wait(CurrentTick());
+	if (CurrentTick() > 1) {
+		m_master.Wait(CurrentTick() - 1);
 	}
 	PopPendingOperations();
 	DrainPriorityOperations();
@@ -157,8 +157,8 @@ void CommandScheduler::Finish() {
 	if (!m_command.IsInvalid()) {
 		Submit();
 	}
-	if (CurrentTick() > 0) {
-		m_master.Wait(CurrentTick());
+	if (CurrentTick() > 1) {
+		m_master.Wait(CurrentTick() - 1);
 	}
 	BeginNext();
 	PopPendingOperations();
