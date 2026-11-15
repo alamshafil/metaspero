@@ -2,6 +2,7 @@
 #ifndef KYTY_LOADER_FEX_HLE_BRIDGE_H_
 #define KYTY_LOADER_FEX_HLE_BRIDGE_H_
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -280,11 +281,13 @@ public:
                               ThunkSignature sig = ThunkSignature::Auto,
                               HleDescriptor desc = {});
 
+    static constexpr size_t MAX_FUNCTIONS = 16384;
+
     /// Find function by synthetic thunk address
-    const HleFunction* FindByThunk(uint64_t guest_thunk_addr) const;
+    const HleFunction* FindByThunk(uint64_t guest_thunk_addr) const noexcept;
 
     /// Find function by ID
-    const HleFunction* FindById(uint64_t id) const;
+    const HleFunction* FindById(uint64_t id) const noexcept;
 
     /// Get the HLT trampoline address (used as return address for guest entry/module funcs)
     uint64_t GetHltAddress();
@@ -351,6 +354,7 @@ private:
 
     mutable std::shared_mutex m_mutex;
     std::vector<std::unique_ptr<HleFunction>> m_functions;
+    std::array<std::atomic<const HleFunction*>, MAX_FUNCTIONS> m_functions_table{};
     std::unordered_map<uint64_t, uint64_t> m_host_to_id;
     std::unique_ptr<std::atomic<uint64_t>[]> m_call_counts;
     uint64_t m_thunk_base{0};

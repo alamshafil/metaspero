@@ -39,6 +39,9 @@ void FexHleBridge::Reset() {
     m_fiber_trampoline_addr = 0;
     m_callback_ret_addr     = 0;
     m_functions.clear();
+    for (auto& slot : m_functions_table) {
+        slot.store(nullptr, std::memory_order_relaxed);
+    }
     m_host_to_id.clear();
     if (m_call_counts) {
         for (size_t i = 0; i < 16384; ++i) {
@@ -258,6 +261,9 @@ uint64_t FexHleBridge::RegisterFunction(uint64_t host_func_ptr, const std::strin
     }
 
     m_functions.push_back(std::make_unique<HleFunction>(HleFunction{id, host_func_ptr, name, sig, desc}));
+    if (id < MAX_FUNCTIONS) {
+        m_functions_table[id].store(m_functions[id].get(), std::memory_order_release);
+    }
     m_host_to_id[host_func_ptr] = id;
 
     // Slot 0 is the HLT trampoline, so function id gets slot (id + 1)
@@ -432,23 +438,18 @@ uint64_t FexHleBridge::RegisterFunction(uint64_t host_func_ptr, const std::strin
     return thunk_addr;
 }
 
-const HleFunction* FexHleBridge::FindByThunk(uint64_t guest_thunk_addr) const {
-    std::shared_lock<std::shared_mutex> lock(m_mutex);
+const HleFunction* FexHleBridge::FindByThunk(uint64_t guest_thunk_addr) const noexcept {
     if (m_thunk_base == 0 || guest_thunk_addr < m_thunk_base + THUNK_STRIDE) {
         return nullptr;
     }
     uint64_t offset = guest_thunk_addr - (m_thunk_base + THUNK_STRIDE);
     uint64_t id = offset / THUNK_STRIDE;
-    if (id < m_functions.size()) {
-        return m_functions[id].get();
-    }
-    return nullptr;
+    return FindById(id);
 }
 
-const HleFunction* FexHleBridge::FindById(uint64_t id) const {
-    std::shared_lock<std::shared_mutex> lock(m_mutex);
-    if (id < m_functions.size()) {
-        return m_functions[id].get();
+const HleFunction* FexHleBridge::FindById(uint64_t id) const noexcept {
+    if (id < MAX_FUNCTIONS) {
+        return m_functions_table[id].load(std::memory_order_acquire);
     }
     return nullptr;
 }
@@ -490,8 +491,13 @@ void FexHleBridge::RecordHleCall(uint64_t thunk_id, const uint64_t* args, uint64
     rc.args[1] = args[1];
     rc.args[2] = args[2];
     rc.ret = result;
-    std::strncpy(rc.name, fn_info->name.c_str(), sizeof(rc.name) - 1);
-    rc.name[sizeof(rc.name) - 1] = '\0';
+    const char* src_name = fn_info->name.c_str();
+    size_t len = 0;
+    while (len < sizeof(rc.name) - 1 && src_name[len] != '\0') {
+        rc.name[len] = src_name[len];
+        len++;
+    }
+    rc.name[len] = '\0';
 }
 
 void FexHleBridge::SetInFlight(size_t slot, int32_t tid, uint64_t thunk_id, uint64_t caller_rip, uint64_t a0, uint64_t a1) {
@@ -750,8 +756,13 @@ uint64_t FexHleBridge::DispatchHle(uint64_t thunk_id, const uint64_t* gpr, uint6
     rc.args[1] = a1;
     rc.args[2] = a2;
     rc.ret = result;
-    std::strncpy(rc.name, fn_name.c_str(), sizeof(rc.name) - 1);
-    rc.name[sizeof(rc.name) - 1] = '\0';
+    const char* src_name = fn_name.c_str();
+    size_t len = 0;
+    while (len < sizeof(rc.name) - 1 && src_name[len] != '\0') {
+        rc.name[len] = src_name[len];
+        len++;
+    }
+    rc.name[len] = '\0';
 
     return result;
 }

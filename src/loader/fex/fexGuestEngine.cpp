@@ -7,6 +7,7 @@
 #include "common/logging/log.h"
 #include "common/hostException.h"
 #include "graphics/host_gpu/hostMemory.h"
+#include "graphics/host_gpu/regionDefinitions.h"
 #include "kernel/pthread.h"
 #include "kernel/semaphore.h"
 #include "kernel/eventFlag.h"
@@ -204,12 +205,11 @@ public:
             }
             ExitStaleGuestThreadNow();
         }
-        Loader::Fex::FexHleBridge::Instance().RecordHleCall(thunk_id, args_array, guest_rsp, result);
 
         frame->State.gregs[FEXCore::X86State::REG_RAX] = result;
-        // Full barrier on resuming guest execution: ensures all memory written by HLE/kernel
+        // Release barrier on resuming guest execution: ensures memory written by HLE/kernel
         // is committed before the guest thread executes its next instructions.
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        std::atomic_thread_fence(std::memory_order_release);
         return result;
     }
 
@@ -1086,38 +1086,53 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
         write_pc = pc;
     }
 
-    // Attempt FEXCore's unaligned access handler (NonAtomic)
-    // to backpatch atomic instructions so subsequent executions never trap again.
-    uint64_t gprs[31];
-    for (int i = 0; i < 29; ++i) {
-        gprs[i] = ss.__x[i];
-    }
-    gprs[29] = arm_thread_state64_get_fp(ss);
-    gprs[30] = arm_thread_state64_get_lr(ss);
+    // Only invoke FEXCore's unaligned handler for atomic instructions (LDAR, STLR, CAS, etc.)
+    // that FEXCore knows how to backpatch. Standard scalar loads/stores are not handled by FEXCore.
+    const uint32_t raw_inst = *reinterpret_cast<const uint32_t*>(write_pc);
+    const bool is_atomic_candidate = 
+        ((raw_inst & 0xBFE0FC00) == 0x0860FC00) || // CASPAL
+        ((raw_inst & 0x3FE0FC00) == 0x08E0FC00) || // CASAL
+        ((raw_inst & 0x3B200C00) == 0x38200000) || // ATOMIC_MEM
+        ((raw_inst & 0x3FE00C00) == 0x19400000) || // LDAPUR
+        ((raw_inst & 0x3FE00C00) == 0x19000000) || // STLUR
+        ((raw_inst & 0xBFFF8000) == 0x887F8000) || // LDAXP
+        ((raw_inst & 0x3FFFFC00) == 0x085FFC00) || // LDAXR
+        ((raw_inst & 0x3FFFFC00) == 0x08DFFC00) || // LDAR
+        ((raw_inst & 0x3FFFFC00) == 0x38BFC000) || // LDAPR
+        ((raw_inst & 0x3FFFFC00) == 0x089FFC00);   // STLR
 
-#if defined(__APPLE__) && !TARGET_OS_IPHONE
-    KytyJitWriteProtect(0);
-#endif
-
-    auto result = FEXCore::ArchHelpers::Arm64::HandleUnalignedAccess(
-        thread, FEXCore::ArchHelpers::Arm64::UnalignedHandlerType::NonAtomic,
-        write_pc, gprs, true);
-
-#if defined(__APPLE__) && !TARGET_OS_IPHONE
-    KytyJitWriteProtect(1);
-#endif
-
-    if (result.has_value()) {
+    if (is_atomic_candidate) {
+        uint64_t gprs[31];
         for (int i = 0; i < 29; ++i) {
-            ss.__x[i] = gprs[i];
+            gprs[i] = ss.__x[i];
         }
-        arm_thread_state64_set_fp(ss, gprs[29]);
-        arm_thread_state64_set_lr_fptr(ss, reinterpret_cast<void*>(gprs[30]));
-        arm_thread_state64_set_pc_fptr(ss, reinterpret_cast<void*>(pc + result.value()));
+        gprs[29] = arm_thread_state64_get_fp(ss);
+        gprs[30] = arm_thread_state64_get_lr(ss);
 
-        __builtin___clear_cache(reinterpret_cast<char*>(pc - 4), reinterpret_cast<char*>(pc + 8));
-        sys_icache_invalidate(reinterpret_cast<void*>(pc - 4), 16);
-        return true;
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+        KytyJitWriteProtect(0);
+#endif
+
+        auto result = FEXCore::ArchHelpers::Arm64::HandleUnalignedAccess(
+            thread, FEXCore::ArchHelpers::Arm64::UnalignedHandlerType::NonAtomic,
+            write_pc, gprs, true);
+
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+        KytyJitWriteProtect(1);
+#endif
+
+        if (result.has_value()) {
+            for (int i = 0; i < 29; ++i) {
+                ss.__x[i] = gprs[i];
+            }
+            arm_thread_state64_set_fp(ss, gprs[29]);
+            arm_thread_state64_set_lr_fptr(ss, reinterpret_cast<void*>(gprs[30]));
+            arm_thread_state64_set_pc_fptr(ss, reinterpret_cast<void*>(pc + result.value()));
+
+            __builtin___clear_cache(reinterpret_cast<char*>(pc - 4), reinterpret_cast<char*>(pc + 8));
+            sys_icache_invalidate(reinterpret_cast<void*>(pc - 4), 16);
+            return true;
+        }
     }
 
     // Emulate unaligned ARM64 loads and stores for vector or regular load/store instructions
@@ -1144,9 +1159,14 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
         }
     };
 
-    // Safe copy helpers using Mach VM APIs when available so that reads/writes
-    // to unmapped or invalid guest ranges return gracefully without faulting.
+    // Safe copy helpers using direct memory copy for valid guest addresses
+    // with Mach VM API fallback for unmapped or guarded pages.
     auto SafeCopyFromGuest = [](void* dst, const void* src, size_t size) {
+        const auto src_addr = reinterpret_cast<uintptr_t>(src);
+        if (src_addr >= 0x1000 && Libs::Graphics::GuestRange{src_addr, size}.Valid()) {
+            std::memcpy(dst, src, size);
+            return;
+        }
 #if defined(__APPLE__)
         vm_size_t outsize = 0;
         kern_return_t kr = vm_read_overwrite(mach_task_self(), reinterpret_cast<vm_address_t>(src), size,
@@ -1165,6 +1185,11 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
     };
 
     auto SafeCopyToGuest = [](void* dst, const void* src, size_t size) {
+        const auto dst_addr = reinterpret_cast<uintptr_t>(dst);
+        if (dst_addr >= 0x1000 && Libs::Graphics::GuestRange{dst_addr, size}.Valid()) {
+            std::memcpy(dst, src, size);
+            return;
+        }
 #if defined(__APPLE__)
         kern_return_t kr = vm_write(mach_task_self(), reinterpret_cast<vm_address_t>(dst),
                                     reinterpret_cast<vm_offset_t>(src), static_cast<mach_msg_type_number_t>(size));
