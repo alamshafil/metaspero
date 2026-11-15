@@ -159,6 +159,14 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Bridge trophies inspection into native C++ core
+        KytyBridge.onHasTrophies = { gamePath ->
+            NativeBridge.nativeHasTrophies(gamePath)
+        }
+        KytyBridge.onGetTrophies = { gamePath, includeIcons ->
+            NativeBridge.getTrophies(gamePath, includeIcons)
+        }
+
         WindowCompat.getInsetsController(window, window.decorView).apply {
             isAppearanceLightStatusBars = false
             isAppearanceLightNavigationBars = false

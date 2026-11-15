@@ -16,6 +16,7 @@ struct TrophiesView: View {
         let grade: String
         let hidden: Bool
         let iconData: Data?
+        let cachedImage: PlatformImage?
     }
     
     var gradeCounts: (platinum: Int, gold: Int, silver: Int, bronze: Int) {
@@ -137,7 +138,7 @@ struct TrophiesView: View {
                 }
             }
             .navigationTitle("Trophies")
-#if os(iOS)
+#if os(iOS) || SKIP
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "Search trophies")
             .toolbar {
@@ -181,8 +182,8 @@ struct TrophiesView: View {
     }
     
     private func loadTrophies() {
-        DispatchQueue.global().async {
-            let raw = KytyBridge.getTrophiesForGamePath(game.path)
+        KytyDispatch.background {
+            let raw = KytyBridge.getTrophiesForGamePath(self.game.path)
             var items: [TrophyItem] = []
             for d in raw {
                 let id = (d["id"] as? Int) ?? Int((d["id"] as? NSNumber)?.intValue ?? 0)
@@ -191,17 +192,23 @@ struct TrophiesView: View {
                 let grade = d["grade"] as? String ?? "Bronze"
                 let hidden = (d["hidden"] as? Bool) ?? false
                 let iconData = d["iconData"] as? Data
+                var img: PlatformImage? = nil
+                if let data = iconData {
+                    img = decodePlatformImage(from: data)
+                }
                 items.append(TrophyItem(
                     id: id,
                     name: name,
                     description: desc,
                     grade: grade,
                     hidden: hidden,
-                    iconData: iconData
+                    iconData: iconData,
+                    cachedImage: img
                 ))
             }
-            DispatchQueue.main.async {
-                self.trophies = items
+            let finalItems = items
+            KytyDispatch.main {
+                self.trophies = finalItems
                 self.isLoading = false
             }
         }
@@ -244,9 +251,8 @@ struct TrophyRow: View {
         HStack(spacing: 12) {
             // Trophy Icon
             ZStack {
-                if let data = trophy.iconData,
-                   let img = platformImage(from: data) {
-                    img
+                if let img = trophy.cachedImage {
+                    platformImage(img)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                         .frame(width: 44, height: 44)
@@ -305,18 +311,5 @@ struct TrophyRow: View {
             }
         }
         .padding(.vertical, 4)
-    }
-    
-    private func platformImage(from data: Data) -> Image? {
-#if os(iOS) || SKIP
-        if let ui = UIImage(data: data) {
-            return Image(uiImage: ui)
-        }
-#else
-        if let ns = NSImage(data: data) {
-            return Image(nsImage: ns)
-        }
-#endif
-        return nil
     }
 }

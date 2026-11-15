@@ -157,3 +157,77 @@ public struct PlatformLabel: View {
         }
     }
 }
+
+// MARK: - Cross-Platform Dispatch
+
+#if SKIP
+public struct KytyDispatch {
+    public static func background(_ block: @escaping () -> Void) {
+        java.lang.Thread({
+            block()
+        }).start()
+    }
+    public static func main(_ block: @escaping () -> Void) {
+        DispatchQueue.main.async {
+            block()
+        }
+    }
+}
+#else
+public struct KytyDispatch {
+    public static func background(_ block: @escaping @Sendable () -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            block()
+        }
+    }
+    public static func main(_ block: @escaping @Sendable () -> Void) {
+        DispatchQueue.main.async {
+            block()
+        }
+    }
+}
+#endif
+
+// MARK: - Cross-Platform Image Abstraction
+
+public func readFileData(path: String) -> Data? {
+    #if SKIP
+    return try? Data(contentsOfFile: path)
+    #else
+    return try? Data(contentsOf: URL(fileURLWithPath: path))
+    #endif
+}
+
+#if os(macOS)
+import AppKit
+public typealias PlatformImage = NSImage
+
+public func platformImage(_ image: PlatformImage) -> Image {
+    return Image(nsImage: image)
+}
+
+public func decodePlatformImage(from data: Data) -> PlatformImage? {
+    return NSImage(data: data)
+}
+
+public func loadPlatformImage(fromPath path: String) -> PlatformImage? {
+    return NSImage(contentsOfFile: path)
+}
+#else
+import UIKit
+public typealias PlatformImage = UIImage
+
+public func platformImage(_ image: PlatformImage) -> Image {
+    return Image(uiImage: image)
+}
+
+public func decodePlatformImage(from data: Data) -> PlatformImage? {
+    return UIImage(data: data)
+}
+
+public func loadPlatformImage(fromPath path: String) -> PlatformImage? {
+    guard let data = readFileData(path: path) else { return nil }
+    return UIImage(data: data)
+}
+#endif
+

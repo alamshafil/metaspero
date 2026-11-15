@@ -1191,6 +1191,10 @@ static void KytyFatalExitCallback(int status, const char *message) {
 }
 
 + (NSArray<NSDictionary<NSString *, id> *> *)getTrophiesForGamePath:(NSString *)gamePath {
+    return [self getTrophiesForGamePath:gamePath includeIcons:YES];
+}
+
++ (NSArray<NSDictionary<NSString *, id> *> *)getTrophiesForGamePath:(NSString *)gamePath includeIcons:(BOOL)includeIcons {
     NSMutableArray *result = [NSMutableArray array];
     if (!gamePath || gamePath.length == 0) return result;
 #if HAS_KYTY_CORE
@@ -1261,7 +1265,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
                             }
                             
                             NSData *iconData = nil;
-                            if (!trophy.icon_png.empty()) {
+                            if (includeIcons && !trophy.icon_png.empty()) {
                                 iconData = [NSData dataWithBytes:trophy.icon_png.data() length:trophy.icon_png.size()];
                             }
                             

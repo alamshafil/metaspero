@@ -153,6 +153,7 @@ typedef NS_ENUM(NSInteger, KytyButton) {
 /// Trophy data inspection
 + (BOOL)hasTrophiesForGamePath:(NSString *)gamePath;
 + (NSArray<NSDictionary<NSString *, id> *> *)getTrophiesForGamePath:(NSString *)gamePath;
++ (NSArray<NSDictionary<NSString *, id> *> *)getTrophiesForGamePath:(NSString *)gamePath includeIcons:(BOOL)includeIcons;
 
 /// Absolute path to the persistent log file on disk (Documents/kyty_last_run.log)
 + (NSString *)logFilePath;

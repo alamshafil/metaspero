@@ -3,6 +3,16 @@ package com.alamshafil.ps5emu
 
 import android.view.Surface
 
+@androidx.annotation.Keep
+class NativeTrophy(
+    val id: Int,
+    val name: String,
+    val description: String,
+    val grade: String,
+    val hidden: Boolean,
+    val iconBytes: ByteArray?
+)
+
 object NativeBridge {
     init {
         try {
@@ -80,4 +90,30 @@ object NativeBridge {
 
     @JvmStatic
     external fun nativeGetFrameTimeMs(): Float
+
+    @JvmStatic
+    external fun nativeHasTrophies(gamePath: String): Boolean
+
+    @JvmStatic
+    external fun nativeGetTrophies(gamePath: String, languageTag: String, includeIcons: Boolean): Array<NativeTrophy>?
+
+    @JvmStatic
+    fun getTrophies(gamePath: String, includeIcons: Boolean): skip.lib.Array<skip.lib.Dictionary<String, Any>> {
+        val lang = java.util.Locale.getDefault().toLanguageTag()
+        val trophies = nativeGetTrophies(gamePath, lang, includeIcons) ?: return skip.lib.Array()
+        val result = skip.lib.Array<skip.lib.Dictionary<String, Any>>()
+        for (t in trophies) {
+            val d = skip.lib.Dictionary<String, Any>()
+            d["id"] = t.id
+            d["name"] = t.name
+            d["description"] = t.description
+            d["grade"] = t.grade
+            d["hidden"] = t.hidden
+            if (t.iconBytes != null && t.iconBytes.isNotEmpty()) {
+                d["iconData"] = skip.foundation.Data(t.iconBytes)
+            }
+            result.append(d)
+        }
+        return result
+    }
 }

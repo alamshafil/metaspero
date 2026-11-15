@@ -54,6 +54,12 @@ JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeSendTrigger
 JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeSendTouch(
     JNIEnv* env, jclass clazz, jint finger, jboolean down, jfloat x, jfloat y);
 
+JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeHasTrophies(
+    JNIEnv* env, jclass clazz, jstring game_path);
+
+JNIEXPORT jobjectArray JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeGetTrophies(
+    JNIEnv* env, jclass clazz, jstring game_path, jstring lang_tag, jboolean include_icons);
+
 #ifdef __cplusplus
 }
 #endif

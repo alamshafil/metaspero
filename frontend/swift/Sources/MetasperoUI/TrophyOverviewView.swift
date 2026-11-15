@@ -9,28 +9,20 @@ struct TrophyOverviewCounts {
     var total: Int = 0
 }
 
+struct OverviewGameItem: Identifiable {
+    var id: UUID { game.id }
+    let game: GameItem
+    let trophyCount: Int
+    let cachedIcon: PlatformImage?
+}
+
 struct TrophyOverviewView: View {
     @Environment(\.dismiss) private var dismiss
     let games: [GameItem]
     
-    @State private var gameTrophies: [(game: GameItem, trophies: [TrophiesView.TrophyItem])] = []
+    @State private var overviewItems: [OverviewGameItem] = []
+    @State private var totalCounts = TrophyOverviewCounts()
     @State private var isLoading = true
-    
-    var totalCounts: TrophyOverviewCounts {
-        var res = TrophyOverviewCounts()
-        for (_, list) in gameTrophies {
-            for t in list {
-                res.total += 1
-                switch t.grade.lowercased() {
-                case "platinum": res.platinum += 1
-                case "gold": res.gold += 1
-                case "silver": res.silver += 1
-                default: res.bronze += 1
-                }
-            }
-        }
-        return res
-    }
     
     var body: some View {
         NavigationStack {
@@ -38,10 +30,9 @@ struct TrophyOverviewView: View {
                 if isLoading {
                     ProgressView("Analyzing Library Trophies...")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if gameTrophies.isEmpty {
+                } else if overviewItems.isEmpty {
                     VStack(spacing: 14) {
-                        Image(systemName: "trophy")
-                            .font(.system(size: 54))
+                        PlatformIcon("trophy", size: 54)
                             .foregroundColor(.secondary)
                         Text("No Trophies in Library")
                             .font(.title3)
@@ -86,36 +77,31 @@ struct TrophyOverviewView: View {
                             .padding(.vertical, 6)
                         }
                         
-                        Section(header: Text("Games with Trophies (\(gameTrophies.count))")) {
-                            ForEach(gameTrophies, id: \.game.id) { item in
+                        Section(header: Text("Games with Trophies (\(overviewItems.count))")) {
+                            ForEach(overviewItems) { item in
                                 NavigationLink(destination: TrophiesView(game: item.game)) {
                                     HStack(spacing: 12) {
-                                        if let iconPath = item.game.iconPath {
-#if os(iOS) || SKIP
-                                            if let uiImage = UIImage(contentsOfFile: iconPath) {
-                                                Image(uiImage: uiImage)
+                                        ZStack {
+                                            if let img = item.cachedIcon {
+                                                platformImage(img)
                                                     .resizable()
                                                     .aspectRatio(contentMode: .fill)
                                                     .frame(width: 38, height: 38)
                                                     .cornerRadius(6)
-                                            }
-#else
-                                            if let nsImage = NSImage(contentsOfFile: iconPath) {
-                                                Image(nsImage: nsImage)
-                                                    .resizable()
-                                                    .aspectRatio(contentMode: .fill)
+                                            } else {
+                                                PlatformIcon("gamecontroller.fill", size: 20)
+                                                    .foregroundColor(.secondary)
                                                     .frame(width: 38, height: 38)
-                                                    .cornerRadius(6)
                                             }
-#endif
                                         }
+                                        .frame(width: 38, height: 38)
                                         
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(item.game.title)
                                                 .font(.system(size: 14, weight: .semibold))
                                                 .foregroundColor(.primary)
                                                 .lineLimit(1)
-                                            Text("\(item.game.titleId) · \(item.trophies.count) Trophies")
+                                            Text("\(item.game.titleId) · \(item.trophyCount) Trophies")
                                                 .font(.caption)
                                                 .foregroundColor(.secondary)
                                         }
@@ -127,17 +113,17 @@ struct TrophyOverviewView: View {
                 }
             }
             .navigationTitle("Trophies Overview")
-#if os(macOS)
-            .frame(minWidth: 500, idealWidth: 560, minHeight: 460, idealHeight: 520)
+#if os(iOS) || SKIP
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
             }
 #else
-            .navigationBarTitleDisplayMode(.inline)
+            .frame(minWidth: 500, idealWidth: 560, minHeight: 460, idealHeight: 520)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
             }
@@ -149,29 +135,42 @@ struct TrophyOverviewView: View {
     }
     
     private func loadAllTrophies() {
-        DispatchQueue.global().async {
-            var results: [(game: GameItem, trophies: [TrophiesView.TrophyItem])] = []
+        KytyDispatch.background {
+            var items: [OverviewGameItem] = []
+            var counts = TrophyOverviewCounts()
             
-            for g in games {
+            for g in self.games {
                 if KytyBridge.hasTrophies(forGamePath: g.path) {
-                    let raw = KytyBridge.getTrophiesForGamePath(g.path)
-                    var list: [TrophiesView.TrophyItem] = []
-                    for (idx, d) in raw.enumerated() {
-                        let name = d["name"] as? String ?? "Trophy #\(idx)"
-                        let desc = d["description"] as? String ?? ""
-                        let grade = d["grade"] as? String ?? "Bronze"
-                        let hidden = (d["hidden"] as? Bool) ?? false
-                        let iconData = d["iconData"] as? Data
-                        list.append(TrophiesView.TrophyItem(id: idx, name: name, description: desc, grade: grade, hidden: hidden, iconData: iconData))
-                    }
-                    if !list.isEmpty {
-                        results.append((game: g, trophies: list))
+                    let raw = KytyBridge.getTrophiesForGamePath(g.path, includeIcons: false)
+                    if !raw.isEmpty {
+                        counts.total += raw.count
+                        for d in raw {
+                            let grade = (d["grade"] as? String ?? "Bronze").lowercased()
+                            switch grade {
+                            case "platinum": counts.platinum += 1
+                            case "gold": counts.gold += 1
+                            case "silver": counts.silver += 1
+                            default: counts.bronze += 1
+                            }
+                        }
+                        var icon: PlatformImage? = nil
+                        if let path = g.iconPath {
+                            icon = loadPlatformImage(fromPath: path)
+                        }
+                        items.append(OverviewGameItem(
+                            game: g,
+                            trophyCount: raw.count,
+                            cachedIcon: icon
+                        ))
                     }
                 }
             }
             
-            DispatchQueue.main.async {
-                self.gameTrophies = results
+            let finalItems = items
+            let finalCounts = counts
+            KytyDispatch.main {
+                self.overviewItems = finalItems
+                self.totalCounts = finalCounts
                 self.isLoading = false
             }
         }

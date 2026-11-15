@@ -4,6 +4,7 @@
 #include "kyty_jni.h"
 #include "emulator.h"
 #include "common/hostException.h"
+#include "common/trophies.h"
 #include "libs/controller.h"
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
 #include "loader/fex/fexGuestEngine.h"
@@ -16,6 +17,7 @@
 #include <dlfcn.h>
 #include <vulkan/vulkan.h>
 #include <adrenotools/driver.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -415,6 +417,206 @@ JNIEXPORT jfloat JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeGetFps(JN
 JNIEXPORT jfloat JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeGetFrameTimeMs(JNIEnv*, jclass) {
     float fps = KytyGetCurrentFps();
     return fps > 0.01f ? (1000.0f / fps) : 0.0f;
+}
+
+static int ResolveConsoleLanguage(const std::string& tag) {
+    if (tag.rfind("ja", 0) == 0) return 0;
+    if (tag.rfind("en-GB", 0) == 0) return 18;
+    if (tag.rfind("en", 0) == 0) return 1;
+    if (tag.rfind("fr-CA", 0) == 0) return 22;
+    if (tag.rfind("fr", 0) == 0) return 2;
+    if (tag.rfind("es-419", 0) == 0) return 20;
+    if (tag.rfind("es", 0) == 0) return 3;
+    if (tag.rfind("de", 0) == 0) return 4;
+    if (tag.rfind("it", 0) == 0) return 5;
+    if (tag.rfind("nl", 0) == 0) return 6;
+    if (tag.rfind("pt-BR", 0) == 0) return 17;
+    if (tag.rfind("pt", 0) == 0) return 7;
+    if (tag.rfind("ru", 0) == 0) return 8;
+    if (tag.rfind("ko", 0) == 0) return 9;
+    if (tag.rfind("zh-Hant", 0) == 0 || tag.rfind("zh-TW", 0) == 0 || tag.rfind("zh-HK", 0) == 0) return 10;
+    if (tag.rfind("zh", 0) == 0) return 11;
+    if (tag.rfind("fi", 0) == 0) return 12;
+    if (tag.rfind("sv", 0) == 0) return 13;
+    if (tag.rfind("da", 0) == 0) return 14;
+    if (tag.rfind("no", 0) == 0 || tag.rfind("nb", 0) == 0) return 15;
+    if (tag.rfind("pl", 0) == 0) return 16;
+    if (tag.rfind("tr", 0) == 0) return 19;
+    if (tag.rfind("ar", 0) == 0) return 21;
+    if (tag.rfind("cs", 0) == 0) return 23;
+    if (tag.rfind("hu", 0) == 0) return 24;
+    if (tag.rfind("el", 0) == 0) return 25;
+    if (tag.rfind("ro", 0) == 0) return 26;
+    if (tag.rfind("th", 0) == 0) return 27;
+    if (tag.rfind("vi", 0) == 0) return 28;
+    if (tag.rfind("id", 0) == 0) return 29;
+    return 1;
+}
+
+JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeHasTrophies(
+    JNIEnv* env, jclass, jstring j_game_path) {
+    if (!j_game_path) return JNI_FALSE;
+    const char* path_str = env->GetStringUTFChars(j_game_path, nullptr);
+    if (!path_str) return JNI_FALSE;
+    std::string game_path(path_str);
+    env->ReleaseStringUTFChars(j_game_path, path_str);
+    if (game_path.empty()) return JNI_FALSE;
+
+    std::error_code ec;
+    std::filesystem::path root(game_path);
+    if (std::filesystem::is_regular_file(root, ec)) {
+        root = root.parent_path();
+    }
+
+    std::vector<std::filesystem::path> candidates = {
+        root / "sce_sys" / "trophy2",
+        root / "app0" / "sce_sys" / "trophy2",
+        root.parent_path() / "sce_sys" / "trophy2"
+    };
+
+    for (const auto& dir : candidates) {
+        if (std::filesystem::is_directory(dir, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+                if (entry.is_regular_file(ec)) {
+                    std::string filename = entry.path().filename().string();
+                    if (filename.rfind("trophy", 0) == 0 &&
+                        filename.size() >= 4 &&
+                        filename.compare(filename.size() - 4, 4, ".ucp") == 0) {
+                        return JNI_TRUE;
+                    }
+                }
+            }
+        }
+    }
+    return JNI_FALSE;
+}
+
+JNIEXPORT jobjectArray JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeGetTrophies(
+    JNIEnv* env, jclass, jstring j_game_path, jstring j_lang_tag, jboolean j_include_icons) {
+    if (!j_game_path) return nullptr;
+    const char* path_str = env->GetStringUTFChars(j_game_path, nullptr);
+    if (!path_str) return nullptr;
+    std::string game_path(path_str);
+    env->ReleaseStringUTFChars(j_game_path, path_str);
+    if (game_path.empty()) return nullptr;
+
+    bool include_icons = (j_include_icons != JNI_FALSE);
+
+    std::string lang_tag = "en-US";
+    if (j_lang_tag) {
+        const char* lang_str = env->GetStringUTFChars(j_lang_tag, nullptr);
+        if (lang_str) {
+            lang_tag = lang_str;
+            env->ReleaseStringUTFChars(j_lang_tag, lang_str);
+        }
+    }
+    int consoleLanguage = ResolveConsoleLanguage(lang_tag);
+
+    jclass trophyClass = env->FindClass("com/alamshafil/ps5emu/NativeTrophy");
+    if (!trophyClass) {
+        LOGE("Could not find class com/alamshafil/ps5emu/NativeTrophy");
+        return nullptr;
+    }
+    jmethodID trophyCtor = env->GetMethodID(trophyClass, "<init>", "(ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Z[B)V");
+    if (!trophyCtor) {
+        LOGE("Could not find constructor for com/alamshafil/ps5emu/NativeTrophy");
+        return nullptr;
+    }
+
+    std::error_code ec;
+    std::filesystem::path root(game_path);
+    if (std::filesystem::is_regular_file(root, ec)) {
+        root = root.parent_path();
+    }
+
+    std::vector<std::filesystem::path> candidates = {
+        root / "sce_sys" / "trophy2",
+        root / "app0" / "sce_sys" / "trophy2",
+        root.parent_path() / "sce_sys" / "trophy2"
+    };
+
+    struct ParsedTrophy {
+        int id;
+        std::string name;
+        std::string description;
+        std::string grade;
+        bool hidden;
+        std::vector<std::byte> icon;
+    };
+    std::vector<ParsedTrophy> allTrophies;
+
+    for (const auto& dir : candidates) {
+        if (std::filesystem::is_directory(dir, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+                if (entry.is_regular_file(ec)) {
+                    std::string filename = entry.path().filename().string();
+                    if (filename.rfind("trophy", 0) == 0 &&
+                        filename.size() >= 4 &&
+                        filename.compare(filename.size() - 4, 4, ".ucp") == 0) {
+                        auto pkg = Common::Trophies::LoadPackage(entry.path(), consoleLanguage);
+                        for (auto& [tid, trophy] : pkg.trophies) {
+                            std::string gradeStr = "Bronze";
+                            switch (trophy.grade) {
+                                case 1: gradeStr = "Platinum"; break;
+                                case 2: gradeStr = "Gold"; break;
+                                case 3: gradeStr = "Silver"; break;
+                                case 4: gradeStr = "Bronze"; break;
+                                default: break;
+                            }
+                            std::string name = trophy.name.empty()
+                                ? ("Trophy " + std::to_string(trophy.id))
+                                : std::move(trophy.name);
+                            std::vector<std::byte> iconData;
+                            if (include_icons && !trophy.icon_png.empty()) {
+                                iconData = std::move(trophy.icon_png);
+                            }
+                            allTrophies.push_back({
+                                trophy.id,
+                                std::move(name),
+                                std::move(trophy.description),
+                                std::move(gradeStr),
+                                trophy.hidden,
+                                std::move(iconData)
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    jobjectArray result = env->NewObjectArray(static_cast<jsize>(allTrophies.size()), trophyClass, nullptr);
+    if (!result) return nullptr;
+
+    for (jsize i = 0; i < static_cast<jsize>(allTrophies.size()); ++i) {
+        const auto& t = allTrophies[i];
+        jstring j_name = env->NewStringUTF(t.name.c_str());
+        jstring j_desc = env->NewStringUTF(t.description.c_str());
+        jstring j_grade = env->NewStringUTF(t.grade.c_str());
+        jbyteArray j_icon = nullptr;
+        if (!t.icon.empty()) {
+            j_icon = env->NewByteArray(static_cast<jsize>(t.icon.size()));
+            if (j_icon) {
+                env->SetByteArrayRegion(j_icon, 0, static_cast<jsize>(t.icon.size()),
+                                       reinterpret_cast<const jbyte*>(t.icon.data()));
+            }
+        }
+        jobject obj = env->NewObject(trophyClass, trophyCtor,
+                                     static_cast<jint>(t.id),
+                                     j_name,
+                                     j_desc,
+                                     j_grade,
+                                     static_cast<jboolean>(t.hidden ? JNI_TRUE : JNI_FALSE),
+                                     j_icon);
+        env->SetObjectArrayElement(result, i, obj);
+        env->DeleteLocalRef(j_name);
+        env->DeleteLocalRef(j_desc);
+        env->DeleteLocalRef(j_grade);
+        if (j_icon) env->DeleteLocalRef(j_icon);
+        env->DeleteLocalRef(obj);
+    }
+
+    return result;
 }
 
 // Stubs for non-PIC FFmpeg NEON audio transforms in libavutil (tx_float_neon.S)

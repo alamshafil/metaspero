@@ -89,6 +89,8 @@ public class KytyBridge {
     nonisolated(unsafe) public static var onSelectDriverRequested: ((String) -> Void)? = nil
     nonisolated(unsafe) public static var onCustomGamePathsChanged: (([String]) -> Void)? = nil
     nonisolated(unsafe) public static var onCurrentMemoryStats: (() -> [String: Any])? = nil
+    nonisolated(unsafe) public static var onHasTrophies: ((String) -> Bool)? = nil
+    nonisolated(unsafe) public static var onGetTrophies: ((String, Bool) -> [[String: Any]])? = nil
     #else
     public static var customGamePaths: [String] = []
     public static var onCustomGamePathsChanged: (([String]) -> Void)? = nil
@@ -101,6 +103,8 @@ public class KytyBridge {
     public static var onInstallDriverRequested: (() -> Void)? = nil
     public static var onSelectDriverRequested: ((String) -> Void)? = nil
     public static var onCurrentMemoryStats: (() -> [String: Any])? = nil
+    public static var onHasTrophies: ((String) -> Bool)? = nil
+    public static var onGetTrophies: ((String, Bool) -> [[String: Any]])? = nil
     #endif
 
     public static func clearInstalledDrivers() {
@@ -192,10 +196,78 @@ public class KytyBridge {
     }
     public static func getRecentLogs() -> [String] { return [] }
     public static func loadSavedLog() -> String { return "" }
-    public static func hasTrophies(forGamePath path: String) -> Bool { return false }
-    public static func hasSaveData(forTitleId titleId: String) -> Bool { return false }
-    public static func deleteSaveData(forTitleId titleId: String) -> Bool { return true }
-    public static func getTrophiesForGamePath(_ path: String) -> [[String: Any]] { return [] }
+    public static func hasTrophies(forGamePath path: String) -> Bool {
+        if let callback = onHasTrophies {
+            return callback(path)
+        }
+        #if SKIP
+        guard !path.isEmpty else { return false }
+        let candidates = [
+            path + "/sce_sys/trophy2",
+            path + "/app0/sce_sys/trophy2"
+        ]
+        for c in candidates {
+            let dir = java.io.File(c)
+            if dir.isDirectory() {
+                if let files = dir.listFiles() {
+                    for f in files {
+                        let name = f.getName()
+                        if name.hasPrefix("trophy") && name.hasSuffix(".ucp") {
+                            return true
+                        }
+                    }
+                }
+            }
+        }
+        #endif
+        return false
+    }
+
+    public static func hasSaveData(forTitleId titleId: String) -> Bool {
+        let cleanId = titleId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else { return false }
+        #if SKIP
+        let localDir = java.io.File("_SaveData/" + cleanId)
+        if localDir.exists() { return true }
+        if let home = java.lang.System.getenv("HOME") {
+            let homeSave = java.io.File(home + "/_SaveData/" + cleanId)
+            if homeSave.exists() { return true }
+        }
+        #endif
+        return false
+    }
+
+    public static func deleteSaveData(forTitleId titleId: String) -> Bool {
+        let cleanId = titleId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else { return false }
+        #if SKIP
+        var deleted = false
+        let localDir = java.io.File("_SaveData/" + cleanId)
+        if localDir.exists() {
+            deleted = localDir.deleteRecursively() || deleted
+        }
+        if let home = java.lang.System.getenv("HOME") {
+            let homeSave = java.io.File(home + "/_SaveData/" + cleanId)
+            if homeSave.exists() {
+                deleted = homeSave.deleteRecursively() || deleted
+            }
+        }
+        return deleted
+        #else
+        return true
+        #endif
+    }
+
+    public static func getTrophiesForGamePath(_ path: String) -> [[String: Any]] {
+        return getTrophiesForGamePath(path, includeIcons: true)
+    }
+
+    public static func getTrophiesForGamePath(_ path: String, includeIcons: Bool) -> [[String: Any]] {
+        if let callback = onGetTrophies {
+            return callback(path, includeIcons)
+        }
+        return []
+    }
     public static func configureAudioSession() {}
     public static func hostViewDidResize(toPixelWidth width: Int32, height: Int32) {}
     public static func startEmulation(withGamePath path: String, in view: Any?, completion: ((Bool, Error?) -> Void)?) {}
@@ -207,14 +279,6 @@ public final class PhysicalControllerManager: ObservableObject {
     public static let shared = PhysicalControllerManager()
     @Published public var hasPhysicalController: Bool = false
     public init() {}
-}
-
-public func readFileData(path: String) -> Data? {
-    #if SKIP
-    return try? Data(contentsOfFile: path)
-    #else
-    return try? Data(contentsOf: URL(fileURLWithPath: path))
-    #endif
 }
 
 public struct TouchControlsView: View {
