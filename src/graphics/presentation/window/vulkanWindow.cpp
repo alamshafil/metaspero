@@ -567,6 +567,8 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	physical_device.getProperties2(&properties2);
 	EXIT_NOT_IMPLEMENTED(!(properties11.subgroupSupportedOperations & vk::SubgroupFeatureFlagBits::eVote));
 	graphics.physical_device_properties = properties2.properties;
+	graphics.driver_id                  = driver_properties.driverID;
+	graphics.is_moltenvk                = (driver_properties.driverID == vk::DriverId::eMoltenvk);
 	graphics.max_push_descriptors       = SelectMaxPushDescriptors(
 	    driver_properties.driverID, push_descriptor.maxPushDescriptors);
 	graphics.device_address_destruction_waits_for_queue =

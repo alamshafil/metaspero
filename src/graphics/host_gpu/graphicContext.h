@@ -49,7 +49,9 @@ struct GraphicContext {
 	bool                               occlusion_queries_enabled             = false;
 	bool                               occlusion_query_precise_enabled       = false;
 	bool                               supports_block_texel_view              = false;
-	bool                                      mesh_shader_enabled                   = false;
+	bool                               is_moltenvk                           = false;
+	vk::DriverId                       driver_id                             = static_cast<vk::DriverId>(0);
+	bool                               mesh_shader_enabled                   = false;
 	vk::PhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties                = {};
 	uint32_t                           subgroup_size                         = 0;
 	uint32_t                           min_subgroup_size                     = 0;

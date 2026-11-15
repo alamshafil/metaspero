@@ -235,6 +235,12 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	input_assembly.topology = static_params.topology;
 	input_assembly.primitiveRestartEnable =
 	    static_params.primitive_restart_enable ? VK_TRUE : VK_FALSE;
+	if (graphics.is_moltenvk &&
+	    (static_params.topology == vk::PrimitiveTopology::eTriangleStrip ||
+	     static_params.topology == vk::PrimitiveTopology::eTriangleFan ||
+	     static_params.topology == vk::PrimitiveTopology::eLineStrip)) {
+		input_assembly.primitiveRestartEnable = VK_TRUE;
+	}
 
 	vk::PipelineViewportDepthClipControlCreateInfoEXT depth_clip_control {};
 	depth_clip_control.negativeOneToOne = (static_params.negative_one_to_one ? VK_TRUE : VK_FALSE);
