@@ -23,6 +23,33 @@ struct GameItem: Identifiable, Hashable {
     let isValidGame: Bool
 }
 
+struct ToolbarIconButton: View {
+    let systemImage: String
+    var size: Double = 19
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            #if SKIP
+            ZStack {
+                Circle()
+                    .fill(Color.primary.opacity(0.09))
+                    .frame(width: 36, height: 36)
+                PlatformIcon(systemImage, size: size)
+            }
+            .frame(width: 36, height: 36)
+            #else
+            PlatformIcon(systemImage)
+            #endif
+        }
+        #if SKIP
+        .frame(width: 36, height: 36)
+        .clipShape(Circle())
+        .padding(.horizontal, 2)
+        #endif
+    }
+}
+
 struct LibraryView: View {
     @Binding var selectedGame: GameItem?
     @Binding var isEmulating: Bool
@@ -252,35 +279,28 @@ struct LibraryView: View {
         .toolbar {
 #if os(iOS) || SKIP
             ToolbarItemGroup(placement: .navigationBarLeading) {
-                Button(action: loadGames) {
-                    PlatformIcon("arrow.clockwise")
-                }
-                
-                Button(action: {
-                    libraryViewMode = (libraryViewMode == "grid" ? "list" : "grid")
-                }) {
-                    PlatformIcon(libraryViewMode == "grid" ? "list.bullet" : "square.grid.2x2")
-                }
-                
-                Button(action: { showTrophyOverview = true }) {
-                    PlatformIcon("trophy")
-                }
+                ToolbarIconButton(systemImage: "arrow.clockwise", size: 19, action: loadGames)
+                ToolbarIconButton(
+                    systemImage: (libraryViewMode == "grid" ? "list.bullet" : "square.grid.2x2"),
+                    size: 19,
+                    action: { libraryViewMode = (libraryViewMode == "grid" ? "list" : "grid") }
+                )
+                ToolbarIconButton(systemImage: "trophy", size: 19, action: { showTrophyOverview = true })
             }
             
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                Button(action: { showLogSheet = true }) {
-                    PlatformIcon("terminal.fill")
-                }
-                
-                Button(action: {
-                    #if SKIP
-                    KytyBridge.requestPickFolder()
-                    #else
-                    showImporter = true
-                    #endif
-                }) {
-                    PlatformIcon("plus", size: 20)
-                }
+                ToolbarIconButton(systemImage: "terminal.fill", size: 19, action: { showLogSheet = true })
+                ToolbarIconButton(
+                    systemImage: "plus",
+                    size: 19,
+                    action: {
+                        #if SKIP
+                        KytyBridge.requestPickFolder()
+                        #else
+                        showImporter = true
+                        #endif
+                    }
+                )
             }
 #else
             ToolbarItem(placement: .automatic) {
@@ -384,9 +404,11 @@ struct LibraryView: View {
             Text("Remove '\(gameToRemove?.title ?? "this game")' from your library? Game files will NOT be deleted from your device.")
         }
         .alert("JIT Not Enabled", isPresented: $showJitWarning) {
+            #if !SKIP
             Button("Open StikDebug") {
                 KytyBridge.openStikDebug()
             }
+            #endif
             if let game = pendingLaunchGame {
                 Button("Try Anyway") {
                     handleConfirmedLaunch(game)
@@ -653,7 +675,7 @@ struct LibraryView: View {
 
     private func scanFolderRecursively(rootPath: String, into items: inout [GameItem], seenPaths: inout Set<String>) {
         let fileManager = FileManager.default
-        var isDir: ObjCBool = false
+        var isDir = ObjCBool(false)
         guard fileManager.fileExists(atPath: rootPath, isDirectory: &isDir) else { return }
 
         if !isDir.boolValue {
@@ -683,7 +705,7 @@ struct LibraryView: View {
                 if Self.ignoredFolderNames.contains(name.lowercased()) { continue }
 
                 let fullPath = Self.joinPath(dirPath, sub)
-                var subIsDir: ObjCBool = false
+                var subIsDir = ObjCBool(false)
                 guard fileManager.fileExists(atPath: fullPath, isDirectory: &subIsDir) else { continue }
 
                 if subIsDir.boolValue {
@@ -1082,14 +1104,14 @@ struct GameCardView: View {
             // Game Info
             VStack(alignment: .leading, spacing: 4) {
                 Text(game.title)
-                    .font(.system(size: 13, weight: .bold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 
                 HStack(spacing: 4) {
                     Text(game.titleId)
-                        .font(.system(size: 9, design: .monospaced))
+                        .font(.system(size: 12, design: .monospaced))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -1097,7 +1119,7 @@ struct GameCardView: View {
                     Spacer()
                     
                     Text(game.sizeString)
-                        .font(.system(size: 9))
+                        .font(.system(size: 12))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                         #if !SKIP
@@ -1191,21 +1213,21 @@ struct GameListRowView: View {
                 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(game.title)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(.primary)
                         .lineLimit(1)
                     
                     HStack(spacing: 8) {
                         Text(game.titleId)
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.system(size: 12, design: .monospaced))
                             .foregroundColor(.blue)
                         
                         Text("v\(game.rawVersion)")
-                            .font(.system(size: 11))
+                            .font(.system(size: 12))
                             .foregroundColor(.secondary)
                         
                         Text(game.sizeString)
-                            .font(.system(size: 11))
+                            .font(.system(size: 12))
                             .foregroundColor(.secondary)
                     }
                 }

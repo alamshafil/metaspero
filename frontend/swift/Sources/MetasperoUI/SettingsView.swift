@@ -792,7 +792,7 @@ struct SettingsView: View {
                 Text("Graphics")
             } footer: {
                 #if SKIP
-                Text("Performance HUD displays real-time frame rates, frame times, VmRSS physical memory usage, and active Vulkan GPU driver details.")
+                Text("Mailbox: fast V-Sync, lowest latency. Fifo: strict 60 FPS V-Sync. Immediate: uncapped frame rate. Vblank Frequency controls target display refresh rate (30, 60, or 120 Hz).")
                 #else
                 Text("Mailbox: fast V-Sync, lowest latency. Fifo: strict 60 FPS V-Sync. Immediate: uncapped frame rate.")
                 #endif
@@ -906,9 +906,11 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
                 
+#if !SKIP
                 Button(action: { KytyBridge.openStikDebug() }) {
                     PlatformLabel("Attach StikDebug", systemImage: "ladybug.fill")
                 }
+#endif
                 
                 Button(action: {
                     DispatchQueue.global().async {
@@ -919,30 +921,22 @@ struct SettingsView: View {
                 }
             }
             
+#if os(iOS) && !SKIP
             Section(header: Text("Entitlements")) {
                 HStack {
                     Text("Extended Memory Limit")
                     Spacer()
-#if os(iOS) && !SKIP
                     Text(ExtendedMemoryEntitlement.hasIncreasedMemoryLimit ? "Granted" : "Not Granted")
                         .foregroundColor(ExtendedMemoryEntitlement.hasIncreasedMemoryLimit ? .green : .secondary)
-#else
-                    Text("N/A")
-                        .foregroundColor(.secondary)
-#endif
                 }
                 HStack {
                     Text("Extended Virtual Addressing")
                     Spacer()
-#if os(iOS) && !SKIP
                     Text(ExtendedMemoryEntitlement.hasExtendedVirtualAddressing ? "Granted" : "Not Granted")
                         .foregroundColor(ExtendedMemoryEntitlement.hasExtendedVirtualAddressing ? .green : .secondary)
-#else
-                    Text("N/A")
-                        .foregroundColor(.secondary)
-#endif
                 }
             }
+#endif
         }
         #if SKIP
         .scrollContentBackground(.hidden)

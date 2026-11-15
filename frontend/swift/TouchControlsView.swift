@@ -903,21 +903,6 @@ struct TouchControlsView: View {
                         
                         Spacer()
                         
-                        // PS Home Button in bottom center
-                        NativeTouchButton(
-                            systemImage: "circle.circle.fill",
-                            symbolColor: PlatformColor.white.withAlphaComponent(0.6),
-                            font: .systemFont(ofSize: 28),
-                            cornerRadius: 20,
-                            isCircle: true
-                        ) { pressed in
-                            KytyBridge.setButton(.PS, pressed: pressed)
-                        }
-                        .frame(width: 40, height: 40)
-                        .padding(.bottom, 14)
-                        
-                        Spacer()
-                        
                         // Right side: Action buttons & Right Stick
                         VStack(spacing: 16) {
                             ActionButtonsNativeView()

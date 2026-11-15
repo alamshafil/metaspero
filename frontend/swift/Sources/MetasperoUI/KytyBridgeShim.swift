@@ -88,6 +88,7 @@ public class KytyBridge {
     nonisolated(unsafe) public static var onInstallDriverRequested: (() -> Void)? = nil
     nonisolated(unsafe) public static var onSelectDriverRequested: ((String) -> Void)? = nil
     nonisolated(unsafe) public static var onCustomGamePathsChanged: (([String]) -> Void)? = nil
+    nonisolated(unsafe) public static var onCurrentMemoryStats: (() -> [String: Any])? = nil
     #else
     public static var customGamePaths: [String] = []
     public static var onCustomGamePathsChanged: (([String]) -> Void)? = nil
@@ -99,6 +100,7 @@ public class KytyBridge {
     public static var selectedDriverId: String = "system_default"
     public static var onInstallDriverRequested: (() -> Void)? = nil
     public static var onSelectDriverRequested: ((String) -> Void)? = nil
+    public static var onCurrentMemoryStats: (() -> [String: Any])? = nil
     #endif
 
     public static func clearInstalledDrivers() {
@@ -153,7 +155,41 @@ public class KytyBridge {
     public static func processId() -> Int32 { return 0 }
     public static func openStikDebug() {}
     public static func acquireJitPool() -> Bool { return true }
-    public static func currentMemoryStats() -> [String: Any] { return [:] }
+    public static func currentMemoryStats() -> [String: Any] {
+        if let custom = onCurrentMemoryStats?() {
+            return custom
+        }
+        #if SKIP
+        var usedMB = Int(android.os.Debug.getPss() / 1024)
+        if usedMB <= 0 {
+            let rt = java.lang.Runtime.getRuntime()
+            usedMB = Int((rt.totalMemory() - rt.freeMemory()) / (1024 * 1024))
+        }
+        var limitMB = 0
+        if let data = try? Data(contentsOfFile: "/proc/meminfo"),
+           let text = String(data: data, encoding: .utf8) {
+            let lines = text.components(separatedBy: "\n")
+            for line in lines {
+                if line.hasPrefix("MemTotal:") {
+                    let parts = line.components(separatedBy: " ").filter { !$0.isEmpty }
+                    if parts.count >= 2, let kb = Int(parts[1]) {
+                        limitMB = kb / 1024
+                        break
+                    }
+                }
+            }
+        }
+        if limitMB <= 0 {
+            limitMB = Int(java.lang.Runtime.getRuntime().maxMemory() / (1024 * 1024))
+        }
+        return [
+            KytyMemoryUsedMBKey: usedMB,
+            KytyMemoryLimitMBKey: limitMB
+        ]
+        #else
+        return [:]
+        #endif
+    }
     public static func getRecentLogs() -> [String] { return [] }
     public static func loadSavedLog() -> String { return "" }
     public static func hasTrophies(forGamePath path: String) -> Bool { return false }

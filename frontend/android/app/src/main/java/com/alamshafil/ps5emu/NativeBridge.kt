@@ -27,6 +27,8 @@ object NativeBridge {
     const val BUTTON_R3 = 13
     const val BUTTON_OPTIONS = 14
     const val BUTTON_TOUCH_PAD = 15
+    const val BUTTON_SHARE = 16
+    const val BUTTON_PS = 17
 
     const val STICK_LEFT = 0
     const val STICK_RIGHT = 1

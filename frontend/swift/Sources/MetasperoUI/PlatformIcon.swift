@@ -116,7 +116,7 @@ public struct PlatformIcon: View {
         #if SKIP
         ComposeView { _ in
             let vector: ImageVector = PlatformIconMap.resolve(name)
-            let effectiveSize = size ?? 19
+            let effectiveSize: Double = Double(size ?? 22.0)
             Icon(
                 imageVector = vector,
                 contentDescription: name,

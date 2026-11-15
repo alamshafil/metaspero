@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import SwiftUI
 
+#if SKIP
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.__
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+#endif
+
 public struct ContentView: View {
     @State private var selectedGame: GameItem? = nil
     @State private var isEmulating = false
@@ -24,6 +35,20 @@ public struct ContentView: View {
                         PlatformLabel("Settings", systemImage: "gearshape.fill")
                     }
             }
+            #if SKIP
+            .material3NavigationBar { options in
+                var updated = options
+                updated.itemIcon = { tabIndex in
+                    let vector = (tabIndex == 0 ? Icons.Filled.GridView : Icons.Filled.Settings)
+                    Icon(
+                        imageVector = vector,
+                        contentDescription = (tabIndex == 0 ? "Library" : "Settings"),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                return updated
+            }
+            #endif
             #if !SKIP
             .accentColor(.blue)
             #endif

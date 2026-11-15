@@ -12,10 +12,14 @@ import android.os.Bundle
 import android.os.Debug
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
+import android.os.SystemClock
+import android.view.Display
 import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -24,6 +28,7 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
+import java.io.File
 import java.util.Locale
 
 class EmulationActivity : Activity(), SurfaceHolder.Callback {
@@ -184,29 +189,105 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         statsHandler.removeCallbacks(statsRunnable)
     }
 
+    private var lastCpuTimeMs: Long = 0L
+    private var lastWallTimeMs: Long = 0L
+    private val numCpuCores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+
+    private val gpuBusyFiles = arrayOf(
+        "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage",
+        "/sys/class/kgsl/kgsl-3d0/gpubusy",
+        "/sys/class/misc/mali0/device/utilization",
+        "/sys/kernel/gpu/gpu_busy",
+        "/proc/mali/utilization"
+    )
+
+    private fun getCpuUsagePercent(): Float {
+        val currentCpuTime = Process.getElapsedCpuTime()
+        val currentWallTime = SystemClock.elapsedRealtime()
+
+        if (lastWallTimeMs == 0L) {
+            lastCpuTimeMs = currentCpuTime
+            lastWallTimeMs = currentWallTime
+            return 0f
+        }
+
+        val deltaCpu = currentCpuTime - lastCpuTimeMs
+        val deltaWall = currentWallTime - lastWallTimeMs
+
+        lastCpuTimeMs = currentCpuTime
+        lastWallTimeMs = currentWallTime
+
+        if (deltaWall <= 0) return 0f
+
+        val usage = (deltaCpu.toFloat() / (deltaWall * numCpuCores)) * 100f
+        return usage.coerceIn(0f, 100f)
+    }
+
+    private fun getGpuUsagePercent(fps: Float): Float {
+        for (path in gpuBusyFiles) {
+            try {
+                val file = File(path)
+                if (file.exists() && file.canRead()) {
+                    val text = file.readText().trim()
+                    if (path.endsWith("gpubusy")) {
+                        val parts = text.split("\\s+".toRegex())
+                        if (parts.size >= 2) {
+                            val busy = parts[0].toLongOrNull() ?: 0L
+                            val total = parts[1].toLongOrNull() ?: 1L
+                            if (total > 0) {
+                                return ((busy.toFloat() / total) * 100f).coerceIn(0f, 100f)
+                            }
+                        }
+                    } else {
+                        val clean = text.replace("%", "").trim()
+                        val value = clean.toFloatOrNull()
+                        if (value != null) {
+                            val pct = if (value > 100f) (value / 255f) * 100f else value
+                            return pct.coerceIn(0f, 100f)
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Fallback calculation: GPU load relative to 60 FPS frame time budget (16.67ms)
+        val frameTimeMs = if (fps > 0.01f) 1000f / fps else NativeBridge.nativeGetFrameTimeMs()
+        if (frameTimeMs > 0f) {
+            val targetBudgetMs = 1000f / 60f
+            return ((frameTimeMs / targetBudgetMs) * 100f).coerceIn(0f, 100f)
+        }
+        return 0f
+    }
+
     private fun updateStatsOverlay() {
         if (statsOverlayMode == 2) return
 
         val fps = NativeBridge.nativeGetFps()
         val ramMb = getAppMemoryUsageMb()
+        val cpuPct = getCpuUsagePercent()
+        val gpuPct = getGpuUsagePercent(fps)
 
         val text = when (statsOverlayMode) {
             1 -> {
-                // Minimal: FPS and RAM
-                String.format(Locale.US, "%.1f FPS  |  %d MB", fps, ramMb)
+                // Minimal: FPS, CPU, GPU, RAM
+                String.format(
+                    Locale.US,
+                    "%.1f FPS  |  CPU: %.0f%%  |  GPU: %.0f%%  |  %d MB",
+                    fps, cpuPct, gpuPct, ramMb
+                )
             }
             else -> {
-                // Full HUD: Engine, Resolution, Present Mode, FPS, Memory
+                // Full HUD: Driver, FPS (Frame Time), CPU %, GPU %, Memory
                 val driverName = GpuDriverManager.getInstalledDrivers(this)
                     .find { it.id == GpuDriverManager.getSelectedDriverId(this) }?.name ?: "Vulkan"
                 String.format(
                     Locale.US,
-                    "GPU: %s\nRes: %s  |  Mode: %s\nFPS: %.1f  (%.2f ms)\nRAM: %d MB",
+                    "GPU: %s\nFPS: %.1f  (%.2f ms)\nCPU: %.0f%%  |  GPU: %.0f%%\nRAM: %d MB",
                     driverName,
-                    resolution,
-                    presentMode,
                     fps,
                     if (fps > 0) 1000.0 / fps else 0.0,
+                    cpuPct,
+                    gpuPct,
                     ramMb
                 )
             }
