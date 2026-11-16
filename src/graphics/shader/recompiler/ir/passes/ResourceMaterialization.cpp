@@ -2144,7 +2144,7 @@ template <class S, class P> void IoPlan(S& io, P& plan) {
 	       srt_plan_complete, resource_tracking_complete, info, uniform_fill,
 	       // Derived on load.
 	       srt_code, srt_user_data, srt_captures, srt_scratch, material_keys, selector_keys,
-	       srt_native, visited_blocks] = plan;
+	       srt_native, srt_arm64, visited_blocks] = plan;
 	IoValues(io, values, control_phis);
 	IoAll(io, stage, shader_hash, user_data_base, user_data_count, memory_info, descriptor_sources,
 	      selector_groups, control_flow, srt_reads, source_reads, capture_specialization_reads,

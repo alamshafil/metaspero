@@ -28,6 +28,7 @@ class CodeGenerator;
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
 struct NativeWalkPlan;
+struct Arm64WalkCode;
 
 // Finite descriptor domains also bound the arithmetic used to prove their indices.
 constexpr uint32_t MaxIndirectDescriptorProbes = 65536u;
@@ -728,6 +729,7 @@ struct ResourcePlan {
 	mutable std::vector<SelectorKeys>       selector_keys;
 
 	std::shared_ptr<NativeWalkPlan> srt_native;
+	std::shared_ptr<Arm64WalkCode>  srt_arm64;
 	mutable std::vector<uint8_t>    visited_blocks;
 };
 

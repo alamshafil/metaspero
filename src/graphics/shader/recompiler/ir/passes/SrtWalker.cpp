@@ -1,5 +1,6 @@
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
+#include "graphics/shader/recompiler/ir/passes/SrtWalkerArm64.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalkerNative.h"
 
 #include "common/abi.h"
@@ -1506,6 +1507,12 @@ std::shared_ptr<NativeWalkPlan> BuildNativeWalkPlan(ResourcePlan& plan,
 
 void CompileSrtWalker(ResourcePlan& plan, std::span<const Value> values) {
 #if KYTY_SRT_NATIVE_WALKER
+#if defined(__arm64__) || defined(__aarch64__) || defined(_M_ARM64)
+	plan.srt_arm64 = CompileArm64SrtWalker(plan, values);
+	if (plan.srt_arm64 != nullptr) {
+		return;
+	}
+#endif
 	plan.srt_native = BuildNativeWalkPlan(plan, values);
 	return;
 #endif
@@ -1516,6 +1523,11 @@ void CompileSrtWalker(ResourcePlan& plan, std::span<const Value> values) {
 bool WalkSrt(const ResourcePlan& plan, const SrtRuntime& runtime, std::vector<uint32_t>& flat,
              std::vector<std::pair<uint64_t, uint64_t>>* reads) {
 #if KYTY_SRT_NATIVE_WALKER
+#if defined(__arm64__) || defined(__aarch64__) || defined(_M_ARM64)
+	if (plan.srt_arm64 != nullptr) {
+		return RunArm64SrtWalk(*plan.srt_arm64, plan, runtime, flat, reads);
+	}
+#endif
 	return plan.srt_native != nullptr &&
 	       RunNativeWalk(*plan.srt_native, plan, runtime, flat, reads);
 #endif

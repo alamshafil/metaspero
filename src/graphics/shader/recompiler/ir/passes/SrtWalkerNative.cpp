@@ -3,10 +3,12 @@
 #include "common/assert.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <span>
 
 #if defined(__APPLE__)
@@ -125,30 +127,140 @@ struct MemoEntry {
 	bool     masked = false;
 };
 
-struct WalkMemo {
-	using Map = std::unordered_map<const Inst*, MemoEntry>;
+struct FastMemoMap {
+	static constexpr size_t Capacity  = 1024;
+	static constexpr size_t Mask      = Capacity - 1;
+	static constexpr size_t MaxProbes = 32;
 
-	Map                             unmasked;
-	std::vector<std::pair<Value, Map>> masked;
+	struct Slot {
+		const Inst* key   = nullptr;
+		uint32_t    epoch = 0;
+		MemoEntry   entry{};
+	};
 
-	Map& MapFor(Value mask) {
-		if (mask.IsEmpty()) return unmasked;
-		for (auto& [key, map]: masked) {
-			if (key == mask) return map;
+	std::array<Slot, Capacity>                 slots{};
+	uint32_t                                   current_epoch = 1;
+	std::unordered_map<const Inst*, MemoEntry> overflow;
+
+	static inline size_t HashInst(const Inst* inst) {
+		const auto ptr = reinterpret_cast<uintptr_t>(inst);
+		return ((ptr >> 4) ^ (ptr >> 11)) & Mask;
+	}
+
+	void Clear() {
+		++current_epoch;
+		if (current_epoch == 0) {
+			for (auto& s : slots) {
+				s.epoch = 0;
+				s.key   = nullptr;
+			}
+			current_epoch = 1;
 		}
-		return masked.emplace_back(mask, Map {}).second;
+		if (!overflow.empty()) {
+			overflow.clear();
+		}
+	}
+
+	MemoEntry* Find(const Inst* inst) {
+		const size_t hash = HashInst(inst);
+		for (size_t probe = 0; probe < MaxProbes; ++probe) {
+			auto& s = slots[(hash + probe) & Mask];
+			if (s.epoch == current_epoch && s.key == inst) {
+				return &s.entry;
+			}
+			if (s.epoch != current_epoch) {
+				break;
+			}
+		}
+		if (!overflow.empty()) {
+			auto it = overflow.find(inst);
+			if (it != overflow.end()) {
+				return &it->second;
+			}
+		}
+		return nullptr;
+	}
+
+	const MemoEntry* Find(const Inst* inst) const {
+		const size_t hash = HashInst(inst);
+		for (size_t probe = 0; probe < MaxProbes; ++probe) {
+			const auto& s = slots[(hash + probe) & Mask];
+			if (s.epoch == current_epoch && s.key == inst) {
+				return &s.entry;
+			}
+			if (s.epoch != current_epoch) {
+				break;
+			}
+		}
+		if (!overflow.empty()) {
+			auto it = overflow.find(inst);
+			if (it != overflow.end()) {
+				return &it->second;
+			}
+		}
+		return nullptr;
+	}
+
+	bool Contains(const Inst* inst) const {
+		return Find(inst) != nullptr;
+	}
+
+	void Put(const Inst* inst, const MemoEntry& entry) {
+		if (!overflow.empty()) {
+			auto it = overflow.find(inst);
+			if (it != overflow.end()) {
+				it->second = entry;
+				return;
+			}
+		}
+		const size_t hash = HashInst(inst);
+		for (size_t probe = 0; probe < MaxProbes; ++probe) {
+			auto& s = slots[(hash + probe) & Mask];
+			if (s.epoch == current_epoch && s.key == inst) {
+				s.entry = entry;
+				return;
+			}
+			if (s.epoch != current_epoch) {
+				s.key   = inst;
+				s.epoch = current_epoch;
+				s.entry = entry;
+				return;
+			}
+		}
+		overflow[inst] = entry;
+	}
+};
+
+struct WalkMemo {
+	FastMemoMap                                                 unmasked;
+	std::vector<std::pair<Value, std::unique_ptr<FastMemoMap>>> masked;
+
+	FastMemoMap& MapFor(Value mask) {
+		if (mask.IsEmpty()) return unmasked;
+		for (auto& [key, map] : masked) {
+			if (key == mask) return *map;
+		}
+		auto& entry = masked.emplace_back(mask, std::make_unique<FastMemoMap>());
+		return *entry.second;
 	}
 
 	bool HasEvaluated(const Inst* inst) const {
-		if (unmasked.contains(inst)) return true;
-		for (const auto& [_, map]: masked) {
-			if (map.contains(inst)) return true;
+		if (unmasked.Contains(inst)) return true;
+		for (const auto& [_, map] : masked) {
+			if (map && map->Contains(inst)) return true;
 		}
 		return false;
 	}
 
 	void Clear() {
-		unmasked.clear();
+		unmasked.Clear();
+		for (auto& [_, map] : masked) {
+			if (map) map->Clear();
+		}
+	}
+
+	void Reset() {
+		unmasked.Clear();
 		masked.clear();
 	}
 };
@@ -241,42 +353,44 @@ bool NativeSrtWalker::EvaluateWide(Value value, uint64_t& result, bool& masked) 
 		return EvaluateWide(inst->Arg(1), result, masked);
 	}
 	if (m_active_mask.IsEmpty() && m_context.walk != nullptr &&
+	    !m_context.walk->unknown_nodes.empty() &&
 	    m_context.walk->unknown_nodes.contains(inst)) {
 		return false;
 	}
 	auto& memo = m_context.memo->MapFor(m_active_mask);
-	if (const auto found = memo.find(inst); found != memo.end()) {
-		masked |= found->second.masked;
-		if (found->second.state == 2) {
-			result = found->second.value;
+	if (const auto* found = memo.Find(inst); found != nullptr) {
+		masked |= found->masked;
+		if (found->state == 2) {
+			result = found->value;
 			return true;
 		}
 		return false;
 	}
 	if (!m_active_mask.IsEmpty()) {
 		const auto& unmasked = m_context.memo->unmasked;
-		if (const auto found = unmasked.find(inst);
-		    found != unmasked.end() && found->second.state == 2) {
-			result = found->second.value;
+		if (const auto* found = unmasked.Find(inst);
+		    found != nullptr && found->state == 2) {
+			result = found->value;
 			return true;
 		}
 	}
-	memo[inst]        = {.value = 0, .state = 1, .masked = !m_active_mask.IsEmpty()};
+	memo.Put(inst, {.value = 0, .state = 1, .masked = !m_active_mask.IsEmpty()});
 	uint64_t out         = 0;
 	bool     inst_masked = false;
 	bool     evaluated   = EvaluateInst(*inst, out, inst_masked);
 	if (evaluated && !m_active_mask.IsEmpty() && !inst_masked && m_context.walk != nullptr &&
+	    !m_context.walk->unknown_nodes.empty() &&
 	    m_context.walk->unknown_nodes.contains(inst)) {
 		evaluated = false;
 	}
 	auto& active_memo = m_context.memo->MapFor(m_active_mask);
-	active_memo[inst] = {
+	active_memo.Put(inst, {
 	    .value  = out,
 	    .state  = static_cast<uint8_t>(evaluated ? 2 : 1),
 	    .masked = inst_masked,
-	};
+	});
 	if (evaluated && !m_active_mask.IsEmpty() && !inst_masked) {
-		m_context.memo->unmasked[inst] = {.value = out, .state = 2, .masked = false};
+		m_context.memo->unmasked.Put(inst, {.value = out, .state = 2, .masked = false});
 	}
 	masked |= inst_masked;
 	if (!evaluated) {
@@ -934,11 +1048,15 @@ bool NativeSrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 	visited.assign(m_program.control_flow.size(), 0u);
 
 	const auto& blocks = m_program.control_flow;
-	std::vector<std::vector<const Inst*>> rechecks(blocks.size());
+	thread_local std::vector<std::vector<const Inst*>> t_rechecks;
+	t_rechecks.resize(blocks.size());
+	for (auto& r : t_rechecks) {
+		r.clear();
+	}
 	for (const auto& [phi, preds]: m_program.control_phi_predecessors) {
 		for (const auto pred: preds) {
-			if (pred < rechecks.size()) {
-				rechecks[pred].push_back(phi);
+			if (pred < t_rechecks.size()) {
+				t_rechecks[pred].push_back(phi);
 			}
 		}
 	}
@@ -964,7 +1082,7 @@ bool NativeSrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 			const auto mark        = [&](uint32_t target) {
 				if (target >= visited.size() || visited[target] != 0u) return;
 				visited[target] = 1u;
-				for (const auto* phi: rechecks[target]) {
+				for (const auto* phi: t_rechecks[target]) {
 					if (m_context.memo->HasEvaluated(phi)) {
 						restart = true;
 						return;
@@ -1057,6 +1175,9 @@ bool RunNativeWalk(const NativeWalkPlan& walk, const ResourcePlan& plan, const S
 	if (runtime.user_data.size() < walk.user_data) {
 		return false;
 	}
+	if (reads != nullptr) {
+		reads->reserve(64);
+	}
 	const bool have_specialization =
 	    runtime.read_specialization_memory != nullptr || t_test_memory_reader != nullptr;
 	CaptureState capture;
@@ -1082,11 +1203,13 @@ bool RunNativeWalk(const NativeWalkPlan& walk, const ResourcePlan& plan, const S
 	runtime_copy.read_specialization_memory =
 	    capture.special != nullptr ? CaptureState::ReadSpecial : nullptr;
 
-	WalkMemo    memo;
+	thread_local WalkMemo t_walk_memo;
+	t_walk_memo.Reset();
+
 	WalkContext context;
 	context.walk                = &walk;
 	context.capture_ranges      = reads;
-	context.memo                = &memo;
+	context.memo                = &t_walk_memo;
 	context.have_specialization = have_specialization;
 	NativeSrtWalker evaluator(plan, runtime_copy, context);
 	if (walk.resources) {
