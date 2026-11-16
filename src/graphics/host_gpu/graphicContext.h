@@ -64,6 +64,16 @@ struct GraphicContext {
 	Common::Mutex                      queue_mutex;
 	uint32_t                           queue_family = static_cast<uint32_t>(-1);
 	vk::Queue                          queue        = nullptr;
+	uint64_t                           queue_submit_generation = 0;
+	uint64_t                           queue_idle_generation   = 0;
+
+	void WaitQueueIdle() {
+		Common::LockGuard lock(queue_mutex);
+		if (queue != nullptr && queue_submit_generation != queue_idle_generation) {
+			std::ignore = queue.waitIdle();
+			queue_idle_generation = queue_submit_generation;
+		}
+	}
 
 	[[nodiscard]] const vk::PhysicalDeviceProperties& GetPhysicalDeviceProperties() const {
 		return physical_device_properties;

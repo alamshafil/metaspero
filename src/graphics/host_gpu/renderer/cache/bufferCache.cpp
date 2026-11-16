@@ -162,20 +162,14 @@ void BufferCache::DeleteBuffer(BufferId id) {
 				// MoltenVK makes every live device-address buffer resident in each command buffer.
 				// Draining the queue on the host ensures no submitted Metal command buffer is
 				// alive or still retaining this buffer before it is destroyed.
-				Common::LockGuard lock(m_graphics.queue_mutex);
-				if (m_graphics.queue != nullptr) {
-					std::ignore = m_graphics.queue.waitIdle();
-				}
+				m_graphics.WaitQueueIdle();
 				m_scheduler.GetMasterSemaphore().Refresh();
 			}
 			m_slot_buffers.erase(id);
 		});
 	} else {
 		if (m_graphics.device_address_destruction_waits_for_queue) {
-			Common::LockGuard lock(m_graphics.queue_mutex);
-			if (m_graphics.queue != nullptr) {
-				std::ignore = m_graphics.queue.waitIdle();
-			}
+			m_graphics.WaitQueueIdle();
 			m_scheduler.GetMasterSemaphore().Refresh();
 		}
 		m_slot_buffers.erase(id);
@@ -767,10 +761,7 @@ void BufferCache::RunGarbageCollector() {
 	m_scheduler.Wait(completion_tick);
 	m_scheduler.WaitPriorityOperations(completion_tick);
 	if (m_graphics.device_address_destruction_waits_for_queue) {
-		Common::LockGuard lock(m_graphics.queue_mutex);
-		if (m_graphics.queue != nullptr) {
-			std::ignore = m_graphics.queue.waitIdle();
-		}
+		m_graphics.WaitQueueIdle();
 		m_scheduler.GetMasterSemaphore().Refresh();
 	}
 	for (const auto id: dirty_buffers) {

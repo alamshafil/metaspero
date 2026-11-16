@@ -278,20 +278,14 @@ void TextureCache::DeleteImage(ImageId id) {
 				// MoltenVK retains references in active Metal command buffers.
 				// Draining the queue on the host ensures no submitted Metal command buffer is
 				// alive or still retaining this image before it is destroyed.
-				Common::LockGuard lock(m_graphics.queue_mutex);
-				if (m_graphics.queue != nullptr) {
-					std::ignore = m_graphics.queue.waitIdle();
-				}
+				m_graphics.WaitQueueIdle();
 				m_scheduler.GetMasterSemaphore().Refresh();
 			}
 			m_slot_images.erase(id);
 		});
 	} else {
 		if (m_graphics.device_address_destruction_waits_for_queue) {
-			Common::LockGuard lock(m_graphics.queue_mutex);
-			if (m_graphics.queue != nullptr) {
-				std::ignore = m_graphics.queue.waitIdle();
-			}
+			m_graphics.WaitQueueIdle();
 			m_scheduler.GetMasterSemaphore().Refresh();
 		}
 		m_slot_images.erase(id);
