@@ -354,13 +354,13 @@ bool FexGuestEngine::Initialize() {
     FEXCore::Config::Initialize();
     FEXCore::Config::Load();
     FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "1");
-    FEXCore::Config::Set(FEXCore::Config::CONFIG_MULTIBLOCK, "0");
-    FEXCore::Config::Set(FEXCore::Config::CONFIG_MAXINST, "1000");
+    FEXCore::Config::Set(FEXCore::Config::CONFIG_MULTIBLOCK, "1");
+    FEXCore::Config::Set(FEXCore::Config::CONFIG_MAXINST, "5000");
     FEXCore::Config::Set(FEXCore::Config::CONFIG_DISABLETELEMETRY, "1");
     // Keep software TSO disabled on ARM64 to prevent unaligned LDAR/STLR SIGBUS storms and startup stalls
     FEXCore::Config::Set(FEXCore::Config::CONFIG_TSOENABLED, "0");
     FEXCore::Config::Set(FEXCore::Config::CONFIG_HALFBARRIERTSOENABLED, "0");
-    FEXCore::Config::Set(FEXCore::Config::CONFIG_DISABLEL2CACHE, "1");
+    FEXCore::Config::Set(FEXCore::Config::CONFIG_DISABLEL2CACHE, "0");
     FEXCore::Config::Set(FEXCore::Config::CONFIG_DYNAMICL1CACHE, "1");
 
     FEXCore::HostFeatures features{};
