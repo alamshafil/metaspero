@@ -5,7 +5,11 @@ namespace {
 
 uint32_t MeshArray(EmitterState& state, spv::StorageClass storage, uint32_t type, uint32_t count) {
 	const auto array = state.builder.Type(spv::OpTypeArray, type, ConstantU32(state, count));
-	return state.builder.DefineGlobalVariable(TypePointer(state, storage, array), storage);
+	uint32_t initializer = 0;
+	if (storage == spv::StorageClassPrivate) {
+		initializer = state.builder.Constant(spv::OpConstantNull, array);
+	}
+	return state.builder.DefineGlobalVariable(TypePointer(state, storage, array), storage, initializer);
 }
 
 uint32_t MeshElement(EmitterState& state, uint32_t variable, spv::StorageClass storage,
@@ -160,9 +164,25 @@ void EmitMeshEntryPoint(EmitterState& state) {
 					continue;
 				}
 				const auto type  = MeshOutputType(state, output.kind);
-				const auto value =
+				auto       value =
 				    MeshLoad(state, output.mesh_data_variable, spv::StorageClassPrivate, type,
 				             ConstantU32(state, half));
+				if (output.kind == IR::StageOutputKind::Position &&
+				    state.input_info.vertex->mesh.invert_y) {
+					const auto x = state.builder.AllocateId();
+					const auto y = state.builder.AllocateId();
+					const auto z = state.builder.AllocateId();
+					const auto w = state.builder.AllocateId();
+					state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), x, value, 0);
+					state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), y, value, 1);
+					state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), z, value, 2);
+					state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), w, value, 3);
+					const auto neg_y   = Unary(state, spv::OpFNegate, TypeF32(state), y);
+					const auto flipped = state.builder.AllocateId();
+					state.builder.AddFunction(spv::OpCompositeConstruct, TypeF32Vector(state, 4), flipped,
+					                          x, neg_y, z, w);
+					value = flipped;
+				}
 				uint32_t pointer;
 				if (output.kind == IR::StageOutputKind::ClipDistance ||
 				    output.kind == IR::StageOutputKind::CullDistance) {

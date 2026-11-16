@@ -390,6 +390,7 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 	ShaderRecompiler::IR::SrtRuntime runtime {
 	    .user_data                  = user_data,
 	    .shader_base                = params.Base(),
+	    .read_memory                = ReadShaderGuestMemory,
 	    .read_specialization_memory = ReadShaderGuestMemory,
 	    .image_heap                 = m_image_heap,
 	};
@@ -769,6 +770,7 @@ void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRender
 		}
 		auto& mesh              = vertex_info[0].mesh;
 		mesh.host_subgroup_size = m_graphics.subgroup_size;
+		mesh.invert_y           = m_graphics.is_moltenvk;
 		const auto& limits      = m_graphics.mesh_shader_properties;
 		const auto  logical_threads =
 		    mesh.threads_num[0] * mesh.threads_num[1] * mesh.threads_num[2];
@@ -1007,7 +1009,9 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 		if (slot == 0 && ps_active) {
 			alpha_source = ps_input_info.alpha_blend_source;
 		}
-		static_params.blend_enable[slot] = bc.enable && !rt.info.blend_bypass;
+		const bool is_integer = rt.info.channel_type == Prospero::ChannelType::kUInt ||
+		                        rt.info.channel_type == Prospero::ChannelType::kSInt;
+		static_params.blend_enable[slot] = !is_integer && bc.enable && !rt.info.blend_bypass;
 		if (static_params.blend_enable[slot] && alpha_source == ShaderAlphaBlendSource::None &&
 		    ClassifyBlendMapping(bc, colors[i].export_mapping) != BlendMappingSupport::Direct) {
 			static_params.blend_enable[slot] = false;

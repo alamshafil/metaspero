@@ -282,7 +282,20 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		EXIT_NOT_IMPLEMENTED((static_params.color_mask[i] & ~0x0fu) != 0);
 		color_blend_attachment[i].colorWriteMask =
 		    vk::ColorComponentFlags {static_params.color_mask[i]};
-		color_blend_attachment[i].blendEnable = static_params.blend_enable[i] ? VK_TRUE : VK_FALSE;
+		const auto format = rendering.color_formats[i];
+		const bool is_int =
+		    format == vk::Format::eR8Uint || format == vk::Format::eR8Sint ||
+		    format == vk::Format::eR8G8Uint || format == vk::Format::eR8G8Sint ||
+		    format == vk::Format::eR8G8B8A8Uint || format == vk::Format::eR8G8B8A8Sint ||
+		    format == vk::Format::eA8B8G8R8UintPack32 || format == vk::Format::eA8B8G8R8SintPack32 ||
+		    format == vk::Format::eR16Uint || format == vk::Format::eR16Sint ||
+		    format == vk::Format::eR16G16Uint || format == vk::Format::eR16G16Sint ||
+		    format == vk::Format::eR16G16B16A16Uint || format == vk::Format::eR16G16B16A16Sint ||
+		    format == vk::Format::eR32Uint || format == vk::Format::eR32Sint ||
+		    format == vk::Format::eR32G32Uint || format == vk::Format::eR32G32Sint ||
+		    format == vk::Format::eR32G32B32A32Uint || format == vk::Format::eR32G32B32A32Sint;
+		color_blend_attachment[i].blendEnable =
+		    (!is_int && static_params.blend_enable[i]) ? VK_TRUE : VK_FALSE;
 		color_blend_attachment[i].srcColorBlendFactor =
 		    GetBlendFactor(static_params.color_srcblend[i]);
 		color_blend_attachment[i].dstColorBlendFactor =

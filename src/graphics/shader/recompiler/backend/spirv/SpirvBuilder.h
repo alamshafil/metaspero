@@ -57,8 +57,10 @@ public:
 		return DeclareConstant(opcode);
 	}
 
-	uint32_t DefineGlobalVariable(uint32_t pointer_type, spv::StorageClass storage_class);
-	void DefineGlobalVariable(uint32_t id, uint32_t pointer_type, spv::StorageClass storage_class);
+	uint32_t DefineGlobalVariable(uint32_t pointer_type, spv::StorageClass storage_class,
+	                             uint32_t initializer = 0);
+	void DefineGlobalVariable(uint32_t id, uint32_t pointer_type, spv::StorageClass storage_class,
+	                         uint32_t initializer = 0);
 
 	void AddMemoryModel(spv::AddressingModel addressing_model, spv::MemoryModel memory_model);
 	void AddEntryPoint(spv::ExecutionModel execution_model, uint32_t entry_point, const char* name,

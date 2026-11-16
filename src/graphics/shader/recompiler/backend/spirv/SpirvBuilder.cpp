@@ -94,15 +94,21 @@ uint32_t Builder::DeclareConstant(spv::Op opcode) {
 	return id;
 }
 
-uint32_t Builder::DefineGlobalVariable(uint32_t pointer_type, spv::StorageClass storage_class) {
+uint32_t Builder::DefineGlobalVariable(uint32_t pointer_type, spv::StorageClass storage_class,
+                                       uint32_t initializer) {
 	const auto id = AllocateId();
-	DefineGlobalVariable(id, pointer_type, storage_class);
+	DefineGlobalVariable(id, pointer_type, storage_class, initializer);
 	return id;
 }
 
 void Builder::DefineGlobalVariable(uint32_t id, uint32_t pointer_type,
-                                   spv::StorageClass storage_class) {
-	AppendInstruction(m_declarations, spv::OpVariable, pointer_type, id, storage_class);
+                                   spv::StorageClass storage_class, uint32_t initializer) {
+	if (initializer != 0) {
+		AppendInstruction(m_declarations, spv::OpVariable, pointer_type, id, storage_class,
+		                  initializer);
+	} else {
+		AppendInstruction(m_declarations, spv::OpVariable, pointer_type, id, storage_class);
+	}
 }
 
 void Builder::AppendString(std::vector<uint32_t>& words, const char* text) {
