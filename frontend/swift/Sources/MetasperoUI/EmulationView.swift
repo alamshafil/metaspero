@@ -345,16 +345,19 @@ final class HostMetalView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
+    override func makeBackingLayer() -> CALayer {
+        return metalLayer
+    }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.cgColor
         metalLayer.device = MTLCreateSystemDefaultDevice()
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.framebufferOnly = true
         let (w, h) = configuredDrawableSize()
         metalLayer.drawableSize = CGSize(width: w, height: h)
-        layer?.addSublayer(metalLayer)
+        wantsLayer = true
+        layer = metalLayer
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
@@ -415,11 +418,12 @@ final class HostMetalView: NSView {
 
     override func layout() {
         super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        let (w, h) = configureMetalLayerScale(metalLayer, hostBounds: bounds)
-        CATransaction.commit()
-        KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let (w, h) = configuredDrawableSize()
+        if metalLayer.drawableSize.width != CGFloat(w) || metalLayer.drawableSize.height != CGFloat(h) {
+            metalLayer.drawableSize = CGSize(width: w, height: h)
+            KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
+        }
     }
 }
 
@@ -442,18 +446,18 @@ struct EmulatorMetalSurface: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: HostMetalView, context: Context) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        let (w, h) = configureMetalLayerScale(nsView.metalLayer, hostBounds: nsView.bounds)
-        CATransaction.commit()
-        KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
+        guard nsView.bounds.width > 0, nsView.bounds.height > 0 else { return }
+        let (w, h) = configuredDrawableSize()
+        if nsView.metalLayer.drawableSize.width != CGFloat(w) || nsView.metalLayer.drawableSize.height != CGFloat(h) {
+            nsView.metalLayer.drawableSize = CGSize(width: w, height: h)
+            KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
+        }
     }
 
     static func dismantleNSView(_ nsView: HostMetalView, coordinator: ()) {
-        CATransaction.begin()
-        nsView.metalLayer.removeFromSuperlayer()
-        CATransaction.commit()
-        CATransaction.flush()
+        if !KytyBridge.isEmulationRunning() {
+            nsView.layer = nil
+        }
     }
 }
 #endif
