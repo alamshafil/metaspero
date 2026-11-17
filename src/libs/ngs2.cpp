@@ -8,6 +8,11 @@
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "kernel/memory.h"
+#include "graphics/host_gpu/regionDefinitions.h"
+
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+#include "loader/fex/fexGuestEngine.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -1756,7 +1761,10 @@ int KYTY_SYSV_ABI Ngs2RackDestroy(uintptr_t rack_handle, Ngs2ContextBufferInfo* 
 
 #if defined(__APPLE__) || defined(__aarch64__)
 	if (allocator.free_handler != nullptr && context_buffer.host_buffer != nullptr) {
-		std::free(context_buffer.host_buffer);
+		const auto buf_addr = reinterpret_cast<uintptr_t>(context_buffer.host_buffer);
+		if (!Libs::Graphics::GuestRange{buf_addr, 1}.Valid()) {
+			std::free(context_buffer.host_buffer);
+		}
 		context_buffer.host_buffer = nullptr;
 	}
 #else
@@ -3365,11 +3373,12 @@ void Shutdown() {
 		auto context_buffer = rack->buffer_info;
 		auto allocator = rack->allocator;
 		std::destroy_at(rack);
-#if defined(__APPLE__) || defined(__aarch64__)
-		if (allocator.free_handler != nullptr && context_buffer.host_buffer != nullptr) {
-			std::free(context_buffer.host_buffer);
+		if (context_buffer.host_buffer != nullptr) {
+			const auto buf_addr = reinterpret_cast<uintptr_t>(context_buffer.host_buffer);
+			if (!Libs::Graphics::GuestRange{buf_addr, 1}.Valid()) {
+				std::free(context_buffer.host_buffer);
+			}
 		}
-#endif
 		rack = next_rack;
 	}
 	g_racks_list = nullptr;
@@ -3380,11 +3389,12 @@ void Shutdown() {
 		auto context_buffer = ngs->buffer_info;
 		auto allocator = ngs->allocator;
 		std::destroy_at(ngs);
-#if defined(__APPLE__) || defined(__aarch64__)
-		if (allocator.free_handler != nullptr && context_buffer.host_buffer != nullptr) {
-			std::free(context_buffer.host_buffer);
+		if (context_buffer.host_buffer != nullptr) {
+			const auto buf_addr = reinterpret_cast<uintptr_t>(context_buffer.host_buffer);
+			if (!Libs::Graphics::GuestRange{buf_addr, 1}.Valid()) {
+				std::free(context_buffer.host_buffer);
+			}
 		}
-#endif
 		ngs = next_ngs;
 	}
 	g_ngs_list = nullptr;
