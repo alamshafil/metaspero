@@ -777,19 +777,32 @@ void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRender
 		const auto host_threads = ((logical_threads + mesh.wave_size - 1u) / mesh.wave_size) *
 		                          std::min(mesh.host_subgroup_size, mesh.wave_size);
 		const auto lds_bytes = static_cast<uint64_t>(mesh.lds_size_dwords) * sizeof(uint32_t);
+		if (m_graphics.is_moltenvk) {
+			constexpr uint64_t max_metal_mesh_size = 32768u;
+			constexpr uint64_t est_vertex_size = 64u;
+			constexpr uint64_t est_prim_size = 16u;
+			const uint64_t total = lds_bytes + mesh.max_vertices * est_vertex_size + mesh.max_primitives * est_prim_size + 64u;
+			if (total > max_metal_mesh_size) {
+				const uint64_t avail = (max_metal_mesh_size > lds_bytes + 64u) ? (max_metal_mesh_size - lds_bytes - 64u) : 0u;
+				const uint32_t clamped_count = std::max(32u, static_cast<uint32_t>(avail / (est_vertex_size + est_prim_size)));
+				mesh.max_vertices = std::min(mesh.max_vertices, clamped_count);
+				mesh.max_primitives = std::min(mesh.max_primitives, clamped_count);
+			}
+		}
 		// MoltenVK reports maxMeshSharedMemorySize as a half split of threadgroup memory, so
-		// gate on the compute shared memory budget instead.
+		// gate on the compute shared memory budget instead (capped to 32KB on Metal).
 		const auto mesh_output_bytes = static_cast<uint64_t>(mesh.max_primitives) * 16u;
 		const auto mesh_memory_total = lds_bytes + mesh_output_bytes + 16u;
 		const auto mesh_memory_budget =
-		    static_cast<uint64_t>(m_graphics.GetPhysicalDeviceProperties()
-		                              .limits.maxComputeSharedMemorySize);
+		    m_graphics.is_moltenvk
+		        ? 32768u
+		        : static_cast<uint64_t>(m_graphics.GetPhysicalDeviceProperties()
+		                                    .limits.maxComputeSharedMemorySize);
 		if (host_threads > limits.maxMeshWorkGroupInvocations ||
 		    host_threads > limits.maxMeshWorkGroupSize[0] ||
 		    mesh.max_vertices > limits.maxMeshOutputVertices ||
 		    mesh.max_primitives > limits.maxMeshOutputPrimitives ||
-		    mesh_memory_total > mesh_memory_budget ||
-		    mesh.lds_size_dwords * sizeof(uint32_t) > limits.maxMeshSharedMemorySize) {
+		    mesh_memory_total > mesh_memory_budget) {
 			static std::atomic_bool warned = false;
 			if (!warned.exchange(true, std::memory_order_relaxed)) {
 				Log::WriteToConsoleAndLog(fmt::format(
@@ -801,7 +814,7 @@ void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRender
 		// A task shader launches each record's groups and passes its draw parameters in a
 		// payload beside the LDS, the allocation pair and the Layer array; without room for
 		// it, the CPU reads the records.
-		if (state.indirect_draw &&
+		if (m_graphics.task_shader_enabled && state.indirect_draw &&
 		    (mesh.lds_size_dwords + 2u + mesh.max_vertices +
 		     ShaderRecompiler::IR::PushData::MeshTaskPayloadDwordCount) * sizeof(uint32_t) <=
 		        limits.maxMeshPayloadAndSharedMemorySize) {

@@ -550,8 +550,12 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 		    features12.shaderSharedInt64Atomics != VK_FALSE,
 		    workgroup_layout.workgroupMemoryExplicitLayout != VK_FALSE));
 	}
-	// Indirect mesh draws launch their records' groups from a task shader.
-	graphics.mesh_shader_enabled = mesh.meshShader && mesh.taskShader;
+	// Indirect mesh draws launch their records' groups from a task shader when available.
+	graphics.mesh_shader_enabled = mesh.meshShader;
+	graphics.task_shader_enabled = mesh.taskShader;
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "Vulkan Mesh shader support: meshShader={}, taskShader={}\n",
+	    mesh.meshShader != VK_FALSE, mesh.taskShader != VK_FALSE));
 
 	vk::StructureChain<
 	    vk::PhysicalDeviceProperties2, vk::PhysicalDeviceFloatControlsProperties,
@@ -612,11 +616,12 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	LOGF("Vulkan depth feedback support: %s\n",
 	     graphics.attachment_feedback_loop_enabled ? "true" : "false");
 	if (graphics.mesh_shader_enabled) {
-		LOGF("Vulkan MeshEXT: invocations=%u vertices=%u primitives=%u shared=%u\n",
-		     graphics.mesh_shader_properties.maxMeshWorkGroupInvocations,
-		     graphics.mesh_shader_properties.maxMeshOutputVertices,
-		     graphics.mesh_shader_properties.maxMeshOutputPrimitives,
-		     graphics.mesh_shader_properties.maxMeshSharedMemorySize);
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "Vulkan MeshEXT: invocations={} vertices={} primitives={} shared={}\n",
+		    graphics.mesh_shader_properties.maxMeshWorkGroupInvocations,
+		    graphics.mesh_shader_properties.maxMeshOutputVertices,
+		    graphics.mesh_shader_properties.maxMeshOutputPrimitives,
+		    graphics.mesh_shader_properties.maxMeshSharedMemorySize));
 	}
 	// Device selection checks the other required features.
 #if !defined(__ANDROID__)
@@ -759,10 +764,16 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	// MoltenVK lacks these extensions (see CreateVulkan).
 	create.unlink<vk::PhysicalDeviceDepthClipEnableFeaturesEXT>();
 #endif
-	if (!barycentric_supported) {
+	if (!graphics.fragment_shader_barycentric_enabled) {
 		create.unlink<vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR>();
 	}
-	if (!graphics.mesh_shader_enabled) create.unlink<vk::PhysicalDeviceMeshShaderFeaturesEXT>();
+	if (!graphics.mesh_shader_enabled) {
+		create.unlink<vk::PhysicalDeviceMeshShaderFeaturesEXT>();
+	} else {
+		auto& mesh_feat = create.get<vk::PhysicalDeviceMeshShaderFeaturesEXT>();
+		mesh_feat.meshShader = VK_TRUE;
+		mesh_feat.taskShader = graphics.task_shader_enabled ? VK_TRUE : VK_FALSE;
+	}
 	if (!graphics.attachment_feedback_loop_enabled) {
 		create.unlink<vk::PhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT>();
 		create.unlink<vk::PhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT>();

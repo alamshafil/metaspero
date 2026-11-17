@@ -147,7 +147,7 @@ void GuestGpu::SuspendPoint() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
 	// Do not hold a queue lock while waiting: asynchronous work may be needed to
 	// finish the preceding graphics frame. The first point returns immediately.
-	m_suspend_point_ready->try_acquire_for(std::chrono::milliseconds(25));
+	m_suspend_point_ready->acquire();
 	Submission submission;
 	submission.type = SubmissionType::SuspendPoint;
 	Enqueue(std::move(submission));
@@ -645,6 +645,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		const auto packet_dw =
 		    handler(*this, packet_header & ~1u, packet + 1, remaining_dw, total_dw) + 1;
 		EXIT_IF(packet_dw > remaining_dw);
+
 		if (execution.m_suspended) {
 			return;
 		}

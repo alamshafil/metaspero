@@ -267,11 +267,10 @@ void CommandScheduler::DrainPriorityOperations() {
 		return;
 	}
 	std::unique_lock lock(m_operation_mutex);
-	m_operation_available.wait_for(
-	    lock, std::chrono::milliseconds(200), [this] {
-		    return Common::HostException::IsEmulationShuttingDown() ||
-		           (m_priority_operations.empty() && m_priority_active_tick == 0);
-	    });
+	while (!Common::HostException::IsEmulationShuttingDown() &&
+	       (!m_priority_operations.empty() || m_priority_active_tick != 0)) {
+		m_operation_available.wait_for(lock, std::chrono::milliseconds(200));
+	}
 }
 
 void CommandScheduler::WaitPriorityOperations(uint64_t tick) {
@@ -280,7 +279,7 @@ void CommandScheduler::WaitPriorityOperations(uint64_t tick) {
 		return;
 	}
 	std::unique_lock lock(m_operation_mutex);
-	m_operation_available.wait_for(lock, std::chrono::milliseconds(200), [this, tick] {
+	auto is_done = [this, tick] {
 		if (Common::HostException::IsEmulationShuttingDown()) {
 			return true;
 		}
@@ -289,7 +288,10 @@ void CommandScheduler::WaitPriorityOperations(uint64_t tick) {
 		const bool queued_before_or_at =
 		    !m_priority_operations.empty() && m_priority_operations.front().tick <= tick;
 		return !active_before_or_at && !queued_before_or_at;
-	});
+	};
+	while (!is_done()) {
+		m_operation_available.wait_for(lock, std::chrono::milliseconds(200));
+	}
 }
 
 void CommandScheduler::RunOperation(Common::UniqueFunction<void>&& operation) {

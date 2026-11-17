@@ -1130,6 +1130,9 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 		EXIT_IF((args_buffer.second & 3u) != 0);
 	}
 	auto& pipeline = m_context.GetPipelineCache().GetGraphicsPipeline(buffer, state, m_targets);
+	if (pipeline.pipeline == nullptr) {
+		return;
+	}
 	vk::ImageAspectFlags feedback_aspects;
 	const auto rendering = AcquireRenderTargets(buffer, m_targets.colors, m_targets.color_count,
 	                                            m_targets.depth, feedback_aspects, stages);

@@ -173,7 +173,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	vk::ShaderModule tess_control_shader_module = nullptr;
 	vk::ShaderModule tess_eval_shader_module    = nullptr;
 	const auto       task_module =
-	    vertex.mesh_task ? CompileSPV(GPU_MESH_INDIRECT_SPV, graphics.device) : vk::ShaderModule {};
+	    (vertex.mesh_task && graphics.task_shader_enabled) ? CompileSPV(GPU_MESH_INDIRECT_SPV, graphics.device) : vk::ShaderModule {};
 
 	if (rect_list) {
 		std::span<const RectListParameter> parameters;
