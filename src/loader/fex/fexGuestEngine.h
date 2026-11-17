@@ -39,6 +39,7 @@ public:
     static bool IsCurrentThreadFromStaleSession() noexcept;
     static void BindCurrentThreadToActiveSession() noexcept;
     static void CleanupCurrentThreadBeforeExit() noexcept;
+    static bool HaltCurrentThread() noexcept;
     // Captures the guest CPU registers of the innermost guest thread running on the calling host thread.
     static bool GetCurrentThreadRegisters(GuestRegisterSnapshot* out) noexcept;
 

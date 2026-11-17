@@ -404,6 +404,7 @@ struct PthreadPrivate {
 	uintptr_t             guest_host_rbx;
 	uintptr_t             guest_host_rsp;
 	uintptr_t             guest_host_rbp;
+	void*                 exit_value = nullptr;
 	uint64_t              cond_sequence = 0;
 	std::condition_variable cond_cv;
 	std::atomic<uint64_t> pending_signal_mask {0};
@@ -847,8 +848,12 @@ KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func, void* 
 	    reinterpret_cast<uint64_t>(arg),
 	    0, 0, fs_base);
 	if (thread != nullptr) {
-		Loader::Fex::FexGuestEngine::Instance().Run(thread);
+		uint64_t res = Loader::Fex::FexGuestEngine::Instance().Run(thread);
 		Loader::Fex::FexGuestEngine::Instance().DestroyThread(thread);
+		if (g_pthread_self != nullptr && g_pthread_self->exit_value != nullptr) {
+			return g_pthread_self->exit_value;
+		}
+		return reinterpret_cast<void*>(res);
 	}
 	return nullptr;
 #elif defined(__x86_64__) || defined(_M_X64)
@@ -3746,6 +3751,9 @@ void KYTY_SYSV_ABI PthreadExit(void* value) {
 #endif
 
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	if (g_pthread_self != nullptr) {
+		g_pthread_self->exit_value = value;
+	}
 	Loader::Fex::FexGuestEngine::CleanupCurrentThreadBeforeExit();
 #endif
 

@@ -78,18 +78,19 @@ static std::atomic<uint64_t> s_current_session_id{1};
 static thread_local uint64_t s_tls_guest_session_id{0};
 
 struct ActiveGuestThreadEntry {
-    pthread_t         pthread_handle{};
+    pthread_t                      pthread_handle{};
 #if defined(__APPLE__)
-    mach_port_t       mach_port{MACH_PORT_NULL};
+    mach_port_t                    mach_port{MACH_PORT_NULL};
 #endif
-    uint64_t          session_id{0};
-    std::atomic<bool> in_syscall{false};
-    std::atomic<bool> exited{false};
+    uint64_t                       session_id{0};
+    std::atomic<bool>              in_syscall{false};
+    std::atomic<bool>              exited{false};
+    Loader::Fex::GuestThreadState* guest_thread{nullptr};
 };
 
 static std::mutex s_active_threads_mutex;
 static std::vector<std::shared_ptr<ActiveGuestThreadEntry>> s_active_guest_threads;
-static thread_local std::shared_ptr<ActiveGuestThreadEntry> s_tls_active_entry;
+static thread_local ActiveGuestThreadEntry* s_tls_active_entry{nullptr};
 static thread_local void (*s_tls_cleanup_before_exit)(void*){nullptr};
 static thread_local void* s_tls_cleanup_arg{nullptr};
 
@@ -153,13 +154,12 @@ public:
     uint64_t HandleSyscall(FEXCore::Core::CpuStateFrame* frame, FEXCore::HLE::SyscallArguments* args) override {
         if (Common::HostException::IsEmulationShuttingDown() ||
             Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()) {
-            if (Common::Thread::IsMainThread()) {
-                if (frame != nullptr) {
-                    frame->State.rip = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
-                }
+            if (frame != nullptr) {
+                frame->State.rip = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
                 return 0;
             }
             ExitStaleGuestThreadNow();
+            return 0;
         }
         if (frame == nullptr) {
             return 0;
@@ -197,13 +197,12 @@ public:
         }
         if (Common::HostException::IsEmulationShuttingDown() ||
             Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()) {
-            if (Common::Thread::IsMainThread()) {
-                if (frame != nullptr) {
-                    frame->State.rip = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
-                }
+            if (frame != nullptr) {
+                frame->State.rip = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
                 return 0;
             }
             ExitStaleGuestThreadNow();
+            return 0;
         }
 
         frame->State.gregs[FEXCore::X86State::REG_RAX] = result;
@@ -520,11 +519,26 @@ bool FexGuestEngine::GetCurrentThreadRegisters(GuestRegisterSnapshot* out) noexc
 #endif
 }
 
+bool FexGuestEngine::HaltCurrentThread() noexcept {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+    if (s_tls_current_fex_thread != nullptr && s_tls_current_fex_thread->CurrentFrame != nullptr) {
+        s_tls_current_fex_thread->CurrentFrame->State.rip = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
+        return true;
+    }
+#endif
+    return false;
+}
+
 void FexGuestEngine::CleanupCurrentThreadBeforeExit() noexcept {
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
-    if (s_tls_active_entry) {
+    if (s_tls_active_entry != nullptr) {
         s_tls_active_entry->exited.store(true, std::memory_order_release);
-        s_tls_active_entry.reset();
+        if (s_tls_active_entry->guest_thread != nullptr) {
+            auto* gt = s_tls_active_entry->guest_thread;
+            s_tls_active_entry->guest_thread = nullptr;
+            FexGuestEngine::Instance().DestroyThread(gt);
+        }
+        s_tls_active_entry = nullptr;
     }
     s_tls_current_fex_thread = nullptr;
     if (s_tls_cleanup_before_exit != nullptr) {
@@ -727,9 +741,12 @@ void FexGuestEngine::DestroyThread(GuestThreadState* thread) {
             if (fex_thread->CallRetStackFromHeap) {
                 ::free(fex_thread->CallRetStackBase);
             } else {
-                ::munmap(fex_thread->CallRetStackBase, fex_thread->CallRetStackAllocSize);
+                void* alloc_base = reinterpret_cast<uint8_t*>(fex_thread->CallRetStackBase) - fex_thread->CallRetStackGuardSize;
+                size_t alloc_size = fex_thread->CallRetStackAllocSize + 2 * fex_thread->CallRetStackGuardSize;
+                ::munmap(alloc_base, alloc_size);
             }
             fex_thread->CallRetStackBase = nullptr;
+            fex_thread->CallRetStackGuardSize = 0;
         }
         if (m_fex_context != nullptr) {
             auto* ctx = static_cast<FEXCore::Context::Context*>(m_fex_context);
@@ -780,76 +797,35 @@ uint64_t FexGuestEngine::Run(GuestThreadState* thread, bool enable_watchdog) {
         }
     }
 
-    std::atomic<bool> thread_running{true};
-    std::thread watchdog;
-
-    struct WatchdogCleanupCtx {
-        std::atomic<bool>* running;
-        std::thread*       watchdog_thread;
-        GuestThreadState*  guest_thread;
-        void             (*prev_fn)(void*);
-        void*              prev_arg;
-    } cleanup_ctx{&thread_running, &watchdog, thread, s_tls_cleanup_before_exit, s_tls_cleanup_arg};
-
     auto prev_session_id = s_tls_guest_session_id;
     s_tls_guest_session_id = s_current_session_id.load(std::memory_order_acquire);
-    auto prev_active_entry = s_tls_active_entry;
+    auto* prev_active_entry = s_tls_active_entry;
     auto active_entry = std::make_shared<ActiveGuestThreadEntry>();
     active_entry->pthread_handle = runner_pthread;
 #if defined(__APPLE__)
     active_entry->mach_port = runner_mach;
 #endif
     active_entry->session_id = s_tls_guest_session_id;
-    s_tls_active_entry = active_entry;
+    active_entry->guest_thread = thread;
+    s_tls_active_entry = active_entry.get();
     {
         std::lock_guard<std::mutex> lock(s_active_threads_mutex);
         s_active_guest_threads.push_back(active_entry);
     }
 
-    s_tls_cleanup_arg = &cleanup_ctx;
-    s_tls_cleanup_before_exit = [](void* arg) {
-        auto* c = static_cast<WatchdogCleanupCtx*>(arg);
-        if (c != nullptr) {
-            c->running->store(false, std::memory_order_relaxed);
-            if (c->watchdog_thread->joinable()) {
-                c->watchdog_thread->join();
-            }
-            if (c->guest_thread != nullptr) {
-                auto* gt = c->guest_thread;
-                c->guest_thread = nullptr;
-                FexGuestEngine::Instance().DestroyThread(gt);
-            }
-            if (c->prev_fn != nullptr) {
-                auto fn = c->prev_fn;
-                void* parg = c->prev_arg;
-                c->prev_fn = nullptr;
-                c->prev_arg = nullptr;
-                fn(parg);
-            }
-        }
-    };
+    auto* prev_fex_thread = s_tls_current_fex_thread;
+    s_tls_current_fex_thread = fex_thread;
+    ctx->ExecuteThread(fex_thread);
+    s_tls_current_fex_thread = prev_fex_thread;
 
-auto* prev_fex_thread = s_tls_current_fex_thread;
-s_tls_current_fex_thread = fex_thread;
-ctx->ExecuteThread(fex_thread);
-s_tls_current_fex_thread = prev_fex_thread;
-
-s_tls_cleanup_before_exit = cleanup_ctx.prev_fn;
-s_tls_cleanup_arg = cleanup_ctx.prev_arg;
-active_entry->exited.store(true, std::memory_order_release);
-s_tls_active_entry = prev_active_entry;
-if (prev_active_entry == nullptr) {
-    s_tls_guest_session_id = 0;
-} else {
-    s_tls_guest_session_id = prev_session_id;
-}
-
-if (is_main_thread && enable_watchdog) {
-    thread_running.store(false, std::memory_order_relaxed);
-    if (watchdog.joinable()) {
-        watchdog.join();
+    active_entry->guest_thread = nullptr;
+    active_entry->exited.store(true, std::memory_order_release);
+    s_tls_active_entry = prev_active_entry;
+    if (prev_active_entry == nullptr) {
+        s_tls_guest_session_id = 0;
+    } else {
+        s_tls_guest_session_id = prev_session_id;
     }
-}
 
     uint64_t result = fex_thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RAX];
     return result;
@@ -1026,13 +1002,37 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
         }
     }
 
+    const auto* si = static_cast<const siginfo_t*>(siginfo_ptr);
+
+    // 2. Recover from FEX Call-Ret shadow stack (x25 / REG_CALLRET_SP) guard-page underflow/overflow
+    if ((sig == SIGSEGV || sig == SIGBUS) && si != nullptr && thread->CallRetStackBase != nullptr) {
+        const uintptr_t fault_addr = reinterpret_cast<uintptr_t>(si->si_addr);
+        const uintptr_t stack_base = reinterpret_cast<uintptr_t>(thread->CallRetStackBase);
+        const size_t stack_size = thread->CallRetStackAllocSize;
+        const size_t guard_size = thread->CallRetStackGuardSize > 0
+                                      ? thread->CallRetStackGuardSize
+                                      : static_cast<size_t>(::getpagesize());
+        if (fault_addr >= (stack_base - guard_size) &&
+            fault_addr < (stack_base + stack_size + guard_size)) {
+            const uint64_t default_sp = stack_base + (stack_size / 2);
+            auto* mid_slot = reinterpret_cast<uint64_t*>(default_sp);
+            mid_slot[0] = 0;
+            mid_slot[1] = 0;
+            ss.__x[25] = default_sp; // REG_CALLRET_SP is x25
+            if (thread->CurrentFrame != nullptr) {
+                thread->CurrentFrame->State.callret_sp = default_sp;
+            }
+            return true;
+        }
+    }
+
     if (sig != SIGBUS && sig != SIGILL) {
         return false;
     }
-    const auto* si = static_cast<const siginfo_t*>(siginfo_ptr);
     if (sig == SIGBUS && si != nullptr && si->si_code != BUS_ADRALN) {
         return false;
     }
+    const bool is_alignment_fault = ((uc->uc_mcontext->__es.__esr & 0x3fu) == 0x21u);
 
     if (sig == SIGILL) {
         if (!is_fex_code(pc)) {
@@ -1051,6 +1051,12 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
                     return true;
                 }
             }
+        }
+
+        // Clean exit if guest thread reached the HLT trampoline (thread return)
+        if (cur_rip != 0 && cur_rip == Loader::Fex::FexHleBridge::Instance().GetHltAddress()) {
+            Loader::Fex::FexGuestEngine::CleanupCurrentThreadBeforeExit();
+            pthread_exit(nullptr);
         }
 
         // Trap recovery (UDF #0 from unlinked thunks, HLT #0 from dispatcher fault dance, etc.)
@@ -1101,7 +1107,7 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
         ((raw_inst & 0x3FFFFC00) == 0x38BFC000) || // LDAPR
         ((raw_inst & 0x3FFFFC00) == 0x089FFC00);   // STLR
 
-    if (is_atomic_candidate) {
+    if (is_atomic_candidate && is_alignment_fault) {
         uint64_t gprs[31];
         for (int i = 0; i < 29; ++i) {
             gprs[i] = ss.__x[i];
@@ -1159,14 +1165,9 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
         }
     };
 
-    // Safe copy helpers using direct memory copy for valid guest addresses
-    // with Mach VM API fallback for unmapped or guarded pages.
+    // Safe copy helpers using Mach vm_read_overwrite / vm_write on Darwin so unaligned
+    // or unmapped/guarded page accesses never trigger recursive hardware exceptions inside the signal handler.
     auto SafeCopyFromGuest = [](void* dst, const void* src, size_t size) {
-        const auto src_addr = reinterpret_cast<uintptr_t>(src);
-        if (src_addr >= 0x1000 && Libs::Graphics::GuestRange{src_addr, size}.Valid()) {
-            std::memcpy(dst, src, size);
-            return;
-        }
 #if defined(__APPLE__)
         vm_size_t outsize = 0;
         kern_return_t kr = vm_read_overwrite(mach_task_self(), reinterpret_cast<vm_address_t>(src), size,
@@ -1176,6 +1177,11 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
         }
         std::memset(dst, 0, size);
 #else
+        const auto src_addr = reinterpret_cast<uintptr_t>(src);
+        if (src_addr >= 0x1000 && Libs::Graphics::GuestRange{src_addr, size}.Valid()) {
+            std::memcpy(dst, src, size);
+            return;
+        }
         auto* d = static_cast<uint8_t*>(dst);
         const auto* s = static_cast<const volatile uint8_t*>(src);
         for (size_t i = 0; i < size; ++i) {
@@ -1185,11 +1191,6 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
     };
 
     auto SafeCopyToGuest = [](void* dst, const void* src, size_t size) {
-        const auto dst_addr = reinterpret_cast<uintptr_t>(dst);
-        if (dst_addr >= 0x1000 && Libs::Graphics::GuestRange{dst_addr, size}.Valid()) {
-            std::memcpy(dst, src, size);
-            return;
-        }
 #if defined(__APPLE__)
         kern_return_t kr = vm_write(mach_task_self(), reinterpret_cast<vm_address_t>(dst),
                                     reinterpret_cast<vm_offset_t>(src), static_cast<mach_msg_type_number_t>(size));
@@ -1197,6 +1198,11 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
             return;
         }
 #else
+        const auto dst_addr = reinterpret_cast<uintptr_t>(dst);
+        if (dst_addr >= 0x1000 && Libs::Graphics::GuestRange{dst_addr, size}.Valid()) {
+            std::memcpy(dst, src, size);
+            return;
+        }
         auto* d = static_cast<volatile uint8_t*>(dst);
         const auto* s = static_cast<const uint8_t*>(src);
         for (size_t i = 0; i < size; ++i) {
