@@ -62,6 +62,7 @@ struct SettingsView: View {
     
     // JIT & Memory
     @AppStorage("skipMeshShaders") private var skipMeshShaders = false
+    @AppStorage("enableSrtArm64Jit") private var enableSrtArm64Jit = false
     
     // Advanced Settings
     @AppStorage("userName") private var userName = "Metaspero"
@@ -509,7 +510,7 @@ struct SettingsView: View {
                 .padding(8)
             }
             
-            GroupBox("Mesh Shaders") {
+            GroupBox("Metaspero-Specific Advanced Options") {
                 VStack(alignment: .leading, spacing: 10) {
                     Toggle("Skip Mesh Shaders", isOn: $skipMeshShaders)
                     
@@ -517,6 +518,21 @@ struct SettingsView: View {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundColor(.orange)
                         Text("Warning: Skipping mesh shaders bypasses geometry processing. This can cause missing 3D geometry, severe rendering glitches, or game crashes. Only enable if a title fails to render or crashes on unsupported GPU hardware.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(8)
+                    .background(Color.secondary.opacity(0.08))
+                    .cornerRadius(6)
+                    
+                    Divider()
+                    
+                    Toggle("Experimental ARM64 SRT Walker (JIT)", isOn: $enableSrtArm64Jit)
+                    
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text("The native SRT walker interpreter is used by default. Enabling the ARM64 JIT is experimental and may improve performance, but can cause shader resource glitches or crashes.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -987,10 +1003,11 @@ struct SettingsView: View {
             
             Section {
                 Toggle("Skip Mesh Shaders", isOn: $skipMeshShaders)
+                Toggle("Experimental ARM64 SRT Walker (JIT)", isOn: $enableSrtArm64Jit)
             } header: {
-                Text("Mesh Shaders")
+                Text("Metaspero-Specific Advanced Options")
             } footer: {
-                Text("Warning: Skipping mesh shaders bypasses geometry processing. This can cause missing 3D geometry, severe rendering glitches, or game crashes. Only enable if a title fails to render on unsupported GPU hardware.")
+                Text("Skipping mesh shaders bypasses geometry processing and can cause missing 3D geometry, severe rendering glitches, or game crashes. The native SRT walker interpreter is the default, enabling the experimental ARM64 JIT may improve performance but can cause shader resource glitches or crashes.")
             }
         }
         #if SKIP

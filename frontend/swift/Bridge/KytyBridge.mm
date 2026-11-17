@@ -535,6 +535,15 @@ static void KytyFatalExitCallback(int status, const char *message) {
     } else {
         unsetenv("KYTY_SKIP_MESH_SHADERS");
     }
+
+    BOOL srtArm64Jit = [defaults boolForKey:@"enableSrtArm64Jit"];
+    if (srtArm64Jit) {
+        setenv("KYTY_SRT_ARM64_JIT", "1", 1);
+        std::printf("[KytyBridge] Graphics Debug: ARM64 SRT Walker JIT ENABLED (experimental)\n");
+        std::fflush(stdout);
+    } else {
+        unsetenv("KYTY_SRT_ARM64_JIT");
+    }
 }
 
 + (void)setMetalHudEnabled:(BOOL)enabled {

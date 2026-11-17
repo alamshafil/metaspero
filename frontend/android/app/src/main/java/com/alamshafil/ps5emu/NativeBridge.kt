@@ -62,7 +62,13 @@ object NativeBridge {
     external fun nativeSurfaceChanged(width: Int, height: Int)
 
     @JvmStatic
-    external fun nativeStartGame(gamePath: String, resolution: String, presentMode: String): Boolean
+    external fun nativeStartGame(
+        gamePath: String,
+        resolution: String,
+        presentMode: String,
+        skipMeshShaders: Boolean,
+        srtArm64Jit: Boolean
+    ): Boolean
 
     @JvmStatic
     external fun nativeStopGame()

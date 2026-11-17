@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -1508,9 +1509,13 @@ std::shared_ptr<NativeWalkPlan> BuildNativeWalkPlan(ResourcePlan& plan,
 void CompileSrtWalker(ResourcePlan& plan, std::span<const Value> values) {
 #if KYTY_SRT_NATIVE_WALKER
 #if defined(__arm64__) || defined(__aarch64__) || defined(_M_ARM64)
-	plan.srt_arm64 = CompileArm64SrtWalker(plan, values);
-	if (plan.srt_arm64 != nullptr) {
-		return;
+	// The native interpreter is the default. Opt into the experimental ARM64 JIT with
+	// KYTY_SRT_ARM64_JIT=1
+	if (std::getenv("KYTY_SRT_ARM64_JIT") != nullptr) {
+		plan.srt_arm64 = CompileArm64SrtWalker(plan, values);
+		if (plan.srt_arm64 != nullptr) {
+			return;
+		}
 	}
 #endif
 	plan.srt_native = BuildNativeWalkPlan(plan, values);

@@ -39,6 +39,8 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     private var gamePath: String = ""
     private var resolution: String = "720p"
     private var presentMode: String = "Mailbox"
+    private var skipMeshShaders: Boolean = false
+    private var enableSrtArm64Jit: Boolean = false
 
     private val statsHandler = Handler(Looper.getMainLooper())
     private var statsOverlayMode = 0 // 0: full, 1: minimal, 2: hidden
@@ -95,6 +97,8 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         val enableTouchControls = prefs.getBoolean("enableTouchOverlay", true)
         val enableHud = prefs.getBoolean("enableMetalHud", false)
         val hudDetailLevel = prefs.getString("hudDetailLevel", "Full") ?: "Full"
+        skipMeshShaders = prefs.getBoolean("skipMeshShaders", false)
+        enableSrtArm64Jit = prefs.getBoolean("enableSrtArm64Jit", false)
 
         // Virtual On-Screen Gamepad
         virtualGamepad = VirtualGamepad(this).apply {
@@ -333,7 +337,7 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     override fun surfaceCreated(holder: SurfaceHolder) {
         NativeBridge.nativeSetSurface(holder.surface)
         if (gamePath.isNotEmpty()) {
-            NativeBridge.nativeStartGame(gamePath, resolution, presentMode)
+            NativeBridge.nativeStartGame(gamePath, resolution, presentMode, skipMeshShaders, enableSrtArm64Jit)
         }
     }
 

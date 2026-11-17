@@ -31,7 +31,8 @@ JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeSurfaceChan
     JNIEnv* env, jclass clazz, jint width, jint height);
 
 JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGame(
-    JNIEnv* env, jclass clazz, jstring game_path, jstring resolution, jstring present_mode);
+    JNIEnv* env, jclass clazz, jstring game_path, jstring resolution, jstring present_mode,
+    jboolean skip_mesh_shaders, jboolean srt_arm64_jit);
 
 JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStopGame(
     JNIEnv* env, jclass clazz);

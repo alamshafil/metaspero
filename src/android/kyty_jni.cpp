@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <mutex>
@@ -211,7 +212,8 @@ JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeSurfaceChan
 }
 
 JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGame(
-    JNIEnv* env, jclass, jstring j_game_path, jstring j_res, jstring j_present) {
+    JNIEnv* env, jclass, jstring j_game_path, jstring j_res, jstring j_present,
+    jboolean j_skip_mesh_shaders, jboolean j_srt_arm64_jit) {
     if (g_is_running.load() && !g_is_stopping.load()) {
         return JNI_FALSE;
     }
@@ -246,6 +248,20 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
 
     if (g_emulator_thread.joinable()) {
         g_emulator_thread.join();
+    }
+
+    if (j_skip_mesh_shaders == JNI_TRUE) {
+        setenv("KYTY_SKIP_MESH_SHADERS", "1", 1);
+        LOGI("Graphics Debug: Skip Mesh Shaders ENABLED");
+    } else {
+        unsetenv("KYTY_SKIP_MESH_SHADERS");
+    }
+
+    if (j_srt_arm64_jit == JNI_TRUE) {
+        setenv("KYTY_SRT_ARM64_JIT", "1", 1);
+        LOGI("Graphics Debug: ARM64 SRT Walker JIT ENABLED (experimental)");
+    } else {
+        unsetenv("KYTY_SRT_ARM64_JIT");
     }
 
     g_is_running.store(true);
