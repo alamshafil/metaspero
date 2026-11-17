@@ -37,6 +37,9 @@ int                g_speaker_controller = -1;
 std::map<int, int> g_speaker_streams;
 
 void ApplyRumble(bool force = false) { // Caller holds g_mutex; no calls into Audio or Controller.
+	if (g_controller <= 0) {
+		return;
+	}
 	SDL_LockJoysticks();
 	if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(g_controller));
 	    pad != nullptr) {
@@ -64,6 +67,9 @@ void SelectController(int controller) {
 }
 
 bool RouteSpeaker(int controller, bool speaker) { // Caller holds g_mutex.
+	if (controller <= 0) {
+		return false;
+	}
 	// Route the right channel to the speaker and mute the headphones with the values Linux uses
 	// without headphones (output report 0x02). Plugged-in headphones are not checked.
 	std::array<uint8_t, 38> report {};
@@ -142,6 +148,9 @@ void CloseDevice(Stream* stream) {
 }
 
 bool IsWireless(int controller) {
+	if (controller <= 0) {
+		return false;
+	}
 	SDL_LockJoysticks();
 	auto*      pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(controller));
 	const bool wireless =
@@ -151,6 +160,9 @@ bool IsWireless(int controller) {
 }
 
 bool CanUseDevice(int controller) {
+	if (controller <= 0) {
+		return false;
+	}
 	// SDL exposes no portable association between a gamepad and its USB audio endpoint.
 	// Require one wired DualSense; guessing with multiple pads could play on the wrong one.
 	SDL_LockJoysticks();
@@ -320,7 +332,8 @@ bool UsesBluetooth(const Stream* stream) {
 
 uint64_t Queue(Stream* stream, int controller, const void* data, uint32_t frames, uint32_t channels,
                bool is_float, const int* volume, float gain, const float* gains) {
-	if (stream == nullptr || data == nullptr || frames == 0 || channels == 0 || volume == nullptr) {
+	if (controller <= 0 || stream == nullptr || data == nullptr || frames == 0 || channels == 0 ||
+	    volume == nullptr) {
 		return 0;
 	}
 	const auto max_frames =
@@ -418,6 +431,9 @@ uint64_t Queue(Stream* stream, int controller, const void* data, uint32_t frames
 }
 
 bool SetVibration(int controller, uint8_t large_motor, uint8_t small_motor, uint32_t duration_ms) {
+	if (controller <= 0) {
+		return false;
+	}
 	if (SDL_GetGamepadTypeForID(static_cast<SDL_JoystickID>(controller)) != SDL_GAMEPAD_TYPE_PS5) {
 		return false;
 	}

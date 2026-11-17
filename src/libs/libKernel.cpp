@@ -2607,13 +2607,13 @@ static FiberThreadContext& FiberGetHostThreadContextStorage() {
 static void FiberSaveGuestContext(FiberCpuContext* ctx) {
 	Loader::Fex::GuestFiberContext guest_ctx {};
 	if (Loader::Fex::FexHleBridge::Instance().ReadCurrentGuestFiberContext(&guest_ctx)) {
-		std::memcpy(ctx, &guest_ctx, sizeof(FiberCpuContext));
+		std::memcpy(ctx, &guest_ctx, sizeof(guest_ctx));
 	}
 }
 
 static void FiberRestoreGuestContext(const FiberCpuContext* ctx, uint64_t rax) {
 	Loader::Fex::GuestFiberContext guest_ctx {};
-	std::memcpy(&guest_ctx, ctx, sizeof(FiberCpuContext));
+	std::memcpy(&guest_ctx, ctx, sizeof(guest_ctx));
 	Loader::Fex::FexHleBridge::Instance().ScheduleGuestFiberRestore(guest_ctx, rax);
 }
 

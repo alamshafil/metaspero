@@ -64,6 +64,9 @@ std::string Address(const Char* serial) {
 }
 
 SDL_hid_device* OpenDevice(int controller) {
+	if (controller <= 0) {
+		return nullptr;
+	}
 	SDL_LockJoysticks();
 	auto*      pad      = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(controller));
 	const bool wireless = pad != nullptr && SDL_GetGamepadType(pad) == SDL_GAMEPAD_TYPE_PS5 &&

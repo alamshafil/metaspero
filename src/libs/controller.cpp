@@ -804,7 +804,7 @@ void GameController::ToggleGyroEmulation(int id) {
 		return;
 	}
 	// Pads with a real gyroscope report it directly.
-	if (m_active_id != HOST_INPUT_CONTROLLER_ID) {
+	if (m_active_id > 0 && m_active_id != HOST_INPUT_CONTROLLER_ID) {
 		auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(m_active_id));
 		if (pad != nullptr && SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO)) {
 			return;
@@ -876,6 +876,10 @@ void GameController::SetVibration(uint8_t large_motor, uint8_t small_motor) {
 }
 
 void GameController::ApplyVibration() {
+	if (m_active_id <= 0 || m_active_id == HOST_INPUT_CONTROLLER_ID) {
+		return;
+	}
+
 	const auto now = SDL_GetTicks();
 	const auto duration =
 	    m_vibration_until > now ? static_cast<uint32_t>(m_vibration_until - now) : 0;
@@ -885,10 +889,6 @@ void GameController::ApplyVibration() {
 	// The DualSense haptics backend drives a single pad, so only player 1 uses it.
 	if (m_player == 0 &&
 	    DualSenseHaptics::SetVibration(m_active_id, large_motor, small_motor, duration)) {
-		return;
-	}
-
-	if (m_active_id == HOST_INPUT_CONTROLLER_ID) {
 		return;
 	}
 
@@ -911,6 +911,9 @@ int GameController::GetActiveControllerId() {
 
 void GameController::SetLightBar(uint8_t r, uint8_t g, uint8_t b) {
 	Common::LockGuard lock(m_mutex);
+	if (m_active_id <= 0 || m_active_id == HOST_INPUT_CONTROLLER_ID) {
+		return;
+	}
 	if (const auto& color = Config::GetControllerColor()) {
 		r = (*color)[0];
 		g = (*color)[1];
@@ -953,6 +956,9 @@ void GameController::UpdateTriggerEffectState() {
 }
 
 bool GameController::SendTriggerEffect(const PadTriggerEffectParam& param) {
+	if (m_active_id <= 0 || m_active_id == HOST_INPUT_CONTROLLER_ID) {
+		return true;
+	}
 	if ((param.trigger_mask & ~0x03u) != 0) {
 		return false;
 	}
@@ -1075,11 +1081,13 @@ static void RefreshPlayers() {
 	for (int player = 0; player < Config::MAX_PLAYERS; player++) {
 		const int previous = g_players[player]->GetActiveControllerId();
 		if (previous != active[player]) {
-			if (player == 0) {
-				(void)DualSenseHaptics::SetVibration(previous, 0, 0, 0);
-			}
-			if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(previous))) {
-				StopHostPad(pad);
+			if (previous > 0 && previous != HOST_INPUT_CONTROLLER_ID) {
+				if (player == 0) {
+					(void)DualSenseHaptics::SetVibration(previous, 0, 0, 0);
+				}
+				if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(previous))) {
+					StopHostPad(pad);
+				}
 			}
 		}
 	}
