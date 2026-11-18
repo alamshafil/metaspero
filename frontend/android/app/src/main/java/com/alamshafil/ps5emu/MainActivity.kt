@@ -53,6 +53,9 @@ class MainActivity : ComponentActivity() {
         // Initialize native bridge and load kyty_android shared library before JNI setup
         NativeBridge.nativeInit(filesDir.absolutePath, cacheDir.absolutePath)
 
+        // Expose the in-memory diagnostics log stream to the shared SwiftUI/Skip views
+        KytyBridge.onGetRecentLogs = { KytyLogs.getRecentLogs() }
+
         // Initialize SDL3 Android host context
         SDL.setupJNI()
         SDL.initialize()

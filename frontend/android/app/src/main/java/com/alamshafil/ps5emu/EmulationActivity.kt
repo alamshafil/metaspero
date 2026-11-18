@@ -14,6 +14,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
+import android.text.Spannable
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
 import android.view.Display
 import android.view.Gravity
 import android.view.InputDevice
@@ -27,6 +30,9 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.PopupMenu
+import android.widget.ScrollView
 import android.widget.TextView
 import java.io.File
 import java.util.Locale
@@ -36,11 +42,23 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var surfaceView: SurfaceView
     private lateinit var virtualGamepad: VirtualGamepad
     private lateinit var tvStatsOverlay: TextView
+    private lateinit var btnMenu: TextView
+    private lateinit var logOverlay: FrameLayout
+    private lateinit var logScrollView: ScrollView
+    private lateinit var logTextView: TextView
+    private lateinit var closingOverlay: FrameLayout
     private var gamePath: String = ""
     private var resolution: String = "720p"
     private var presentMode: String = "Mailbox"
     private var skipMeshShaders: Boolean = false
     private var enableSrtArm64Jit: Boolean = false
+    private var perfOverlayEnabled: Boolean = false
+    private var enableTouchControls: Boolean = false
+    private var isStopping: Boolean = false
+    private var lastVisibleStatsMode: Int = 0
+
+    private val density: Float get() = resources.displayMetrics.density
+    private fun dp(v: Float): Int = (v * density).toInt()
 
     private val statsHandler = Handler(Looper.getMainLooper())
     private var statsOverlayMode = 0 // 0: full, 1: minimal, 2: hidden
@@ -49,6 +67,13 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         override fun run() {
             updateStatsOverlay()
             statsHandler.postDelayed(this, 500)
+        }
+    }
+
+    private val logRefreshRunnable = object : Runnable {
+        override fun run() {
+            refreshLogOverlay()
+            statsHandler.postDelayed(this, 1000)
         }
     }
 
@@ -94,11 +119,12 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
 
         // Read user preferences for touch gamepad and HUD
         val prefs = getSharedPreferences("defaults", Context.MODE_PRIVATE)
-        val enableTouchControls = prefs.getBoolean("enableTouchOverlay", true)
+        enableTouchControls = prefs.getBoolean("enableTouchOverlay", true)
         val enableHud = prefs.getBoolean("enableMetalHud", false)
         val hudDetailLevel = prefs.getString("hudDetailLevel", "Full") ?: "Full"
         skipMeshShaders = prefs.getBoolean("skipMeshShaders", false)
         enableSrtArm64Jit = prefs.getBoolean("enableSrtArm64Jit", false)
+        perfOverlayEnabled = prefs.getBoolean("perfOverlayEnabled", false)
 
         // Virtual On-Screen Gamepad
         virtualGamepad = VirtualGamepad(this).apply {
@@ -116,9 +142,7 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
             hudDetailLevel == "Minimal" -> 1 // minimal
             else -> 0 // full
         }
-
-        val density = resources.displayMetrics.density
-        fun dp(v: Float) = (v * density).toInt()
+        lastVisibleStatsMode = if (statsOverlayMode == 2) 0 else statsOverlayMode
 
         tvStatsOverlay = TextView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -143,40 +167,37 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
 
             setOnClickListener {
                 statsOverlayMode = (statsOverlayMode + 1) % 3
+                if (statsOverlayMode != 2) {
+                    lastVisibleStatsMode = statsOverlayMode
+                }
                 visibility = if (statsOverlayMode != 2) View.VISIBLE else View.GONE
             }
         }
         rootLayout.addView(tvStatsOverlay)
 
-        // In-game Exit Button (floating top-right)
-        val btnExit = TextView(this).apply {
-            text = "✕"
-            textSize = 16f
+        // In-game options menu
+        btnMenu = TextView(this).apply {
+            text = "⋮"
+            textSize = 22f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(dp(36f), dp(36f)).apply {
+            contentDescription = "Game options"
+            layoutParams = FrameLayout.LayoutParams(dp(34f), dp(34f)).apply {
                 gravity = Gravity.TOP or Gravity.END
-                setMargins(0, dp(14f), dp(16f), 0)
+                setMargins(0, dp(6f), dp(8f), 0)
             }
-            val exitBg = GradientDrawable().apply {
+            val menuBg = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(Color.argb(140, 30, 30, 30))
                 setStroke((1f * density).toInt(), Color.argb(80, 255, 255, 255))
             }
-            background = exitBg
-            setOnClickListener {
-                com.google.android.material.dialog.MaterialAlertDialogBuilder(this@EmulationActivity)
-                    .setTitle("Exit Game")
-                    .setMessage("Are you sure you want to stop emulation?")
-                    .setPositiveButton("Exit") { _, _ ->
-                        NativeBridge.nativeStopGame()
-                        finish()
-                    }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            }
+            background = menuBg
+            setOnClickListener { showOptionsMenu(this) }
         }
-        rootLayout.addView(btnExit)
+        rootLayout.addView(btnMenu)
+
+        setupLogOverlay(rootLayout)
+        setupClosingOverlay(rootLayout)
 
         setContentView(rootLayout)
         hideSystemUI()
@@ -186,11 +207,15 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         super.onResume()
         hideSystemUI()
         statsHandler.post(statsRunnable)
+        if (::logOverlay.isInitialized && logOverlay.visibility == View.VISIBLE) {
+            statsHandler.post(logRefreshRunnable)
+        }
     }
 
     override fun onPause() {
         super.onPause()
         statsHandler.removeCallbacks(statsRunnable)
+        statsHandler.removeCallbacks(logRefreshRunnable)
     }
 
     private var lastCpuTimeMs: Long = 0L
@@ -310,6 +335,288 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
+    // In-game options & diagnostics
+
+    private fun showOptionsMenu(anchor: View) {
+        val popup = PopupMenu(this, anchor)
+
+        if (enableTouchControls) {
+            val label = if (virtualGamepad.visibility == View.VISIBLE) {
+                "Hide On-Screen Controls"
+            } else {
+                "Show On-Screen Controls"
+            }
+            popup.menu.add(0, MENU_TOGGLE_CONTROLS, 0, label)
+        }
+
+        popup.menu.add(0, MENU_LOGS, 1, "Logs & Diagnostics")
+        popup.menu.add(
+            0,
+            MENU_TOGGLE_HUD,
+            2,
+            if (statsOverlayMode == 2) "Show Performance HUD" else "Hide Performance HUD"
+        )
+        popup.menu.add(0, MENU_EXIT, 3, "Quit Game")
+
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                MENU_TOGGLE_CONTROLS -> toggleTouchControls()
+                MENU_LOGS -> showLogOverlay()
+                MENU_TOGGLE_HUD -> toggleStatsOverlay()
+                MENU_EXIT -> confirmExit()
+            }
+            true
+        }
+        popup.show()
+    }
+
+    private fun toggleTouchControls() {
+        if (virtualGamepad.visibility == View.VISIBLE) {
+            virtualGamepad.releaseAllInputs()
+            virtualGamepad.visibility = View.GONE
+        } else {
+            virtualGamepad.visibility = View.VISIBLE
+        }
+    }
+
+    private fun toggleStatsOverlay() {
+        if (statsOverlayMode == 2) {
+            statsOverlayMode = lastVisibleStatsMode
+        } else {
+            lastVisibleStatsMode = statsOverlayMode
+            statsOverlayMode = 2
+        }
+        tvStatsOverlay.visibility = if (statsOverlayMode != 2) View.VISIBLE else View.GONE
+    }
+
+    private fun confirmExit() {
+        if (isStopping) {
+            return
+        }
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("Exit Game")
+            .setMessage("Are you sure you want to stop emulation?")
+            .setPositiveButton("Exit") { _, _ -> stopAndFinish() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun stopAndFinish() {
+        if (isStopping) {
+            return
+        }
+        isStopping = true
+        hideLogOverlay()
+        btnMenu.isEnabled = false
+        closingOverlay.visibility = View.VISIBLE
+        closingOverlay.bringToFront()
+
+        Thread {
+            try {
+                NativeBridge.nativeStopGame()
+            } catch (_: Throwable) {}
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed) {
+                    finish()
+                }
+            }
+        }.start()
+    }
+
+    private fun setupLogOverlay(root: FrameLayout) {
+        logOverlay = FrameLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(Color.argb(242, 6, 8, 12))
+            visibility = View.GONE
+            isClickable = true
+            isFocusable = true
+        }
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16f), dp(10f), dp(16f), dp(12f))
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+
+        fun overlayButton(label: String, sizeSp: Float, onClick: () -> Unit): TextView {
+            return TextView(this).apply {
+                text = label
+                textSize = sizeSp
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                setPadding(dp(10f), dp(6f), dp(10f), dp(6f))
+                setOnClickListener { onClick() }
+            }
+        }
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val title = TextView(this).apply {
+            text = "Logs & Diagnostics"
+            textSize = 16f
+            setTextColor(Color.WHITE)
+            setTypeface(typeface, Typeface.BOLD)
+        }
+        header.addView(
+            title,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        header.addView(overlayButton("Clear", 13f) {
+            KytyLogs.clear()
+            refreshLogOverlay()
+        })
+        header.addView(overlayButton("✕", 18f) { hideLogOverlay() })
+
+        panel.addView(
+            header,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        logTextView = TextView(this).apply {
+            typeface = Typeface.MONOSPACE
+            textSize = 10f
+            setTextColor(Color.rgb(235, 235, 245))
+            setTextIsSelectable(true)
+            setPadding(0, dp(8f), 0, dp(8f))
+        }
+
+        logScrollView = ScrollView(this).apply {
+            isFillViewport = true
+            addView(
+                logTextView,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+        panel.addView(
+            logScrollView,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        )
+
+        val footer = TextView(this).apply {
+            text = "Live in-memory log. Auto-refreshing every second"
+            textSize = 10f
+            setTextColor(Color.argb(150, 255, 255, 255))
+        }
+        panel.addView(footer)
+
+        logOverlay.addView(panel)
+        root.addView(logOverlay)
+    }
+
+    private fun setupClosingOverlay(root: FrameLayout) {
+        closingOverlay = FrameLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(Color.argb(220, 0, 0, 0))
+            visibility = View.GONE
+            isClickable = true
+        }
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        }
+        content.addView(TextView(this).apply {
+            text = "Closing Game..."
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            setTypeface(typeface, Typeface.BOLD)
+            gravity = Gravity.CENTER
+        })
+        content.addView(TextView(this).apply {
+            text = "Releasing GPU & system memory"
+            textSize = 13f
+            setTextColor(Color.argb(180, 255, 255, 255))
+            gravity = Gravity.CENTER
+            setPadding(0, dp(6f), 0, 0)
+        })
+        closingOverlay.addView(content)
+        root.addView(closingOverlay)
+    }
+
+    private fun showLogOverlay() {
+        logOverlay.visibility = View.VISIBLE
+        logOverlay.bringToFront()
+        refreshLogOverlay()
+        statsHandler.removeCallbacks(logRefreshRunnable)
+        statsHandler.post(logRefreshRunnable)
+    }
+
+    private fun hideLogOverlay() {
+        if (!::logOverlay.isInitialized) {
+            return
+        }
+        statsHandler.removeCallbacks(logRefreshRunnable)
+        logOverlay.visibility = View.GONE
+    }
+
+    private fun refreshLogOverlay() {
+        if (!::logTextView.isInitialized) {
+            return
+        }
+
+        val lines = KytyLogs.recentLogLines()
+        val wasAtBottom = !logScrollView.canScrollVertically(1)
+
+        if (lines.isEmpty()) {
+            logTextView.text = "No log entries available."
+            return
+        }
+
+        val builder = SpannableStringBuilder()
+        for (line in lines) {
+            val start = builder.length
+            builder.append(line).append('\n')
+            builder.setSpan(
+                ForegroundColorSpan(colorForLogLine(line)),
+                start,
+                builder.length,
+                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+        logTextView.text = builder
+
+        if (wasAtBottom) {
+            logScrollView.post { logScrollView.fullScroll(View.FOCUS_DOWN) }
+        }
+    }
+
+    private fun colorForLogLine(line: String): Int {
+        val lower = line.lowercase(Locale.US)
+        return when {
+            lower.contains("crash") || lower.contains("fatal") ||
+                lower.contains("sigsegv") || lower.contains("sigbus") -> Color.rgb(255, 69, 58)
+            lower.contains("error") || lower.contains("fail") -> Color.rgb(255, 99, 88)
+            lower.contains("warn") -> Color.rgb(255, 159, 10)
+            lower.contains("jit") || lower.contains("success") || lower.contains("ready") ->
+                Color.rgb(48, 209, 88)
+            lower.contains("fex") || lower.contains("rip=") -> Color.rgb(191, 90, 242)
+            else -> Color.rgb(235, 235, 245)
+        }
+    }
+
     private fun hideSystemUI() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -337,7 +644,7 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     override fun surfaceCreated(holder: SurfaceHolder) {
         NativeBridge.nativeSetSurface(holder.surface)
         if (gamePath.isNotEmpty()) {
-            NativeBridge.nativeStartGame(gamePath, resolution, presentMode, skipMeshShaders, enableSrtArm64Jit)
+            NativeBridge.nativeStartGame(gamePath, resolution, presentMode, skipMeshShaders, enableSrtArm64Jit, perfOverlayEnabled)
         }
     }
 
@@ -352,8 +659,16 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        NativeBridge.nativeStopGame()
-        super.onBackPressed()
+        if (::logOverlay.isInitialized && logOverlay.visibility == View.VISIBLE) {
+            hideLogOverlay()
+            return
+        }
+        confirmExit()
+    }
+
+    override fun onDestroy() {
+        statsHandler.removeCallbacksAndMessages(null)
+        super.onDestroy()
     }
 
     // Physical Gamepad Input Handling (Bluetooth / USB / Type-C)
@@ -441,5 +756,12 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
             return true
         }
         return super.onGenericMotionEvent(event)
+    }
+
+    private companion object {
+        const val MENU_TOGGLE_CONTROLS = 1
+        const val MENU_LOGS = 2
+        const val MENU_TOGGLE_HUD = 3
+        const val MENU_EXIT = 4
     }
 }

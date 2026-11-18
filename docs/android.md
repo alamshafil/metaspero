@@ -194,6 +194,7 @@ frontend/android/app/build/outputs/apk/debug/app-debug.apk
 
 ### Core Engine Adaptations
 - `src/common/hostException.cpp`: Signal exception handler for Linux/Android on AArch64, mapping FEX registers and prioritizing GPU fault handling.
+- `src/emulator.cpp`: Android sessions shut down in-process and return to the launcher instead of calling `std::quick_exit`, which would kill the whole app.
 - `src/loader/loadExec.cpp`: Direct `close_range` system call invocation guarded for Android.
 - `src/loader/fex/fexGuestEngine.cpp`: Queries `RuntimeLinker` for executable virtual memory ranges and probes native ARM64 capabilities (`getauxval`).
 - `src/kernel/memoryAddressSpace.inc`: Probes kernel virtual address space (1 TiB ceiling on 48-bit kernels, 256 GiB safe ceiling on 39-bit kernels).
@@ -203,4 +204,6 @@ frontend/android/app/build/outputs/apk/debug/app-debug.apk
 
 ### Frontend Adaptations
 - `frontend/android/`: Complete Android application shell including `MainActivity` (Compose library launcher), `EmulationActivity` (`SurfaceView` Vulkan renderer), `VirtualGamepad` (multi-touch on-screen controller), and `GpuDriverManager` (driver extraction and persistence).
+- `EmulationActivity` mirrors the iOS in-game overlay with a top-right options menu: hide/show on-screen controls, show/hide the performance HUD, open the live log/diagnostics console, or quit the game. Quitting stops the native session in the background behind a closing overlay, so the app returns to the library instead of exiting.
+- `KytyLogs` (`KytyLogs.kt`) and the JNI log pipe (`src/android/kyty_jni.cpp`) mirror the iOS bridge: stdout/stderr are redirected through a pipe into a bounded in-memory buffer shared by the SettingsView diagnostics page and the in-game log console. Logs are not written to disk on Android.
 - `frontend/swift/`: Refactored all 12 views into a dual-platform Skip library (`MetasperoUI`). Added `KytyBridgeShim.swift` for cross-platform notification dispatch, raw byte streaming, and POSIX path handling.

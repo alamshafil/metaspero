@@ -143,7 +143,7 @@ static void Execute(const std::filesystem::path& game_patch) {
 	}).detach();
 	Libs::Graphics::WindowRun();
 	Common::HostException::SetEmulationShuttingDown(true);
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__ANDROID__)
 	std::quick_exit(0);
 #endif
 }

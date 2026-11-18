@@ -32,7 +32,7 @@ JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeSurfaceChan
 
 JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGame(
     JNIEnv* env, jclass clazz, jstring game_path, jstring resolution, jstring present_mode,
-    jboolean skip_mesh_shaders, jboolean srt_arm64_jit);
+    jboolean skip_mesh_shaders, jboolean srt_arm64_jit, jboolean perf_overlay);
 
 JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStopGame(
     JNIEnv* env, jclass clazz);
@@ -54,6 +54,12 @@ JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeSendTrigger
 
 JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeSendTouch(
     JNIEnv* env, jclass clazz, jint finger, jboolean down, jfloat x, jfloat y);
+
+JNIEXPORT jobjectArray JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeGetRecentLogs(
+    JNIEnv* env, jclass clazz);
+
+JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeClearLogs(
+    JNIEnv* env, jclass clazz);
 
 JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeHasTrophies(
     JNIEnv* env, jclass clazz, jstring game_path);

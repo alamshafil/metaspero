@@ -67,7 +67,8 @@ object NativeBridge {
         resolution: String,
         presentMode: String,
         skipMeshShaders: Boolean,
-        srtArm64Jit: Boolean
+        srtArm64Jit: Boolean,
+        perfOverlay: Boolean
     ): Boolean
 
     @JvmStatic
@@ -96,6 +97,12 @@ object NativeBridge {
 
     @JvmStatic
     external fun nativeGetFrameTimeMs(): Float
+
+    @JvmStatic
+    external fun nativeGetRecentLogs(): Array<String>?
+
+    @JvmStatic
+    external fun nativeClearLogs()
 
     @JvmStatic
     external fun nativeHasTrophies(gamePath: String): Boolean

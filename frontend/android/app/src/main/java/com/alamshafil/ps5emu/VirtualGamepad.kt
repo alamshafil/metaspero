@@ -588,6 +588,11 @@ class VirtualGamepad @JvmOverloads constructor(
         }
     }
 
+    fun releaseAllInputs() {
+        resetAllControls()
+        invalidate()
+    }
+
     private fun updateStick(isLeft: Boolean, touchX: Float, touchY: Float) {
         val center = if (isLeft) leftStickCenter else rightStickCenter
         val dx = touchX - center.first

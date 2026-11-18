@@ -22,24 +22,106 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 #include <unistd.h>
 
 #define LOG_TAG "Kyty-JNI"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+static std::string g_files_dir;
+static std::string g_cache_dir;
+
+constexpr size_t kMaxLogLines    = 4000;
+constexpr size_t kMaxLogLineSize = 8192;
+
+static std::mutex              g_log_mutex;
+static std::deque<std::string> g_log_lines;
+static std::once_flag          g_log_pipe_once;
+
+static void AppendLogLine(const std::string& line) {
+    if (line.empty()) {
+        return;
+    }
+
+    const size_t                length = std::min(line.size(), kMaxLogLineSize);
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    g_log_lines.emplace_back(line.data(), length);
+    while (g_log_lines.size() > kMaxLogLines) {
+        g_log_lines.pop_front();
+    }
+}
+
+static void LogPipeReader(int read_fd) {
+    FILE* file = ::fdopen(read_fd, "r");
+    if (file == nullptr) {
+        ::close(read_fd);
+        return;
+    }
+
+    char buffer[4096];
+    while (std::fgets(buffer, sizeof(buffer), file) != nullptr) {
+        std::string line(buffer);
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+            line.pop_back();
+        }
+        AppendLogLine(line);
+    }
+
+    std::fclose(file);
+}
+
+static void StartLogCapture() {
+    std::call_once(g_log_pipe_once, [] {
+        int fds[2] = {-1, -1};
+        if (::pipe(fds) != 0) {
+            return;
+        }
+
+        if (::dup2(fds[1], STDOUT_FILENO) < 0 || ::dup2(fds[1], STDERR_FILENO) < 0) {
+            ::close(fds[0]);
+            ::close(fds[1]);
+            return;
+        }
+        ::close(fds[1]);
+
+        std::thread([read_fd = fds[0]]() {
+            LogPipeReader(read_fd);
+        }).detach();
+    });
+}
+
+// JNI diagnostics go to logcat and to the in-memory log stream (stdout is captured by
+// StartLogCapture), so the in-app Logs view shows the same lines as the core emulator.
+static void LogJniLine(int priority, const char* format, ...) {
+    char    formatted[1024];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(formatted, sizeof(formatted), format, args);
+    va_end(args);
+
+    __android_log_print(priority, LOG_TAG, "%s", formatted);
+    std::fprintf(stdout, "[Kyty-JNI] %s\n", formatted);
+    std::fflush(stdout);
+}
+
+#define LOGI(...) LogJniLine(ANDROID_LOG_INFO, __VA_ARGS__)
+#define LOGW(...) LogJniLine(ANDROID_LOG_WARN, __VA_ARGS__)
+#define LOGE(...) LogJniLine(ANDROID_LOG_ERROR, __VA_ARGS__)
 
 static std::atomic<ANativeWindow*> g_host_native_window{nullptr};
 static std::thread g_emulator_thread;
 static std::atomic<bool> g_is_running{false};
 static std::atomic<bool> g_is_stopping{false};
 static std::timed_mutex g_session_mutex;
+static std::mutex g_lifecycle_mutex;
 
 static std::string g_custom_vulkan_path;
 static void* g_custom_driver_handle = nullptr;
@@ -73,13 +155,12 @@ extern "C" const char* KytyGetCustomVulkanPath(void) {
 }
 
 
-static std::string g_files_dir;
-static std::string g_cache_dir;
-
 extern "C" {
 
 JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeInit(
     JNIEnv* env, jclass, jstring j_files_dir, jstring j_cache_dir) {
+    StartLogCapture();
+
     if (j_files_dir != nullptr) {
         const char* fdir = env->GetStringUTFChars(j_files_dir, nullptr);
         if (fdir) {
@@ -213,7 +294,9 @@ JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeSurfaceChan
 
 JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGame(
     JNIEnv* env, jclass, jstring j_game_path, jstring j_res, jstring j_present,
-    jboolean j_skip_mesh_shaders, jboolean j_srt_arm64_jit) {
+    jboolean j_skip_mesh_shaders, jboolean j_srt_arm64_jit, jboolean j_perf_overlay) {
+    std::lock_guard<std::mutex> lifecycle_lock(g_lifecycle_mutex);
+
     if (g_is_running.load() && !g_is_stopping.load()) {
         return JNI_FALSE;
     }
@@ -264,10 +347,13 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
         unsetenv("KYTY_SRT_ARM64_JIT");
     }
 
+    const bool perf_overlay = (j_perf_overlay == JNI_TRUE);
+    LOGI("Performance: Kyty stats overlay %s", perf_overlay ? "ENABLED" : "disabled");
+
     g_is_running.store(true);
     g_is_stopping.store(false);
 
-    g_emulator_thread = std::thread([game_path, resolution, present_mode]() {
+    g_emulator_thread = std::thread([game_path, resolution, present_mode, perf_overlay]() {
         std::unique_lock<std::timed_mutex> session_lock(g_session_mutex, std::chrono::seconds(10));
         if (!session_lock.owns_lock()) {
             LOGE("Failed to acquire session lock within 10s");
@@ -324,6 +410,8 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
         options.config.console_language = Config::DEFAULT_CONSOLE_LANGUAGE;
         options.config.vblank_frequency = 60;
 
+        options.config.perf_overlay_enabled = perf_overlay;
+
         LOGI("Starting Emulator::Run for %s", game_path.c_str());
         Emulator::Run(options);
         LOGI("Emulator::Run exited cleanly");
@@ -337,19 +425,22 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
 
 JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStopGame(
     JNIEnv*, jclass) {
-    if (!g_is_running.load()) return;
-    g_is_stopping.store(true);
-    LOGI("Stopping emulation session...");
+    std::lock_guard<std::mutex> lifecycle_lock(g_lifecycle_mutex);
 
-    Common::HostException::SetEmulationShuttingDown(true);
-    SDL_Event quit_ev;
-    std::memset(&quit_ev, 0, sizeof(quit_ev));
-    quit_ev.type = SDL_EVENT_QUIT;
-    SDL_PushEvent(&quit_ev);
+    if (g_is_running.load()) {
+        g_is_stopping.store(true);
+        LOGI("Stopping emulation session...");
+
+        Common::HostException::SetEmulationShuttingDown(true);
+        SDL_Event quit_ev;
+        std::memset(&quit_ev, 0, sizeof(quit_ev));
+        quit_ev.type = SDL_EVENT_QUIT;
+        SDL_PushEvent(&quit_ev);
 
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
-    Loader::Fex::FexGuestEngine::Instance().StopAllThreads();
+        Loader::Fex::FexGuestEngine::Instance().StopAllThreads();
 #endif
+    }
 
     if (g_emulator_thread.joinable()) {
         g_emulator_thread.join();
@@ -433,6 +524,39 @@ JNIEXPORT jfloat JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeGetFps(JN
 JNIEXPORT jfloat JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeGetFrameTimeMs(JNIEnv*, jclass) {
     float fps = KytyGetCurrentFps();
     return fps > 0.01f ? (1000.0f / fps) : 0.0f;
+}
+
+JNIEXPORT jobjectArray JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeGetRecentLogs(
+    JNIEnv* env, jclass) {
+    std::vector<std::string> lines;
+    {
+        std::lock_guard<std::mutex> lock(g_log_mutex);
+        lines.assign(g_log_lines.begin(), g_log_lines.end());
+    }
+
+    jclass string_class = env->FindClass("java/lang/String");
+    if (string_class == nullptr) {
+        return nullptr;
+    }
+
+    jobjectArray result = env->NewObjectArray(static_cast<jsize>(lines.size()), string_class, nullptr);
+    if (result == nullptr) {
+        return nullptr;
+    }
+
+    for (jsize i = 0; i < static_cast<jsize>(lines.size()); ++i) {
+        jstring line = env->NewStringUTF(lines[static_cast<size_t>(i)].c_str());
+        if (line != nullptr) {
+            env->SetObjectArrayElement(result, i, line);
+            env->DeleteLocalRef(line);
+        }
+    }
+    return result;
+}
+
+JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeClearLogs(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    g_log_lines.clear();
 }
 
 static int ResolveConsoleLanguage(const std::string& tag) {

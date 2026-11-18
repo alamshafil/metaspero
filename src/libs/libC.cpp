@@ -21,6 +21,8 @@
 
 #ifdef __APPLE__
 #include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) || defined(__ANDROID__)
 #include "common/hostException.h"
 #include <SDL3/SDL.h>
 #endif
@@ -84,7 +86,7 @@ static KYTY_SYSV_ABI void exit(int code) {
 	PRINT_NAME();
 
 	LOGF("Guest called LibC::exit(%d)\n", code);
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__ANDROID__)
 	Common::HostException::SetEmulationShuttingDown(true);
 	SDL_Event quit_ev;
 	std::memset(&quit_ev, 0, sizeof(quit_ev));
