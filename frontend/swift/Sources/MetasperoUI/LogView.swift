@@ -4,6 +4,9 @@ import SwiftUI
 struct LogView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var logLines: [String] = []
+    #if SKIP
+    @State private var keepRefreshing = false
+    #endif
     
     var body: some View {
         NavigationStack {
@@ -42,25 +45,47 @@ struct LogView: View {
             }
             .onAppear {
                 refreshLogs()
+                #if SKIP
+                keepRefreshing = true
+                scheduleRefresh()
+                #endif
                 NotificationCenter.default.addObserver(forName: .KytyLogUpdated, object: nil, queue: .main) { _ in
                     refreshLogs()
                 }
             }
+            #if SKIP
+            .onDisappear {
+                keepRefreshing = false
+            }
+            #endif
         }
         #if os(macOS)
         .frame(minWidth: 640, minHeight: 480)
         #endif
     }
+
+    #if SKIP
+    private func scheduleRefresh() {
+        guard keepRefreshing else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            guard keepRefreshing else { return }
+            refreshLogs()
+            scheduleRefresh()
+        }
+    }
+    #endif
     
     private func refreshLogs() {
         let recent = KytyBridge.getRecentLogs()
         if !recent.isEmpty {
             self.logLines = recent
         } else {
+            #if !SKIP
             let diskText = KytyBridge.loadSavedLog()
             if !diskText.isEmpty {
                 self.logLines = diskText.components(separatedBy: "\n").filter { !$0.isEmpty }
             }
+            #endif
         }
     }
     

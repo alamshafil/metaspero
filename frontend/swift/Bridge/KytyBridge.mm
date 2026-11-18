@@ -724,6 +724,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
             options.config.command_buffer_dump_enabled = getBoolSetting(@"commandBufferDumpEnabled", false);
             options.config.profiler_enabled = getBoolSetting(@"profilerEnabled", false);
             options.config.renderdoc_enabled = getBoolSetting(@"renderdocEnabled", false);
+            options.config.perf_overlay_enabled = getBoolSetting(@"perfOverlayEnabled", false);
 
             NSArray<NSString *> *keymapList = [[NSUserDefaults standardUserDefaults] stringArrayForKey:@"keymapBindings"];
             if (keymapList && keymapList.count > 0) {
@@ -752,10 +753,11 @@ static void KytyFatalExitCallback(int status, const char *message) {
             
             std::printf("[KytyBridge] Configured app0_dir: %s, elf: %s\n",
                         options.app0_dir.string().c_str(), options.elf.string().c_str());
-            std::printf("[KytyBridge] Graphics: %ux%u, Present Mode: %s, Metal HUD: %s\n",
+            std::printf("[KytyBridge] Graphics: %ux%u, Present Mode: %s, Metal HUD: %s, Kyty Stats Overlay: %s\n",
                         options.config.screen_width, options.config.screen_height,
                         present ? [present UTF8String] : "Mailbox",
-                        [KytyBridge isMetalHudEnabled] ? "ENABLED" : "DISABLED");
+                        [KytyBridge isMetalHudEnabled] ? "ENABLED" : "DISABLED",
+                        options.config.perf_overlay_enabled ? "ENABLED" : "DISABLED");
             std::printf("[KytyBridge] User: %s (ID: %d), Lang: %u, VBlank: %u Hz, Patch: %s\n",
                         options.config.user_name.c_str(), options.config.user_id,
                         options.config.console_language, options.config.vblank_frequency,

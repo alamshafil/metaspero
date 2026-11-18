@@ -91,6 +91,7 @@ public class KytyBridge {
     nonisolated(unsafe) public static var onCurrentMemoryStats: (() -> [String: Any])? = nil
     nonisolated(unsafe) public static var onHasTrophies: ((String) -> Bool)? = nil
     nonisolated(unsafe) public static var onGetTrophies: ((String, Bool) -> [[String: Any]])? = nil
+    nonisolated(unsafe) public static var onGetRecentLogs: (() -> [String])? = nil
     #else
     public static var customGamePaths: [String] = []
     public static var onCustomGamePathsChanged: (([String]) -> Void)? = nil
@@ -105,6 +106,7 @@ public class KytyBridge {
     public static var onCurrentMemoryStats: (() -> [String: Any])? = nil
     public static var onHasTrophies: ((String) -> Bool)? = nil
     public static var onGetTrophies: ((String, Bool) -> [[String: Any]])? = nil
+    public static var onGetRecentLogs: (() -> [String])? = nil
     #endif
 
     public static func clearInstalledDrivers() {
@@ -194,7 +196,12 @@ public class KytyBridge {
         return [:]
         #endif
     }
-    public static func getRecentLogs() -> [String] { return [] }
+    public static func getRecentLogs() -> [String] {
+        if let callback = onGetRecentLogs {
+            return callback()
+        }
+        return []
+    }
     public static func loadSavedLog() -> String { return "" }
     public static func hasTrophies(forGamePath path: String) -> Bool {
         if let callback = onHasTrophies {

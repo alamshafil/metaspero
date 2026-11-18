@@ -55,6 +55,7 @@ struct SettingsView: View {
     @AppStorage("vblankFrequency") private var vblankFrequency = 60
     @AppStorage("enableMetalHud") private var enableMetalHud = false
     @AppStorage("hudDetailLevel") private var hudDetailLevel = "Full"
+    @AppStorage("perfOverlayEnabled") private var perfOverlayEnabled = false
     
     // Controllers & Input
     @AppStorage("enableHaptics") private var enableHaptics = true
@@ -307,6 +308,12 @@ struct SettingsView: View {
                         .onChange(of: enableMetalHud) { newValue in
                             KytyBridge.setMetalHudEnabled(newValue)
                         }
+                    
+                    Divider()
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Kyty Performance Overlay", isOn: $perfOverlayEnabled)
+                    }
                     
                     Divider()
                     
@@ -779,6 +786,8 @@ struct SettingsView: View {
                     Text("120 Hz").tag(120)
                 }
                 
+                Toggle("Kyty Performance Overlay", isOn: $perfOverlayEnabled)
+                
                 #if SKIP
                 Toggle("Performance & FPS HUD", isOn: $enableMetalHud)
                 if enableMetalHud {
@@ -1023,11 +1032,17 @@ struct SettingsView: View {
                 Button(action: { showLogSheet = true }) {
                     PlatformLabel("View Recent Logs", systemImage: "terminal.fill")
                 }
-                
+
+                #if SKIP
+                Text("Logs are streamed in memory for the current session and are not written to disk.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                #else
                 Toggle("Write Logs to Disk", isOn: $enableLogFileWriting)
                     .onChange(of: enableLogFileWriting) { enabled in
                         KytyBridge.setLogFileWritingEnabled(enabled)
                     }
+                #endif
                 
                 Toggle("Memory Warning Toast", isOn: $enableMemoryWarningToast)
             }
