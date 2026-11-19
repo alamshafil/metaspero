@@ -198,6 +198,23 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::BufferDownloadBytes, total_size);
 
+	if constexpr (!async) {
+		if (buffer.Usage() == MemoryUsage::Stream && !buffer.Mapped().empty()) {
+			const auto wait_tick = buffer.last_gpu_write_tick;
+			if (wait_tick != 0 && !m_scheduler.IsFree(wait_tick)) {
+				m_scheduler.Wait(wait_tick);
+				m_scheduler.WaitPriorityOperations(wait_tick);
+			}
+			const auto* mapped = buffer.Mapped().data();
+			for (const auto& copy: copies) {
+				buffer.Invalidate(copy.srcOffset, copy.size);
+				Libs::LibKernel::Memory::WriteBacking(buffer_address + copy.srcOffset,
+				                                      mapped + copy.srcOffset, copy.size);
+			}
+			return true;
+		}
+	}
+
 	auto download = m_download_buffer.MapDownload(total_size, 64);
 	for (auto& copy: copies) {
 		copy.dstOffset += download.offset;
@@ -319,7 +336,8 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		if (!is_write && !IsRegionGpuModified(vaddr, size)) {
 			return;
 		}
-		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
+		const auto id = FindBuffer(vaddr, size);
+		auto&      buffer = m_slot_buffers[id];
 		if (IsRegionGpuModified(vaddr, size)) {
 			const auto start =
 			    std::max(Common::AlignDown(vaddr, DownloadWindowSize), buffer.CpuAddress());
@@ -327,6 +345,27 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 			                          buffer.CpuAddress() + buffer.Size());
 			if (DownloadBufferMemory<false>(buffer, start, end - start)) {
 				m_memory_tracker.UnmarkRegionAsGpuModified(start, end - start);
+				++buffer.fault_readback_count;
+				if (m_graphics.is_moltenvk && buffer.Usage() == MemoryUsage::DeviceLocal &&
+				    buffer.fault_readback_count >= 2u &&
+				    buffer.Size() <= 4ull * 1024ull * 1024ull) {
+					const auto old_addr       = buffer.CpuAddress();
+					const auto old_size       = buffer.Size();
+					const auto readback_count = buffer.fault_readback_count;
+					const auto new_id         = m_slot_buffers.insert(
+					    m_graphics, m_scheduler, MemoryUsage::Stream, old_addr,
+					    AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress, old_size);
+					auto& old_buffer = m_slot_buffers[id];
+					auto& new_buffer = m_slot_buffers[new_id];
+					SetVulkanObjectNameF(m_graphics.device, new_buffer.Handle(),
+					                     "Kyty.GameBufferStream[guest=0x{:016x} size=0x{:x}]",
+					                     old_addr, old_size);
+					new_buffer.fault_readback_count = readback_count;
+					new_buffer.CopyFrom(m_scheduler.Current(), old_buffer, 0, 0, old_size);
+					new_buffer.last_gpu_write_tick  = m_scheduler.CurrentTick();
+					DeleteBuffer(id);
+					Register(new_id);
+				}
 			}
 		}
 		if (is_write) {
@@ -412,8 +451,11 @@ void BufferCache::JoinOverlap(BufferId new_id, BufferId overlap_id, bool accumul
 	if (accumulate_stream_score) {
 		new_buffer.IncreaseStreamScore(overlap.StreamScore() + 1);
 	}
+	new_buffer.fault_readback_count =
+	    std::max(new_buffer.fault_readback_count, overlap.fault_readback_count);
 	new_buffer.CopyFrom(m_scheduler.Current(), overlap, 0,
 	                    overlap.CpuAddress() - new_buffer.CpuAddress(), overlap.Size());
+	new_buffer.last_gpu_write_tick = m_scheduler.CurrentTick();
 	DeleteBuffer(overlap_id);
 }
 
@@ -422,10 +464,20 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 	vaddr = Common::AlignDown(vaddr, CACHING_PAGESIZE);
 	size               = end - vaddr;
 	const auto overlap = ResolveOverlaps(vaddr, size);
+	const uint64_t new_size = overlap.end - overlap.begin;
+	MemoryUsage    usage    = MemoryUsage::DeviceLocal;
+	if (m_graphics.is_moltenvk && new_size <= 4ull * 1024ull * 1024ull) {
+		for (auto it = overlap.first; it != overlap.last; ++it) {
+			if (m_slot_buffers[it->second].Usage() == MemoryUsage::Stream) {
+				usage = MemoryUsage::Stream;
+				break;
+			}
+		}
+	}
 
 	const auto id = m_slot_buffers.insert(
-	    m_graphics, m_scheduler, MemoryUsage::DeviceLocal, overlap.begin,
-	    AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress, overlap.end - overlap.begin);
+	    m_graphics, m_scheduler, usage, overlap.begin,
+	    AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress, new_size);
 	const auto& buffer = m_slot_buffers[id];
 	SetVulkanObjectNameF(m_graphics.device, buffer.Handle(),
 	                     "Kyty.GameBuffer[guest=0x{:016x} size=0x{:x}]", overlap.begin,
@@ -484,11 +536,17 @@ void BufferCache::UploadCopies(std::span<const BufferUpload> uploads,
 	auto& command = m_scheduler.Current();
 	command.EndRendering();
 	const auto              native = command.Handle();
+	const vk::PipelineStageFlags buffer_stages =
+	    vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexInput |
+	    vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader |
+	    vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer |
+	    (m_graphics.mesh_shader_enabled ? vk::PipelineStageFlagBits::eMeshShaderEXT
+	                                    : vk::PipelineStageFlags {});
 	const vk::MemoryBarrier before {
 	    .srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite |
 		                 vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite,
 	    .dstAccessMask = vk::AccessFlagBits::eTransferWrite};
-	native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+	native.pipelineBarrier(buffer_stages,
 	                       vk::PipelineStageFlagBits::eTransfer, {},
 	                       1, &before, 0, nullptr, 0, nullptr);
 	size_t first = 0;
@@ -501,7 +559,7 @@ void BufferCache::UploadCopies(std::span<const BufferUpload> uploads,
 	                               .dstAccessMask = vk::AccessFlagBits::eMemoryRead |
 	                                                vk::AccessFlagBits::eMemoryWrite};
 	native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-	                       vk::PipelineStageFlagBits::eAllCommands,
+	                       buffer_stages,
 	                       {}, 1, &after, 0, nullptr, 0, nullptr);
 }
 
@@ -510,8 +568,13 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
                                                        BufferId id) {
 	EXIT_IF(!(GuestRange {vaddr, size}.Valid()));
 
-	if (!is_written && size <= CACHING_PAGESIZE &&
-	    !m_memory_tracker.IsRegionGpuModified(vaddr, size)) {
+	const uint64_t inline_limit =
+	    m_graphics.is_moltenvk ? 64ull * 1024ull : static_cast<uint64_t>(CACHING_PAGESIZE);
+	const bool allow_inline_stream =
+	    !is_written && size <= inline_limit && !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
+	    (size <= CACHING_PAGESIZE ||
+	     (IsBufferInvalid(id) && m_page_table.Find(vaddr >> PageTable::kPageBits) == nullptr));
+	if (allow_inline_stream) {
 		const auto alignment = std::max<uint64_t>({
 		    m_graphics.StorageMinAlignment(),
 		    m_graphics.physical_device_properties.limits.minUniformBufferOffsetAlignment,
@@ -533,6 +596,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	TouchBuffer(buffer);
 	(void)SynchronizeBuffer(buffer, vaddr, size, is_written, is_texel_buffer);
 	if (is_written) {
+		buffer.last_gpu_write_tick = m_scheduler.CurrentTick();
 		m_gpu_modified_ranges.Add(vaddr, size);
 		ForgetColorMetadataChecks(vaddr, size);
 	}

@@ -62,6 +62,7 @@ bool GraphicContext::CreateAllocator() {
 }
 
 void GraphicContext::DestroyAllocator() {
+	DrainDeferredDestructions();
 	if (allocator == nullptr) {
 		return;
 	}
@@ -219,6 +220,70 @@ void GraphicContext::DeleteImage(VulkanImage& image) {
 	vmaDestroyImage(allocator, image.image, image.allocation);
 	image.image      = nullptr;
 	image.allocation = nullptr;
+}
+
+void GraphicContext::DeferDestroyImage(std::vector<vk::ImageView> views, vk::Image image,
+                                       VmaAllocation allocation) {
+	if (views.empty() && image == nullptr) {
+		return;
+	}
+	{
+		std::lock_guard lock(m_destroy_mutex);
+		if (m_destroy_shutdown || allocator == nullptr || device == nullptr) {
+			for (const auto view: views) {
+				if (device != nullptr) {
+					device.destroyImageView(view, nullptr);
+				}
+			}
+			if (image != nullptr && allocation != nullptr && allocator != nullptr) {
+				vmaDestroyImage(allocator, image, allocation);
+			}
+			return;
+		}
+		if (!m_destroy_thread.joinable()) {
+			m_destroy_thread = std::thread([this]() {
+				std::vector<PendingImageDestroy> batch;
+				for (;;) {
+					{
+						std::unique_lock lock(m_destroy_mutex);
+						m_destroy_cv.wait(lock, [this]() {
+							return m_destroy_shutdown || !m_pending_destroys.empty();
+						});
+						if (m_pending_destroys.empty() && m_destroy_shutdown) {
+							break;
+						}
+						batch.swap(m_pending_destroys);
+					}
+					for (const auto& item: batch) {
+						for (const auto view: item.views) {
+							device.destroyImageView(view, nullptr);
+						}
+						if (item.image != nullptr && item.allocation != nullptr) {
+							vmaDestroyImage(allocator, item.image, item.allocation);
+						}
+					}
+					batch.clear();
+				}
+			});
+		}
+		m_pending_destroys.push_back({std::move(views), image, allocation});
+	}
+	m_destroy_cv.notify_one();
+}
+
+void GraphicContext::DrainDeferredDestructions() {
+	{
+		std::lock_guard lock(m_destroy_mutex);
+		m_destroy_shutdown = true;
+	}
+	m_destroy_cv.notify_all();
+	if (m_destroy_thread.joinable()) {
+		m_destroy_thread.join();
+	}
+	{
+		std::lock_guard lock(m_destroy_mutex);
+		m_destroy_shutdown = false;
+	}
 }
 
 } // namespace Libs::Graphics

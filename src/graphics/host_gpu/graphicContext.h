@@ -6,9 +6,11 @@
 #include "common/threads.h"
 #include "graphics/host_gpu/vulkanCommon.h" // IWYU pragma: export
 
+#include <condition_variable>
 #include <map>
 #include <mutex>
 #include <span>
+#include <thread>
 #include <tuple>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -44,6 +46,7 @@ struct GraphicContext {
 	bool                               robust_buffer_access_enabled          = false;
 	bool                               r8_srgb_views                         = false;
 	bool                               r8g8_srgb_views                       = false;
+	bool                               float32_denorm_flush_to_zero          = false;
 	bool                               conditional_rendering_enabled         = false;
 	bool                               sampler_filter_minmax_enabled         = false;
 	bool                               occlusion_queries_enabled             = false;
@@ -142,11 +145,25 @@ struct GraphicContext {
 	[[nodiscard]] uint32_t GetHeapUsage(std::span<HeapUsage, VK_MAX_MEMORY_HEAPS> heaps) const;
 	[[nodiscard]] bool     CreateImage(const vk::ImageCreateInfo& info, VulkanImage& image);
 	void                   DeleteImage(VulkanImage& image);
+	void                   DeferDestroyImage(std::vector<vk::ImageView> views, vk::Image image,
+	                                         VmaAllocation allocation);
+	void                   DrainDeferredDestructions();
 
 	uint32_t screen_width  = 0;
 	uint32_t screen_height = 0;
 
 private:
+	struct PendingImageDestroy {
+		std::vector<vk::ImageView> views;
+		vk::Image                  image      = nullptr;
+		VmaAllocation              allocation = nullptr;
+	};
+	std::mutex                       m_destroy_mutex;
+	std::condition_variable          m_destroy_cv;
+	std::vector<PendingImageDestroy> m_pending_destroys;
+	std::thread                      m_destroy_thread;
+	bool                             m_destroy_shutdown = false;
+
 	mutable std::mutex                                 m_format_properties_mutex;
 	mutable std::map<vk::Format, vk::FormatProperties> m_format_properties;
 	mutable std::mutex                                 m_image_format_properties_mutex;

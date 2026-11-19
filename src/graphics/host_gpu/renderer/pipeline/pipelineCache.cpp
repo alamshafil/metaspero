@@ -245,6 +245,7 @@ ShaderRecompiler::Spirv::Profile SpirvProfile(const GraphicContext& graphics) {
 	        .r8_srgb_views          = graphics.r8_srgb_views,
 	        .r8g8_srgb_views        = graphics.r8g8_srgb_views,
 	        .relaxed_float          = Config::RelaxedShaderFloatEnabled(),
+	        .float32_denorm_ftz     = graphics.float32_denorm_flush_to_zero,
 	        .fragment_barycentric   = graphics.fragment_shader_barycentric_enabled};
 }
 

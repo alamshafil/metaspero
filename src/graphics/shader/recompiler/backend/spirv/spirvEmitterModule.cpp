@@ -849,6 +849,10 @@ void DefineModule(EmitterState& state) {
 	// contract prevents host compilers from treating synthesized IEEE values as finite.
 	state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeSignedZeroInfNanPreserve,
 	                               32u);
+	if (state.profile.float32_denorm_ftz) {
+		state.builder.RequireCapability(spv::CapabilityDenormFlushToZero);
+		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeDenormFlushToZero, 32u);
+	}
 	if (state.program.info.float64) {
 		EXIT_NOT_IMPLEMENTED(state.program.stage == ShaderType::Compute &&
 		                     state.input_info.compute->float_mode != 0xc0);

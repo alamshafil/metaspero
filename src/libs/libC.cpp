@@ -124,18 +124,19 @@ static void PrintAbortStringCandidate(const char* name, uint64_t addr) {
 }
 
 static void PrintAbortWideStringCandidate(const char* name, uint64_t addr) {
-	if (!Graphics::HostMemoryIsReadable(addr)) {
+	if ((addr & 1u) != 0 || !Graphics::HostMemoryIsReadable(addr)) {
 		return;
 	}
 
-	const auto* ptr = reinterpret_cast<const uint16_t*>(static_cast<uintptr_t>(addr));
+	const auto* ptr = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(addr));
 	char        buf[257] {};
 	size_t      len = 0;
 
 	for (;
 	     len < sizeof(buf) - 1 && Graphics::HostMemoryIsReadable(addr + len * sizeof(uint16_t) + 1);
 	     len++) {
-		const auto c = ptr[len];
+		uint16_t c = 0;
+		std::memcpy(&c, ptr + len * sizeof(uint16_t), sizeof(c));
 		if (c == 0) {
 			break;
 		}

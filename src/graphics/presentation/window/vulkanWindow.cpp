@@ -600,11 +600,18 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	                                            feedback_dynamic.attachmentFeedbackLoopDynamicState;
 	graphics.maintenance8_enabled             = maintenance8.maintenance8;
 	// A coarser alignment rounds the range up past the guest's last byte.
+	// MoltenVK enables Vulkan 1.0 robustBufferAccess with 1-byte storage alignment.
 	graphics.robust_buffer_access_enabled =
-	    robustness2.robustBufferAccess2 &&
+	    (robustness2.robustBufferAccess2 || graphics.is_moltenvk) &&
 	    robustness2_props.robustStorageBufferAccessSizeAlignment == 1u;
+	graphics.float32_denorm_flush_to_zero =
+	    float_controls.shaderDenormFlushToZeroFloat32 == VK_TRUE;
 	graphics.r8_srgb_views   = graphics.SamplesFiltered(vk::Format::eR8Srgb);
 	graphics.r8g8_srgb_views = graphics.SamplesFiltered(vk::Format::eR8G8Srgb);
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "Vulkan float/robust: ftz32={} robust2={} storageAlign={}\n",
+	    graphics.float32_denorm_flush_to_zero, graphics.robust_buffer_access_enabled,
+	    static_cast<uint64_t>(robustness2_props.robustStorageBufferAccessSizeAlignment)));
 	// The device clock ticks at timestampPeriod nanoseconds.
 	if (shader_clock.shaderDeviceClock) {
 		graphics.device_clock_period_ps = static_cast<uint32_t>(

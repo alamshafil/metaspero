@@ -158,7 +158,7 @@ uint32_t EmitFPMedTri32(EmitterState& state, uint32_t a, uint32_t b, uint32_t c)
 }
 
 uint32_t EmitFlushF32DenormToSignedZero(EmitterState& state, uint32_t value) {
-	if (state.profile.relaxed_float) {
+	if (state.profile.relaxed_float || state.profile.float32_denorm_ftz) {
 		return value;
 	}
 	// x * 0 keeps the sign of a denormal; NaN and infinity fail the ordered compare.

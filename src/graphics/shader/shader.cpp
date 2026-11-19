@@ -15,6 +15,7 @@
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/shaderCompiler.h"
 #include "graphics/shader/shaderVertexMetadata.h"
+#include "kernel/memory.h"
 #include "libs/errno.h"
 
 #include <algorithm>
@@ -180,20 +181,31 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 		uint32_t reg  = in.hardware_mapping;
 		uint32_t size = in.size_in_elements;
 
-		if (debug_dump) {
-			LOGF("reg = %u, size = %u, va[%u] = 0x%08" PRIx32 "\n", reg, size, i,
-			     attrib[in.semantic]);
+		uint32_t attrib_word = 0;
+		const auto attrib_word_addr =
+		    reinterpret_cast<uint64_t>(&attrib[in.semantic]);
+		if (!LibKernel::Memory::TryReadBufferBacking(attrib_word_addr, &attrib_word,
+		                                             sizeof(attrib_word))) {
+			attrib_word = attrib[in.semantic];
 		}
 
-		size_t index = attrib[in.semantic] & 0x1fu;
+		if (debug_dump) {
+			LOGF("reg = %u, size = %u, va[%u] = 0x%08" PRIx32 "\n", reg, size, i, attrib_word);
+		}
+
+		size_t index = attrib_word & 0x1fu;
 		auto   format =
-		    static_cast<Prospero::VertexAttribFormat>((attrib[in.semantic] >> 5u) & 0x1ffu);
-		uint32_t offset      = (attrib[in.semantic] >> 14u) & 0xfffu;
-		uint32_t fetch_index = (attrib[in.semantic] >> 26u) & 0x1u;
+		    static_cast<Prospero::VertexAttribFormat>((attrib_word >> 5u) & 0x1ffu);
+		uint32_t offset      = (attrib_word >> 14u) & 0xfffu;
+		uint32_t fetch_index = (attrib_word >> 26u) & 0x1u;
 
 		EXIT_NOT_IMPLEMENTED(index >= ShaderVertexInputInfo::RES_MAX);
 
-		const auto* sharp = &buffer[index * 4];
+		uint32_t sharp[4] {};
+		const auto sharp_addr = reinterpret_cast<uint64_t>(&buffer[index * 4]);
+		if (!LibKernel::Memory::TryReadBufferBacking(sharp_addr, sharp, sizeof(sharp))) {
+			std::memcpy(sharp, &buffer[index * 4], sizeof(sharp));
+		}
 
 		EXIT_NOT_IMPLEMENTED(info.resources_num >= ShaderVertexInputInfo::RES_MAX);
 

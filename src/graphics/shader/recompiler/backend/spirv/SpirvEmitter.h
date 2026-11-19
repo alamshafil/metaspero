@@ -22,6 +22,8 @@ struct Profile {
 	bool r8g8_srgb_views = false;
 	// Native float ops: NaN, signed-zero and denormal results may differ from the guest.
 	bool relaxed_float = false;
+	// Hardware flushes FP32 denorms to zero (SPV_KHR_float_controls DenormFlushToZero).
+	bool float32_denorm_ftz = false;
 	// Fragment shader barycentrics (VK_KHR_fragment_shader_barycentric)
 	bool fragment_barycentric = true;
 };

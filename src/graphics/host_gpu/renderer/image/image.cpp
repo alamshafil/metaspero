@@ -14,6 +14,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <utility>
 #include <fmt/format.h>
 #include <xxhash.h>
 
@@ -235,14 +236,26 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout                      destinat
 
 void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destination_access,
                     std::optional<ImageSubresourceRange> range, vk::CommandBuffer command_buffer) {
-	const auto transfer_access =
+	constexpr auto transfer_access =
 	    vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite;
+	constexpr auto color_access =
+	    vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite;
+	constexpr auto depth_access = vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+	                              vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+	constexpr auto known_non_shader = transfer_access | color_access | depth_access;
 	vk::PipelineStageFlags2 destination_stage {};
 	if (static_cast<bool>(destination_access & transfer_access)) {
 		destination_stage |= vk::PipelineStageFlagBits2::eTransfer;
 	}
+	if (static_cast<bool>(destination_access & color_access)) {
+		destination_stage |= vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+	}
+	if (static_cast<bool>(destination_access & depth_access)) {
+		destination_stage |= vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+		                     vk::PipelineStageFlagBits2::eLateFragmentTests;
+	}
 	if (!destination_access ||
-	    static_cast<bool>(destination_access & ~vk::AccessFlags2 {transfer_access})) {
+	    static_cast<bool>(destination_access & ~vk::AccessFlags2 {known_non_shader})) {
 		destination_stage |=
 		    vk::PipelineStageFlagBits2::eAllGraphics | vk::PipelineStageFlagBits2::eComputeShader;
 	}
@@ -793,12 +806,17 @@ uint64_t Image::HashGuestEdges() const {
 
 Image::~Image() {
 	KYTY_PROFILER_FUNCTION();
+	if (views.empty() && backing.image == nullptr) {
+		return;
+	}
+	std::vector<vk::ImageView> raw_views;
+	raw_views.reserve(views.size());
 	for (const auto& cached: views) {
-		m_graphics.device.destroyImageView(cached.view, nullptr);
+		raw_views.push_back(cached.view);
 	}
-	if (backing.image != nullptr) {
-		m_graphics.DeleteImage(backing);
-	}
+	const auto img   = std::exchange(backing.image, nullptr);
+	const auto alloc = std::exchange(backing.allocation, nullptr);
+	m_graphics.DeferDestroyImage(std::move(raw_views), img, alloc);
 }
 
 } // namespace Libs::Graphics
