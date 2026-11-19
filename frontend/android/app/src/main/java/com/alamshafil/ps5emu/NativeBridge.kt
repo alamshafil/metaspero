@@ -68,7 +68,9 @@ object NativeBridge {
         presentMode: String,
         skipMeshShaders: Boolean,
         srtArm64Jit: Boolean,
-        perfOverlay: Boolean
+        perfOverlay: Boolean,
+        renderScalePercent: Int,
+        relaxedShaderFloat: Boolean
     ): Boolean
 
     @JvmStatic

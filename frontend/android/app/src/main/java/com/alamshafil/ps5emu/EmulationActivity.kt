@@ -53,6 +53,8 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     private var skipMeshShaders: Boolean = false
     private var enableSrtArm64Jit: Boolean = false
     private var perfOverlayEnabled: Boolean = false
+    private var renderScalePercent: Int = 100
+    private var relaxedShaderFloat: Boolean = false
     private var enableTouchControls: Boolean = false
     private var isStopping: Boolean = false
     private var lastVisibleStatsMode: Int = 0
@@ -125,6 +127,8 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         skipMeshShaders = prefs.getBoolean("skipMeshShaders", false)
         enableSrtArm64Jit = prefs.getBoolean("enableSrtArm64Jit", false)
         perfOverlayEnabled = prefs.getBoolean("perfOverlayEnabled", false)
+        renderScalePercent = prefs.getInt("renderScalePercent", 100).coerceIn(25, 100)
+        relaxedShaderFloat = prefs.getBoolean("relaxedShaderFloat", false)
 
         // Virtual On-Screen Gamepad
         virtualGamepad = VirtualGamepad(this).apply {
@@ -644,7 +648,10 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     override fun surfaceCreated(holder: SurfaceHolder) {
         NativeBridge.nativeSetSurface(holder.surface)
         if (gamePath.isNotEmpty()) {
-            NativeBridge.nativeStartGame(gamePath, resolution, presentMode, skipMeshShaders, enableSrtArm64Jit, perfOverlayEnabled)
+            NativeBridge.nativeStartGame(
+                gamePath, resolution, presentMode, skipMeshShaders,
+                enableSrtArm64Jit, perfOverlayEnabled, renderScalePercent, relaxedShaderFloat
+            )
         }
     }
 

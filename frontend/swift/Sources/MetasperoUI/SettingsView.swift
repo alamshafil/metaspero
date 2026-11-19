@@ -3,6 +3,9 @@ import SwiftUI
 #if os(iOS) && !SKIP
 import UIKit
 #endif
+#if os(macOS) && !SKIP
+import AppKit
+#endif
 #if !SKIP
 import UniformTypeIdentifiers
 #endif
@@ -51,6 +54,9 @@ struct SettingsView: View {
     
     // Graphics
     @AppStorage("resolutionScale") private var resolutionScale = "720p"
+    @AppStorage("renderScalePercent") private var renderScalePercent = 100
+    @AppStorage("relaxedShaderFloat") private var relaxedShaderFloat = false
+    @AppStorage("shaderCacheEnabled") private var shaderCacheEnabled = true
     @AppStorage("presentMode") private var presentMode = "Mailbox"
     @AppStorage("vblankFrequency") private var vblankFrequency = 60
     @AppStorage("enableMetalHud") private var enableMetalHud = false
@@ -88,6 +94,8 @@ struct SettingsView: View {
     @State private var scanPaths: [String] = []
     @State private var controllers: [ControllerInfo] = []
     @State private var selectedTab: SettingsTab = .library
+    @State private var shaderCacheSizeText: String = "0 KB (0 files)"
+    @State private var shaderCachePathText: String = ""
     
     enum SettingsTab: String, CaseIterable, Identifiable {
         case library = "Library"
@@ -193,6 +201,7 @@ struct SettingsView: View {
         .onAppear {
             loadScanPaths()
             refreshControllers()
+            refreshShaderCacheInfo()
             enableLogFileWriting = KytyBridge.isLogFileWritingEnabled()
         }
     }
@@ -277,6 +286,66 @@ struct SettingsView: View {
                     Divider()
                     
                     HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("4K Render Scale")
+                            Text("Downscale 4K render targets & compute passes (faster on Apple Silicon)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Picker("4K Render Scale", selection: $renderScalePercent) {
+                            Text("100% (Native)").tag(100)
+                            Text("75%").tag(75)
+                            Text("50% (1080p)").tag(50)
+                            Text("33% (720p)").tag(33)
+                            Text("25% (540p)").tag(25)
+                            Text("22% (480p)").tag(22)
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                    
+                    Divider()
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Relaxed Shader Float", isOn: $relaxedShaderFloat)
+                        Text("Use native GPU float ops in shaders; faster, minor precision differences")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Divider()
+                    
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle("Persistent Shader & Pipeline Cache", isOn: $shaderCacheEnabled)
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Cache Size: \(shaderCacheSizeText)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                if !shaderCachePathText.isEmpty {
+                                    Text(shaderCachePathText)
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
+                            Spacer()
+                            Button("Show in Finder") {
+                                openShaderCacheFolder()
+                            }
+                            .controlSize(.small)
+                            Button("Clear Cache", role: .destructive) {
+                                clearShaderCache()
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    HStack {
                         Text("V-Sync / Present Mode")
                         Spacer()
                         Picker("V-Sync / Present Mode", selection: $presentMode) {
@@ -352,6 +421,10 @@ struct SettingsView: View {
                     Divider()
                     
                     Toggle("On-Screen Controls Overlay", isOn: $enableTouchOverlay)
+                    
+                    Divider()
+                    
+                    Toggle("Controller Vibration / Haptics", isOn: $enableHaptics)
                     
                     Divider()
                     
@@ -774,6 +847,34 @@ struct SettingsView: View {
                     Text("1080p").tag("1080p")
                 }
                 
+                Picker("4K Render Scale", selection: $renderScalePercent) {
+                    Text("100% (Native)").tag(100)
+                    Text("75%").tag(75)
+                    Text("50% (1080p)").tag(50)
+                    Text("33% (720p)").tag(33)
+                    Text("25% (540p)").tag(25)
+                    Text("22% (480p)").tag(22)
+                }
+                
+                Toggle("Relaxed Shader Float", isOn: $relaxedShaderFloat)
+                
+                Toggle("Persistent Shader & Pipeline Cache", isOn: $shaderCacheEnabled)
+                
+                #if !SKIP
+                HStack {
+                    Text("Shader Cache Size")
+                    Spacer()
+                    Text(shaderCacheSizeText)
+                        .foregroundColor(.secondary)
+                }
+                
+                Button(role: .destructive) {
+                    clearShaderCache()
+                } label: {
+                    Text("Clear Shader Cache")
+                }
+                #endif
+                
                 Picker("Present Mode", selection: $presentMode) {
                     Text("Mailbox").tag("Mailbox")
                     Text("Fifo").tag("Fifo")
@@ -828,6 +929,9 @@ struct SettingsView: View {
         #endif
         .onChange(of: enableMetalHud) { newValue in
             KytyBridge.setMetalHudEnabled(newValue)
+        }
+        .onAppear {
+            refreshShaderCacheInfo()
         }
         .navigationTitle("Graphics")
         .navigationBarTitleDisplayMode(.inline)
@@ -1137,6 +1241,69 @@ struct SettingsView: View {
             list.append(ControllerInfo(id: i, name: name, type: type, source: source))
         }
         self.controllers = list
+    }
+
+    #if !SKIP
+    private func shaderCacheDirectoryURL() -> URL? {
+        #if os(macOS)
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return appSupport.appendingPathComponent("Metaspero/_PipelineCache", isDirectory: true)
+        #else
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return docs.appendingPathComponent("_PipelineCache", isDirectory: true)
+        #endif
+    }
+    #endif
+
+    private func refreshShaderCacheInfo() {
+        #if !SKIP
+        guard let cacheURL = shaderCacheDirectoryURL() else {
+            shaderCacheSizeText = "Unavailable"
+            return
+        }
+        shaderCachePathText = cacheURL.path
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(at: cacheURL, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey], options: [.skipsHiddenFiles]) else {
+            shaderCacheSizeText = "0 KB (0 files)"
+            return
+        }
+        var totalBytes: Int64 = 0
+        var fileCount = 0
+        for item in items {
+            if let values = try? item.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+               values.isRegularFile == true {
+                totalBytes += Int64(values.fileSize ?? 0)
+                fileCount += 1
+            }
+        }
+        let formatted = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        shaderCacheSizeText = "\(formatted) (\(fileCount) file\(fileCount == 1 ? "" : "s"))"
+        #endif
+    }
+
+    private func openShaderCacheFolder() {
+        #if os(macOS) && !SKIP
+        guard let cacheURL = shaderCacheDirectoryURL() else { return }
+        try? FileManager.default.createDirectory(at: cacheURL, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(cacheURL)
+        #endif
+    }
+
+    private func clearShaderCache() {
+        #if !SKIP
+        guard let cacheURL = shaderCacheDirectoryURL() else { return }
+        let fm = FileManager.default
+        if let items = try? fm.contentsOfDirectory(at: cacheURL, includingPropertiesForKeys: nil) {
+            for item in items {
+                try? fm.removeItem(at: item)
+            }
+        }
+        refreshShaderCacheInfo()
+        #endif
     }
 }
 

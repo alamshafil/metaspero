@@ -294,7 +294,8 @@ JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeSurfaceChan
 
 JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGame(
     JNIEnv* env, jclass, jstring j_game_path, jstring j_res, jstring j_present,
-    jboolean j_skip_mesh_shaders, jboolean j_srt_arm64_jit, jboolean j_perf_overlay) {
+    jboolean j_skip_mesh_shaders, jboolean j_srt_arm64_jit, jboolean j_perf_overlay,
+    jint j_render_scale_percent, jboolean j_relaxed_shader_float) {
     std::lock_guard<std::mutex> lifecycle_lock(g_lifecycle_mutex);
 
     if (g_is_running.load() && !g_is_stopping.load()) {
@@ -348,12 +349,20 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
     }
 
     const bool perf_overlay = (j_perf_overlay == JNI_TRUE);
-    LOGI("Performance: Kyty stats overlay %s", perf_overlay ? "ENABLED" : "disabled");
+    const uint32_t render_scale =
+        (j_render_scale_percent >= 25 && j_render_scale_percent <= 100)
+            ? static_cast<uint32_t>(j_render_scale_percent)
+            : 100u;
+    const bool relaxed_shader_float = (j_relaxed_shader_float == JNI_TRUE);
+    LOGI("Performance: Kyty stats overlay %s, renderScale=%u%%, relaxedFloat=%s",
+         perf_overlay ? "ENABLED" : "disabled", render_scale,
+         relaxed_shader_float ? "ENABLED" : "disabled");
 
     g_is_running.store(true);
     g_is_stopping.store(false);
 
-    g_emulator_thread = std::thread([game_path, resolution, present_mode, perf_overlay]() {
+    g_emulator_thread = std::thread([game_path, resolution, present_mode, perf_overlay,
+                                     render_scale, relaxed_shader_float]() {
         std::unique_lock<std::timed_mutex> session_lock(g_session_mutex, std::chrono::seconds(10));
         if (!session_lock.owns_lock()) {
             LOGE("Failed to acquire session lock within 10s");
@@ -411,6 +420,8 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
         options.config.vblank_frequency = 60;
 
         options.config.perf_overlay_enabled = perf_overlay;
+        options.config.resolution_scale     = render_scale;
+        options.config.relaxed_shader_float = relaxed_shader_float;
 
         LOGI("Starting Emulator::Run for %s", game_path.c_str());
         Emulator::Run(options);

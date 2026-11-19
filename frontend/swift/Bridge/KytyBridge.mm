@@ -713,6 +713,14 @@ static void KytyFatalExitCallback(int status, const char *message) {
             options.config.vblank_frequency = (uint32_t)vblankFreq;
 
             options.config.tessellation_enabled = getBoolSetting(@"tessellationEnabled", false);
+            options.config.controller_vibration_intensity = getBoolSetting(@"enableHaptics", true) ? 100u : 0u;
+            options.config.relaxed_shader_float = getBoolSetting(@"relaxedShaderFloat", false);
+            options.config.shader_cache_enabled = getBoolSetting(@"shaderCacheEnabled", true);
+            NSInteger renderScale = getIntSetting(@"renderScalePercent", 100);
+            if (renderScale < 20 || renderScale > 100) {
+                renderScale = 100;
+            }
+            options.config.resolution_scale = (uint32_t)renderScale;
             options.config.readback_linear_images = getBoolSetting(@"readbackLinearImages", false);
             options.config.sync_raw_image_buffers = getBoolSetting(@"syncRawImageBuffers", false);
             options.config.hdr_enabled = getBoolSetting(@"hdrEnabled", false);
@@ -749,6 +757,8 @@ static void KytyFatalExitCallback(int status, const char *message) {
             // MoltenVK Metal optimizations for macOS
             setenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS", "0", 1);
             setenv("MVK_CONFIG_SHADER_COMPRESSION_ALGORITHM", "1", 1);
+            // Offload MVKCommandEncoder::encode from GuestGpu::ThreadRun onto MoltenVK's async queue
+            setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0", 0);
 #endif
             
             std::printf("[KytyBridge] Configured app0_dir: %s, elf: %s\n",
