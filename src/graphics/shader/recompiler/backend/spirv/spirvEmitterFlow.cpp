@@ -25,8 +25,9 @@ uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t c
 	if (kind == IR::StageInputKind::LocalInvocationIndex) {
 		return EmitLocalInvocationIndex(state);
 	}
-	if (state.lane_count == 2 && (kind == IR::StageInputKind::LocalInvocationId ||
-	                              kind == IR::StageInputKind::GlobalInvocationId)) {
+	if (state.lane_count == 2 &&
+	    (kind == IR::StageInputKind::LocalInvocationId ||
+	     kind == IR::StageInputKind::GlobalInvocationId)) {
 		const auto* cs      = ShaderWorkgroupInput(state.program.stage, state.input_info);
 		uint32_t    divisor = 1;
 		for (uint32_t axis = 0; axis < component; axis++) {
@@ -73,12 +74,24 @@ uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t c
 	}
 	if (kind == IR::StageInputKind::FragCoord || kind == IR::StageInputKind::TessCoord) {
 		const auto pointer = state.builder.AllocateId();
-		const auto value   = state.builder.AllocateId();
+		auto       value   = state.builder.AllocateId();
 		const auto bits    = state.builder.AllocateId();
 		state.builder.AddFunction(spv::OpAccessChain,
 		                          TypePointer(state, spv::StorageClassInput, TypeF32(state)),
 		                          pointer, variable, ConstantU32(state, component));
 		state.builder.AddFunction(spv::OpLoad, TypeF32(state), value, pointer);
+		if (kind == IR::StageInputKind::FragCoord && component < 2u &&
+		    state.program.stage == ShaderType::Pixel && state.input_info.pixel != nullptr &&
+		    state.input_info.pixel->scaled_render_target) {
+			if (const uint32_t scale = state.profile.resolution_scale_percent;
+			    scale >= 20u && scale < 100u) {
+				const float inv_scale = 100.0f / static_cast<float>(scale);
+				const auto  scaled    = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpFMul, TypeF32(state), scaled, value,
+				                          ConstantF32(state, std::bit_cast<uint32_t>(inv_scale)));
+				value = scaled;
+			}
+		}
 		state.builder.AddFunction(spv::OpBitcast, TypeU32(state), bits, value);
 		return bits;
 	}
@@ -86,6 +99,7 @@ uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t c
 	    kind == IR::StageInputKind::BaryCoordNoPerspective) {
 		const auto value   = state.builder.AllocateId();
 		const auto bits    = state.builder.AllocateId();
+#if !defined(__APPLE__)
 		if (centroid || sample) {
 			const auto coordinates = state.builder.AllocateId();
 			state.builder.RequireCapability(spv::CapabilityInterpolationFunction);
@@ -102,7 +116,9 @@ uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t c
 			}
 			state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), value,
 			                          coordinates, component + 1u);
-		} else {
+		} else
+#endif
+		{
 			const auto pointer = state.builder.AllocateId();
 			state.builder.AddFunction(spv::OpAccessChain,
 			                          TypePointer(state, spv::StorageClassInput, TypeF32(state)),

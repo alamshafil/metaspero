@@ -1,12 +1,17 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_RENDERTARGET_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_RENDERTARGET_H_
 
+#include "common/emulatorConfig.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <array>
 #include <cstdint>
 
 namespace Libs::Graphics {
+
+[[nodiscard]] inline uint32_t ResolutionScalePercent() noexcept {
+	return Config::GetResolutionScale();
+}
 
 static constexpr uint32_t RENDER_COLOR_ATTACHMENTS_MAX = 8;
 
@@ -29,6 +34,8 @@ struct RenderState {
 	uint32_t                                                   height                = 0;
 	uint32_t                                                   num_layers            = 1;
 	uint32_t                                                   num_color_attachments = 0;
+	float                                                      scale_x               = 1.0f;
+	float                                                      scale_y               = 1.0f;
 
 	bool operator==(const RenderState&) const = default;
 };

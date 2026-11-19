@@ -290,6 +290,14 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 		normalized.aspect = vk::ImageAspectFlagBits::eStencil;
 	}
 	normalized.usage = is_storage ? vk::ImageUsageFlagBits::eStorage : vk::ImageUsageFlags {};
+	if (image.mip_levels > 0u && image.mip_levels < info.resources.levels) {
+		if (normalized.base_level >= image.mip_levels) {
+			normalized.base_level = image.mip_levels - 1u;
+		}
+		if (normalized.level_count > image.mip_levels - normalized.base_level) {
+			normalized.level_count = image.mip_levels - normalized.base_level;
+		}
+	}
 	for (const auto& cached: views) {
 		if (cached.info == normalized) {
 			return cached.view;

@@ -333,21 +333,47 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 			viewport.width  = static_cast<float>(std::min(limits.maxViewportDimensions[0], 16384u));
 			viewport.height = static_cast<float>(std::min(limits.maxViewportDimensions[1], 16384u));
 		} else {
-			viewport.x      = guest.xoffset - guest.xscale;
-			viewport.y      = guest.yoffset - guest.yscale;
-			viewport.width  = guest.xscale * 2.0f;
-			viewport.height = guest.yscale * 2.0f;
+			viewport.x      = (guest.xoffset - guest.xscale) * rendering.scale_x;
+			viewport.y      = (guest.yoffset - guest.yscale) * rendering.scale_y;
+			viewport.width  = (guest.xscale * 2.0f) * rendering.scale_x;
+			viewport.height = (guest.yscale * 2.0f) * rendering.scale_y;
 		}
 		viewport.minDepth =
 		    guest.zoffset - (ctx.GetClipControl().dx_clip_space ? 0.0f : guest.zscale);
 		viewport.maxDepth = guest.zscale + guest.zoffset;
 
+		const vk::Extent2D guest_fb_extent {
+		    rendering.scale_x < 1.0f
+		        ? static_cast<uint32_t>(std::lround(static_cast<float>(framebuffer_extent.width) /
+		                                            rendering.scale_x))
+		        : framebuffer_extent.width,
+		    rendering.scale_y < 1.0f
+		        ? static_cast<uint32_t>(std::lround(static_cast<float>(framebuffer_extent.height) /
+		                                            rendering.scale_y))
+		        : framebuffer_extent.height};
 		const auto final_scissor =
-		    calc_final_scissor(vp, ctx.GetScanModeControl(), framebuffer_extent, i);
-		auto& scissor  = scissors[i];
-		scissor.offset = {final_scissor.left, final_scissor.top};
-		scissor.extent = {static_cast<uint32_t>(final_scissor.right - final_scissor.left),
-		                  static_cast<uint32_t>(final_scissor.bottom - final_scissor.top)};
+		    calc_final_scissor(vp, ctx.GetScanModeControl(), guest_fb_extent, i);
+		auto& scissor = scissors[i];
+		if (rendering.scale_x < 1.0f || rendering.scale_y < 1.0f) {
+			const int32_t sx = std::clamp(
+			    static_cast<int32_t>(std::floor(static_cast<float>(final_scissor.left) * rendering.scale_x)),
+			    0, static_cast<int32_t>(framebuffer_extent.width));
+			const int32_t sy = std::clamp(
+			    static_cast<int32_t>(std::floor(static_cast<float>(final_scissor.top) * rendering.scale_y)),
+			    0, static_cast<int32_t>(framebuffer_extent.height));
+			const int32_t ex = std::clamp(
+			    static_cast<int32_t>(std::ceil(static_cast<float>(final_scissor.right) * rendering.scale_x)),
+			    sx, static_cast<int32_t>(framebuffer_extent.width));
+			const int32_t ey = std::clamp(
+			    static_cast<int32_t>(std::ceil(static_cast<float>(final_scissor.bottom) * rendering.scale_y)),
+			    sy, static_cast<int32_t>(framebuffer_extent.height));
+			scissor.offset = {sx, sy};
+			scissor.extent = {static_cast<uint32_t>(ex - sx), static_cast<uint32_t>(ey - sy)};
+		} else {
+			scissor.offset = {final_scissor.left, final_scissor.top};
+			scissor.extent = {static_cast<uint32_t>(final_scissor.right - final_scissor.left),
+			                  static_cast<uint32_t>(final_scissor.bottom - final_scissor.top)};
+		}
 		if (viewport.width == 0.0f) {
 			// Keep empty slots at their guest index; Vulkan requires a positive viewport width.
 			viewport.width = 1.0f;
@@ -467,9 +493,16 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		              ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
 		                                     view.layer_count},
 		              buffer.Handle());
-		const auto extent       = target.Extent();
-		state.width             = std::min(state.width, extent.width);
-		state.height            = std::min(state.height, extent.height);
+		const uint32_t backing_w = std::max(1u, image.backing.extent.width >> view.base_level);
+		const uint32_t backing_h = std::max(1u, image.backing.extent.height >> view.base_level);
+		state.width             = std::min(state.width, backing_w);
+		state.height            = std::min(state.height, backing_h);
+		if (image.backing.extent.width < image.info.extent.width) {
+			state.scale_x = static_cast<float>(image.backing.extent.width) /
+			                static_cast<float>(image.info.extent.width);
+			state.scale_y = static_cast<float>(image.backing.extent.height) /
+			                static_cast<float>(image.info.extent.height);
+		}
 		state.num_layers        = std::min(state.num_layers, view.layer_count);
 		state.num_color_attachments = std::max(state.num_color_attachments, target.target_slot + 1);
 		auto& attachment            = state.color_attachments[target.target_slot];
@@ -530,8 +563,16 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		              ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
 		                                     view.layer_count},
 		              buffer.Handle());
-		state.width               = std::min(state.width, depth.desc.info.extent.width);
-		state.height              = std::min(state.height, depth.desc.info.extent.height);
+		const uint32_t depth_w = std::max(1u, image.backing.extent.width >> view.base_level);
+		const uint32_t depth_h = std::max(1u, image.backing.extent.height >> view.base_level);
+		state.width            = std::min(state.width, depth_w);
+		state.height           = std::min(state.height, depth_h);
+		if (image.backing.extent.width < image.info.extent.width) {
+			state.scale_x = static_cast<float>(image.backing.extent.width) /
+			                static_cast<float>(image.info.extent.width);
+			state.scale_y = static_cast<float>(image.backing.extent.height) /
+			                static_cast<float>(image.info.extent.height);
+		}
 		state.num_layers          = std::min(state.num_layers, view.layer_count);
 		const auto aspects        = ImageViewOps::DepthAspectMask(depth.desc.view_info.format);
 		auto&      attachment     = state.depth_stencil_attachment;

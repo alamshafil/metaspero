@@ -466,12 +466,30 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 			}
 		}
 	} else {
-		vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
+		uint32_t dispatch_x = thread_group_x;
+		uint32_t dispatch_y = thread_group_y;
+		if (const uint32_t scale = ResolutionScalePercent(); scale < 100u) {
+			const uint64_t total_x =
+			    uint64_t {thread_group_x} * std::max(input_info.threads_num[0], 1u);
+			const uint64_t total_y =
+			    uint64_t {thread_group_y} * std::max(input_info.threads_num[1], 1u);
+			const uint64_t total_z =
+			    uint64_t {thread_group_z} * std::max(input_info.threads_num[2], 1u);
+			const uint64_t total_xy = total_x * total_y;
+			const bool scale_2d =
+			    thread_group_z == 1u && thread_group_y >= 80u &&
+			    thread_group_x > thread_group_y && total_xy >= 2560ull * 1440ull;
+			const bool scale_3d_froxel =
+			    total_z >= 64u && total_x >= 320u && total_y >= 180u && total_x > total_y;
+			if (scale_2d || scale_3d_froxel) {
+				dispatch_x = std::max(1u, (thread_group_x * scale + 99u) / 100u);
+				dispatch_y = std::max(1u, (thread_group_y * scale + 99u) / 100u);
+			}
+		}
+		vk_buffer.dispatch(dispatch_x, dispatch_y, thread_group_z);
 	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Dispatches);
 
-	// The removed host fence also ordered read-only dispatches before later writers.
-	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ResetBindings();
 }
 
@@ -537,8 +555,8 @@ void RenderExecutor::DispatchIndirect(CommandBuffer& buffer, uint64_t args_addr,
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	vk_buffer.dispatchIndirect(args_buffer->Handle(), args_offset);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Dispatches);
-	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ResetBindings();
 }
+
 
 } // namespace Libs::Graphics

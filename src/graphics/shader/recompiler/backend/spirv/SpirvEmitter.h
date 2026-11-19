@@ -26,6 +26,8 @@ struct Profile {
 	bool float32_denorm_ftz = false;
 	// Fragment shader barycentrics (VK_KHR_fragment_shader_barycentric)
 	bool fragment_barycentric = true;
+	// Emulator-side 4K resolution downscale percentage (25-100, 100 = native).
+	uint32_t resolution_scale_percent = 100u;
 };
 
 inline constexpr Profile DefaultProfile {};

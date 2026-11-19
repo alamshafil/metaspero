@@ -100,6 +100,7 @@ struct ConfigOptions {
 	bool                   tessellation_enabled        = false;
 	bool                   occlusion_queries_enabled   = false;
 	bool                   relaxed_shader_float        = false;
+	uint32_t               resolution_scale            = 100;
 	bool                   native_rt                   = false;
 	bool                   lod_stats_enabled           = false;
 	bool                   trophy_enabled              = true;
@@ -180,6 +181,7 @@ uint32_t GetFlushDraws();
 bool TessellationEnabled();
 bool OcclusionQueriesEnabled();
 bool RelaxedShaderFloatEnabled();
+uint32_t GetResolutionScale();
 bool NativeRtEnabled();
 bool LodStatsEnabled();
 bool TrophyEnabled();

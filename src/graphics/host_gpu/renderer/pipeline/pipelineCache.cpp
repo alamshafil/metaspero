@@ -244,9 +244,10 @@ ShaderRecompiler::Spirv::Profile SpirvProfile(const GraphicContext& graphics) {
 	        .robust_buffer_access   = graphics.robust_buffer_access_enabled,
 	        .r8_srgb_views          = graphics.r8_srgb_views,
 	        .r8g8_srgb_views        = graphics.r8g8_srgb_views,
-	        .relaxed_float          = Config::RelaxedShaderFloatEnabled(),
-	        .float32_denorm_ftz     = graphics.float32_denorm_flush_to_zero,
-	        .fragment_barycentric   = graphics.fragment_shader_barycentric_enabled};
+	        .relaxed_float            = Config::RelaxedShaderFloatEnabled(),
+	        .float32_denorm_ftz       = graphics.float32_denorm_flush_to_zero,
+	        .fragment_barycentric     = graphics.fragment_shader_barycentric_enabled,
+	        .resolution_scale_percent = Config::GetResolutionScale()};
 }
 
 std::filesystem::path ShaderStorePath() {
@@ -906,6 +907,35 @@ void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRender
 				pixel_info.dual_source_blending     = true;
 				pixel_info.target_output_mode[1]    = pixel_info.target_output_mode[0];
 				pixel_info.target_export_mapping[1] = {};
+			}
+		}
+		pixel_info.scaled_render_target = false;
+		if (Config::GetResolutionScale() < 100u) {
+			for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; slot++) {
+				if ((color_output_mask & (1u << slot)) == 0) {
+					continue;
+				}
+				const auto& rt = context.GetRenderTarget(slot);
+				if (rt.base.addr != 0 && rt.attrib3.dimension == 1u &&
+				    rt.attrib3.tile_mode != Prospero::TileMode::kLinear) {
+					const uint32_t w = rt.attrib2.width + 1u;
+					const uint32_t h = rt.attrib2.height + 1u;
+					if (w > h && w >= 1920u && h >= 1080u) {
+						pixel_info.scaled_render_target = true;
+						break;
+					}
+				}
+			}
+			if (!pixel_info.scaled_render_target) {
+				const auto& z = context.GetDepthRenderTarget();
+				if (z.z_info.format != Prospero::DepthFormat::kInvalid &&
+				    (z.z_read_base_addr != 0 || z.z_write_base_addr != 0)) {
+					const uint32_t w = static_cast<uint32_t>(z.size.x_max) + 1u;
+					const uint32_t h = static_cast<uint32_t>(z.size.y_max) + 1u;
+					if ((w > h && w >= 1920u && h >= 1080u) || (w == h && w >= 2048u)) {
+						pixel_info.scaled_render_target = true;
+					}
+				}
 			}
 		}
 	}

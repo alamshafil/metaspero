@@ -177,7 +177,33 @@ void ImageInfo::UpdateSize() {
 		                                          IsVolume() ? extent.depth : 1u,
 		                                          resources.levels,
 		                                          resources.layers};
-		EXIT_NOT_IMPLEMENTED(!TileGetTiledTextureLayout(description, surface));
+		struct TiledLayoutCacheSlot {
+			TileSurfaceDescription key {};
+			TileSurfaceLayout      layout {};
+			bool                   valid = false;
+		};
+		thread_local std::array<TiledLayoutCacheSlot, 64> layout_cache {};
+		const uint64_t hash =
+		    (static_cast<uint64_t>(description.width) * 0x9e3779b97f4a7c15ull) ^
+		    (static_cast<uint64_t>(description.height) << 17) ^
+		    (static_cast<uint64_t>(description.levels) << 33) ^
+		    (static_cast<uint64_t>(description.layers) << 41) ^
+		    (static_cast<uint64_t>(description.format) << 49) ^
+		    static_cast<uint64_t>(description.tile_mode);
+		auto& slot = layout_cache[(hash ^ (hash >> 16)) & (layout_cache.size() - 1)];
+		if (slot.valid && slot.key.format == description.format &&
+		    slot.key.tile_mode == description.tile_mode &&
+		    slot.key.dimension == description.dimension &&
+		    slot.key.width == description.width && slot.key.height == description.height &&
+		    slot.key.depth == description.depth && slot.key.levels == description.levels &&
+		    slot.key.layers == description.layers) {
+			surface = slot.layout;
+		} else {
+			EXIT_NOT_IMPLEMENTED(!TileGetTiledTextureLayout(description, surface));
+			slot.key    = description;
+			slot.layout = surface;
+			slot.valid  = true;
+		}
 		tiling             = surface.texture;
 		first_tail_level   = surface.first_tail_level;
 		tiled_slice_stride = surface.block_slice_size;

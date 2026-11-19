@@ -296,8 +296,26 @@ void Image::Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffe
 	dependency.pImageMemoryBarriers     = image_barriers.data();
 	auto command                        = m_scheduler.Current().Handle();
 	command.pipelineBarrier2(dependency);
-	command.copyBufferToImage(buffer, backing.image, vk::ImageLayout::eTransferDstOptimal,
-	                          static_cast<uint32_t>(copies.size()), copies.data());
+	if (backing.extent.width < info.extent.width || backing.extent.height < info.extent.height) {
+		std::vector<vk::BufferImageCopy> clamped(copies.begin(), copies.end());
+		for (auto& c: clamped) {
+			const uint32_t mip = c.imageSubresource.mipLevel;
+			const uint32_t bw  = std::max(1u, backing.extent.width >> mip);
+			const uint32_t bh  = std::max(1u, backing.extent.height >> mip);
+			if (c.bufferRowLength == 0) {
+				c.bufferRowLength = std::max(1u, info.extent.width >> mip);
+			}
+			c.imageOffset.x      = std::min(c.imageOffset.x, static_cast<int32_t>(bw - 1u));
+			c.imageOffset.y      = std::min(c.imageOffset.y, static_cast<int32_t>(bh - 1u));
+			c.imageExtent.width  = std::min(c.imageExtent.width, bw - static_cast<uint32_t>(c.imageOffset.x));
+			c.imageExtent.height = std::min(c.imageExtent.height, bh - static_cast<uint32_t>(c.imageOffset.y));
+		}
+		command.copyBufferToImage(buffer, backing.image, vk::ImageLayout::eTransferDstOptimal,
+		                          static_cast<uint32_t>(clamped.size()), clamped.data());
+	} else {
+		command.copyBufferToImage(buffer, backing.image, vk::ImageLayout::eTransferDstOptimal,
+		                          static_cast<uint32_t>(copies.size()), copies.data());
+	}
 	buffer_barrier.srcStageMask  = vk::PipelineStageFlagBits2::eTransfer;
 	buffer_barrier.srcAccessMask = vk::AccessFlagBits2::eTransferRead;
 	buffer_barrier.dstStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
@@ -336,8 +354,26 @@ void Image::Download(std::span<const vk::BufferImageCopy> copies, vk::Buffer buf
 	dependency.pImageMemoryBarriers     = image_barriers.data();
 	auto command                        = m_scheduler.Current().Handle();
 	command.pipelineBarrier2(dependency);
-	command.copyImageToBuffer(backing.image, vk::ImageLayout::eTransferSrcOptimal, buffer,
-	                          static_cast<uint32_t>(copies.size()), copies.data());
+	if (backing.extent.width < info.extent.width || backing.extent.height < info.extent.height) {
+		std::vector<vk::BufferImageCopy> clamped(copies.begin(), copies.end());
+		for (auto& c: clamped) {
+			const uint32_t mip = c.imageSubresource.mipLevel;
+			const uint32_t bw  = std::max(1u, backing.extent.width >> mip);
+			const uint32_t bh  = std::max(1u, backing.extent.height >> mip);
+			if (c.bufferRowLength == 0) {
+				c.bufferRowLength = std::max(1u, info.extent.width >> mip);
+			}
+			c.imageOffset.x      = std::min(c.imageOffset.x, static_cast<int32_t>(bw - 1u));
+			c.imageOffset.y      = std::min(c.imageOffset.y, static_cast<int32_t>(bh - 1u));
+			c.imageExtent.width  = std::min(c.imageExtent.width, bw - static_cast<uint32_t>(c.imageOffset.x));
+			c.imageExtent.height = std::min(c.imageExtent.height, bh - static_cast<uint32_t>(c.imageOffset.y));
+		}
+		command.copyImageToBuffer(backing.image, vk::ImageLayout::eTransferSrcOptimal, buffer,
+		                          static_cast<uint32_t>(clamped.size()), clamped.data());
+	} else {
+		command.copyImageToBuffer(backing.image, vk::ImageLayout::eTransferSrcOptimal, buffer,
+		                          static_cast<uint32_t>(copies.size()), copies.data());
+	}
 	buffer_barrier.srcStageMask  = vk::PipelineStageFlagBits2::eCopy;
 	buffer_barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
 	buffer_barrier.dstStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
@@ -728,6 +764,32 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	create.imageType     = HostImageType(info.type);
 	create.extent        = info.extent;
 	create.mipLevels     = info.resources.levels;
+	if (const uint32_t scale = ResolutionScalePercent(); scale < 100u) {
+		const bool scale_2d =
+		    info.type == Prospero::ImageType::kColor2D &&
+		    info.tile_mode != Prospero::TileMode::kLinear &&
+		    static_cast<bool>(create.usage & (vk::ImageUsageFlagBits::eColorAttachment |
+		                                      vk::ImageUsageFlagBits::eDepthStencilAttachment)) &&
+		    info.extent.width > info.extent.height &&
+		    info.extent.width >= 1920u && info.extent.height >= 1080u;
+		const bool scale_shadow_map =
+		    info.type == Prospero::ImageType::kColor2D &&
+		    info.tile_mode != Prospero::TileMode::kLinear &&
+		    static_cast<bool>(create.usage & vk::ImageUsageFlagBits::eDepthStencilAttachment) &&
+		    info.extent.width == info.extent.height && info.extent.width >= 2048u;
+		const bool scale_3d_froxel =
+		    info.type == Prospero::ImageType::kColor3D &&
+		    static_cast<bool>(create.usage & vk::ImageUsageFlagBits::eStorage) &&
+		    info.extent.width >= 320u && info.extent.height >= 180u &&
+		    info.extent.depth >= 64u && info.extent.width > info.extent.height;
+		if (scale_2d || scale_shadow_map || scale_3d_froxel) {
+			create.extent.width  = std::max(1u, (info.extent.width * scale) / 100u);
+			create.extent.height = std::max(1u, (info.extent.height * scale) / 100u);
+			const uint32_t max_dim = std::max({create.extent.width, create.extent.height, create.extent.depth});
+			const uint32_t max_mip = 32u - static_cast<uint32_t>(std::countl_zero(max_dim));
+			create.mipLevels       = std::min(create.mipLevels, max_mip);
+		}
+	}
 	create.arrayLayers   = info.IsVolume() ? 1u : info.resources.layers;
 	create.format        = info.pixel_format;
 	create.tiling        = vk::ImageTiling::eOptimal;

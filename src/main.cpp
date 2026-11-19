@@ -73,6 +73,7 @@ static void PrintUsage() {
 	::printf("  --tessellation                      Draw tessellation patches; skipped by default.\n");
 	::printf("  --occlusion-queries                  Count occlusion query samples on the GPU.\n");
 	::printf("  --relaxed-shader-float               Native GPU float ops in shaders; faster, can be inaccurate.\n");
+	::printf("  --resolution-scale <percent>         Downscale 4K render targets & dispatches (20-100, default 100).\n");
 	::printf("  --native-rt                          Use native RT on the GPU.\n");
 	::printf("  --lod-stats                          Report bound textures in mip statistics.\n");
 	::printf("  --shader-log-direction <value>       Silent, Console, or File.\n");
@@ -407,6 +408,12 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		} else if (arg == "--trophy-duration") {
 			if (!ParseUint32(value, options.config.trophy_duration_seconds)) {
 				::printf("invalid trophy duration: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--resolution-scale") {
+			if (!ParseUint32(value, options.config.resolution_scale) ||
+			    options.config.resolution_scale < 20u || options.config.resolution_scale > 100u) {
+				::printf("invalid resolution scale (expected 20-100): %s\n", value.c_str());
 				return false;
 			}
 		} else if (arg == "--console-language") {

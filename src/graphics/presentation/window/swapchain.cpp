@@ -1001,17 +1001,17 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		case vk::Format::eB8G8R8A8Srgb: frame_format = vk::Format::eB8G8R8A8Unorm; break;
 		default: break;
 	}
-	auto* frame = m_impl->frames.Acquire({info.extent.width, info.extent.height}, frame_format);
-	frame->hdr   = hdr;
-	frame->blank = false;
 	HideSplashScreen();
 	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
 	auto&             image = m_impl->ResolveSurface(info);
 	if (image.backing.format == vk::Format::eUndefined) {
 		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
 	}
-	frame->Configure(m_impl->window.graphic_ctx,
-	                 {image.backing.extent.width, image.backing.extent.height}, frame_format);
+	const vk::Extent2D backing_extent {image.backing.extent.width, image.backing.extent.height};
+	auto* frame  = m_impl->frames.Acquire(backing_extent, frame_format);
+	frame->hdr   = hdr;
+	frame->blank = false;
+	frame->Configure(m_impl->window.graphic_ctx, backing_extent, frame_format);
 	frame->CopyFrom(buffer, image);
 	if (headset) {
 		// The frame holds the raw display-encoded pixels the headset needs.

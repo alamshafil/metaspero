@@ -960,7 +960,69 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 				        const auto& dimension_info = ImageDimensionInfoFor(dimension);
 				        const auto descriptor = LoadImageDescriptor(state, resource, 0u, array_index);
 				        const auto fetched = state.builder.AllocateId();
-				        const auto coord = CoordU32(ctx, mem, *address, dimension);
+				        auto       coord   = CoordU32(ctx, mem, *address, dimension);
+				        const auto lod_id  = dimension_info.multisampled != 0u
+				            ? 0u
+				            : LodU32(ctx, mem, *address, mem.image_dimension);
+				        const uint32_t res_scale = state.profile.resolution_scale_percent;
+				        if (res_scale >= 20u && res_scale < 100u && state.program.stage == ShaderType::Pixel &&
+				            dimension_info.multisampled == 0u &&
+				            (dimension == ImageDimension::Dim2D ||
+				             dimension == ImageDimension::Dim2DArray)) {
+					        state.builder.RequireCapability(spv::CapabilityImageQuery);
+					        const bool is_array  = dimension == ImageDimension::Dim2DArray;
+					        const auto size_type = TypeU32Vector(state, is_array ? 3u : 2u);
+					        const auto img_size  = state.builder.AllocateId();
+					        state.builder.AddFunction(spv::OpImageQuerySizeLod, size_type, img_size,
+					                                  descriptor, lod_id);
+					        const auto sx = state.builder.AllocateId();
+					        const auto sy = state.builder.AllocateId();
+					        state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), sx, img_size, 0u);
+					        state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), sy, img_size, 1u);
+					        const uint32_t min_w  = (1920u * res_scale) / 100u;
+					        const uint32_t min_h  = (1080u * res_scale) / 100u;
+					        const uint32_t min_sq = (2048u * res_scale) / 100u;
+					        const auto ge_w = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), sx,
+					                                 ConstantU32(state, min_w));
+					        const auto ge_h = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), sy,
+					                                 ConstantU32(state, min_h));
+					        const auto wide = Binary(state, spv::OpUGreaterThan, TypeBool(state), sx, sy);
+					        const auto is_wide_scaled = Binary(
+					            state, spv::OpLogicalAnd, TypeBool(state),
+					            Binary(state, spv::OpLogicalAnd, TypeBool(state), ge_w, ge_h), wide);
+					        const auto is_sq = Binary(state, spv::OpIEqual, TypeBool(state), sx, sy);
+					        const auto ge_sq = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), sx,
+					                                  ConstantU32(state, min_sq));
+					        const auto is_sq_scaled = Binary(state, spv::OpLogicalAnd, TypeBool(state),
+					                                         is_sq, ge_sq);
+					        const auto is_scaled = Binary(state, spv::OpLogicalOr, TypeBool(state),
+					                                      is_wide_scaled, is_sq_scaled);
+					        const auto cx = state.builder.AllocateId();
+					        const auto cy = state.builder.AllocateId();
+					        state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), cx, coord, 0u);
+					        state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), cy, coord, 1u);
+					        const auto scx = EmitBinaryU32(
+					            state, spv::OpUDiv,
+					            EmitBinaryU32(state, spv::OpIMul, cx, ConstantU32(state, res_scale)),
+					            ConstantU32(state, 100u));
+					        const auto scy = EmitBinaryU32(
+					            state, spv::OpUDiv,
+					            EmitBinaryU32(state, spv::OpIMul, cy, ConstantU32(state, res_scale)),
+					            ConstantU32(state, 100u));
+					        const auto fx = Select(state, TypeU32(state), is_scaled, scx, cx);
+					        const auto fy = Select(state, TypeU32(state), is_scaled, scy, cy);
+					        const auto new_coord = state.builder.AllocateId();
+					        if (is_array) {
+						        const auto cz = state.builder.AllocateId();
+						        state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), cz, coord, 2u);
+						        state.builder.AddFunction(spv::OpCompositeConstruct, TypeU32Vector(state, 3),
+						                                  new_coord, fx, fy, cz);
+					        } else {
+						        state.builder.AddFunction(spv::OpCompositeConstruct, TypeU32Vector(state, 2),
+						                                  new_coord, fx, fy);
+					        }
+					        coord = new_coord;
+				        }
 				        if (dimension_info.multisampled != 0u) {
 					        state.builder.AddFunction(
 					            spv::OpImageFetch, result_type, fetched,
@@ -969,8 +1031,7 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 				        } else {
 					        state.builder.AddFunction(
 					            spv::OpImageFetch, result_type, fetched,
-					            descriptor, coord, spv::ImageOperandsLodMask,
-					            LodU32(ctx, mem, *address, mem.image_dimension));
+					            descriptor, coord, spv::ImageOperandsLodMask, lod_id);
 				        }
 				        return fetched;
 			            });

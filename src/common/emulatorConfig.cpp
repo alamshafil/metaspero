@@ -247,6 +247,21 @@ bool RelaxedShaderFloatEnabled() {
 	return g_config->relaxed_shader_float;
 }
 
+uint32_t GetResolutionScale() {
+	if (g_config != nullptr && g_config->resolution_scale >= 20u && g_config->resolution_scale < 100u) {
+		return g_config->resolution_scale;
+	}
+	static const uint32_t env_scale = []() -> uint32_t {
+		const char* env = std::getenv("KYTY_RES_SCALE");
+		if (env == nullptr || env[0] == '\0') {
+			return 100u;
+		}
+		const long v = std::strtol(env, nullptr, 10);
+		return (v >= 25 && v < 100) ? static_cast<uint32_t>(v) : 100u;
+	}();
+	return env_scale;
+}
+
 bool NativeRtEnabled() {
 	return g_config->native_rt;
 }
