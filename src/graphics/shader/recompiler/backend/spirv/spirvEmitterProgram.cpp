@@ -231,15 +231,139 @@ void Invoke(Return (*emit)(Context&, Args...), ValueEmitContext& ctx, const IR::
 	}(std::index_sequence_for<Args...> {});
 }
 
-void EmitDirectInstruction(ValueEmitContext& ctx, const IR::Inst& inst) {
+bool IsAlwaysUniformAcrossHalves(const IR::Inst& inst) {
 	using Op = IR::ValueOpcode;
 	const auto op = inst.GetOpcode();
-	if (ctx.half != 0 &&
-	    (op == Op::Ballot || op == Op::ReadFirstLane || op == Op::SubgroupUMinU32 ||
-	     op == Op::SubgroupUMaxU32 || op == Op::SubgroupOrU32 || op == Op::ReadConstBuffer ||
-	     op == Op::ReadRealtimeClock ||
-	     (op == Op::LoadAddressU32 && ctx.Memory(inst).kind == IR::ResourceKind::ScalarAddress))) {
-		// Whole-wave results, clocks and SMEM loads (SGPR operands, no EXEC) match in both halves.
+	if (op == Op::Ballot || op == Op::ReadFirstLane || op == Op::SubgroupUMinU32 ||
+	    op == Op::SubgroupUMaxU32 || op == Op::SubgroupOrU32 || op == Op::ReadRealtimeClock ||
+	    op == Op::GetUserData || op == Op::ReadConst || op == Op::GetDispatchThreadExtent ||
+	    op == Op::ConditionRef) {
+		return true;
+	}
+	if (op == Op::GetBuiltin && inst.NumArgs() >= 1 && inst.Arg(0).IsImmediate()) {
+		const auto kind = static_cast<IR::StageInputKind>(inst.Arg(0).U32());
+		return kind == IR::StageInputKind::WorkgroupId ||
+		       kind == IR::StageInputKind::NumWorkgroups;
+	}
+	return false;
+}
+
+bool IsUniformIfArgsUniform(const ValueEmitContext& ctx, const IR::Inst& inst) {
+	using Op = IR::ValueOpcode;
+	const auto op = inst.GetOpcode();
+	if (op == Op::Phi || op == Op::ReadConstBuffer ||
+	    op == Op::GetBufferResource || op == Op::GetAddressResource ||
+	    op == Op::GetImageResource || op == Op::GetSamplerResource ||
+	    op == Op::GetBufferResourceIndex) {
+		return true;
+	}
+	if (IR::BufferAccessOf(op) == IR::BufferAccess::Read && !inst.MayHaveSideEffects()) {
+		return true;
+	}
+	if (op == Op::LoadAddressU32 && ctx.Memory(inst).kind == IR::ResourceKind::ScalarAddress) {
+		return true;
+	}
+	if (inst.MayHaveSideEffects() || inst.GetType() == IR::Type::Void ||
+	    IR::BufferAccessOf(op) != IR::BufferAccess::None ||
+	    IR::SharedAccessOf(op) != IR::SharedAccess::None ||
+	    IR::AddressOpcodeInfoOf(op).access != IR::AddressAccess::None ||
+	    IR::ImageOpcodeInfoOf(op).access != IR::ImageAccess::None) {
+		return false;
+	}
+	switch (op) {
+		case Op::GetBuiltin:
+		case Op::LaneId:
+		case Op::LiveMask:
+		case Op::ReadLane:
+		case Op::WriteLane:
+		case Op::DppMoveU32:
+		case Op::DppUpdateU32:
+		case Op::SwizzleU32:
+		case Op::Permlane16U32:
+		case Op::PermuteU32:
+		case Op::BpermuteU32:
+		case Op::GetAttribute:
+		case Op::GetTessellationAttribute:
+		case Op::BvhIntersect:
+		case Op::Bvh8Intersect:
+		case Op::BvhStack:
+		case Op::LoadDeviceAddressU32:
+		case Op::ImageQueryLod:
+			return false;
+		default: return true;
+	}
+}
+
+std::unordered_set<const IR::Inst*> ComputeUniformInstructions(const ValueEmitContext& ctx) {
+	std::unordered_set<const IR::Inst*> uniform;
+	std::vector<const IR::Inst*>        conditional;
+	for (const auto* block: ctx.state.program.blocks) {
+		for (const auto& inst: *block) {
+			if (IsAlwaysUniformAcrossHalves(inst)) {
+				uniform.insert(&inst);
+			} else if (inst.GetOpcode() == IR::ValueOpcode::ReadLane ||
+			           IsUniformIfArgsUniform(ctx, inst)) {
+				uniform.insert(&inst);
+				conditional.push_back(&inst);
+			}
+		}
+	}
+	bool changed = true;
+	while (changed) {
+		changed = false;
+		for (const auto* inst: conditional) {
+			if (!uniform.contains(inst)) {
+				continue;
+			}
+			// ReadLane(src0, lane) reads a single lane from the wave, so its result is uniform
+			// across both Wave64 halves whenever `lane` (Arg(1)) is uniform.
+			const size_t start_arg = inst->GetOpcode() == IR::ValueOpcode::ReadLane ? 1u : 0u;
+			for (size_t i = start_arg; i < inst->NumArgs(); i++) {
+				const auto value = inst->Arg(i).Resolve();
+				if (const auto* arg_inst = value.TryInstruction()) {
+					if (!uniform.contains(arg_inst)) {
+						uniform.erase(inst);
+						changed = true;
+						break;
+					}
+				}
+			}
+		}
+	}
+	return uniform;
+}
+
+bool CanShareHalfResult(const ValueEmitContext& ctx, const IR::Inst& inst,
+                        const std::unordered_set<const IR::Inst*>* uniform_insts) {
+	if (inst.Definition(0) == 0) {
+		return false;
+	}
+	if (uniform_insts != nullptr) {
+		return uniform_insts->contains(&inst);
+	}
+	if (IsAlwaysUniformAcrossHalves(inst)) {
+		return true;
+	}
+	if (!IsUniformIfArgsUniform(ctx, inst) || inst.GetOpcode() == IR::ValueOpcode::Phi) {
+		return false;
+	}
+	for (size_t i = 0; i < inst.NumArgs(); i++) {
+		const auto value = inst.Arg(i).Resolve();
+		if (const auto* arg_inst = value.TryInstruction()) {
+			const auto def0 = arg_inst->Definition(0);
+			if (def0 == 0 || def0 != arg_inst->Definition(1)) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+void EmitDirectInstruction(ValueEmitContext& ctx, const IR::Inst& inst,
+                           const std::unordered_set<const IR::Inst*>* uniform_insts = nullptr) {
+	const auto op = inst.GetOpcode();
+	if (ctx.half != 0 && CanShareHalfResult(ctx, inst, uniform_insts)) {
+		// Whole-wave results, SMEM/uniform loads, and pure ops on uniform inputs match in both halves.
 		ctx.Define(inst, ctx.other_half->Result(inst));
 		return;
 	}
@@ -253,8 +377,14 @@ void EmitDirectInstruction(ValueEmitContext& ctx, const IR::Inst& inst) {
 }
 
 void EmitStructuredInstruction(ValueEmitContext& ctx, StructuredFunctionState& structured,
-                               const IR::Inst& inst) {
+                               const IR::Inst& inst,
+                               const std::unordered_set<const IR::Inst*>* uniform_insts) {
 	if (inst.GetOpcode() == IR::ValueOpcode::Phi) {
+		if (ctx.half != 0 && uniform_insts != nullptr && uniform_insts->contains(&inst) &&
+		    inst.Definition(0) != 0) {
+			ctx.Define(inst, ctx.other_half->Result(inst));
+			return;
+		}
 		const auto type = TypeId(ctx.state, inst.GetType());
 		if (type == 0 || inst.NumArgs() == 0) {
 			ctx.Fail(inst, "has no native SPIR-V representation");
@@ -270,7 +400,7 @@ void EmitStructuredInstruction(ValueEmitContext& ctx, StructuredFunctionState& s
 		     ctx.half});
 		return;
 	}
-	EmitDirectInstruction(ctx, inst);
+	EmitDirectInstruction(ctx, inst, uniform_insts);
 }
 
 void EmitDispatcherInstruction(ValueEmitContext& ctx, const DispatcherFunctionState& dispatcher,
@@ -292,19 +422,55 @@ void EmitDispatcherInstruction(ValueEmitContext& ctx, const DispatcherFunctionSt
 	}
 }
 
+bool RequiresInterleavedHalfEmit(const IR::Inst& inst) {
+	using Op = IR::ValueOpcode;
+	const auto op = inst.GetOpcode();
+	if (inst.MayHaveSideEffects() || IR::SharedAccessOf(op) != IR::SharedAccess::None) {
+		return true;
+	}
+	switch (op) {
+		case Op::Phi:
+		case Op::Ballot:
+		case Op::LiveMask:
+		case Op::ReadFirstLane:
+		case Op::ReadLane:
+		case Op::WriteLane:
+		case Op::ConditionRef:
+		case Op::SubgroupUMinU32:
+		case Op::SubgroupUMaxU32:
+		case Op::SubgroupOrU32:
+		case Op::DppMoveU32:
+		case Op::DppUpdateU32:
+		case Op::SwizzleU32:
+		case Op::Permlane16U32:
+		case Op::PermuteU32:
+		case Op::BpermuteU32:
+		case Op::ReadRealtimeClock:
+			return true;
+		default: return false;
+	}
+}
+
 template <typename EmitInstruction>
 void EmitBlock(ValueEmitContext& ctx, const IR::Block* block, EmitInstruction&& emit_instruction) {
 	ctx.state.current_block = block;
 	EmitLabel(ctx.state, block->Definition());
 	bool emitted_non_phi = false;
-	for (const auto& inst: *block) {
-		if (inst.GetOpcode() == IR::ValueOpcode::Phi) {
-			if (emitted_non_phi) {
-				ctx.Fail(inst, "appears after a non-Phi instruction");
+	if (ctx.state.lane_count == 1) {
+		for (const auto& inst: *block) {
+			if (inst.GetOpcode() == IR::ValueOpcode::Phi) {
+				if (emitted_non_phi) {
+					ctx.Fail(inst, "appears after a non-Phi instruction");
+				}
+			} else {
+				emitted_non_phi = true;
 			}
-		} else {
-			emitted_non_phi = true;
+			emit_instruction(ctx, inst);
 		}
+		return;
+	}
+
+	auto emit_both_interleaved = [&](const IR::Inst& inst) {
 		for (uint32_t half = 0; half < ctx.state.lane_count; half++) {
 			auto& lane          = half == 0 ? ctx : *ctx.other_half;
 			ctx.state.lane_half = half;
@@ -316,7 +482,41 @@ void EmitBlock(ValueEmitContext& ctx, const IR::Block* block, EmitInstruction&& 
 			}
 		}
 		ctx.state.lane_half = 0;
+	};
+
+	std::vector<const IR::Inst*> pure_run;
+	auto flush_pure_run = [&]() {
+		if (pure_run.empty()) {
+			return;
+		}
+		for (uint32_t half = 0; half < ctx.state.lane_count; half++) {
+			auto& lane          = half == 0 ? ctx : *ctx.other_half;
+			ctx.state.lane_half = half;
+			for (const auto* inst: pure_run) {
+				emit_instruction(lane, *inst);
+			}
+		}
+		ctx.state.lane_half = 0;
+		pure_run.clear();
+	};
+
+	for (const auto& inst: *block) {
+		if (inst.GetOpcode() == IR::ValueOpcode::Phi) {
+			if (emitted_non_phi) {
+				ctx.Fail(inst, "appears after a non-Phi instruction");
+			}
+			emit_both_interleaved(inst);
+			continue;
+		}
+		emitted_non_phi = true;
+		if (RequiresInterleavedHalfEmit(inst)) {
+			flush_pure_run();
+			emit_both_interleaved(inst);
+		} else {
+			pure_run.push_back(&inst);
+		}
 	}
+	flush_pure_run();
 }
 
 void PatchStructuredPhis(ValueEmitContext& ctx, StructuredFunctionState& structured) {
@@ -337,11 +537,17 @@ void PatchStructuredPhis(ValueEmitContext& ctx, StructuredFunctionState& structu
 void EmitStructuredFunction(ValueEmitContext& ctx) {
 	const auto& program = ctx.state.program;
 	StructuredFunctionState structured;
+	std::unordered_set<const IR::Inst*> uniform_insts;
+	const std::unordered_set<const IR::Inst*>* uniform_ptr = nullptr;
+	if (ctx.state.lane_count == 2) {
+		uniform_insts = ComputeUniformInstructions(ctx);
+		uniform_ptr   = &uniform_insts;
+	}
 	ctx.state.builder.AddFunction(spv::OpBranch, program.blocks.front()->Definition());
 	for (size_t index = 0; index < program.blocks.size(); index++) {
 		const auto* block = program.blocks[index];
 		EmitBlock(ctx, block, [&](ValueEmitContext& lane, const IR::Inst& inst) {
-			EmitStructuredInstruction(lane, structured, inst);
+			EmitStructuredInstruction(lane, structured, inst, uniform_ptr);
 		});
 		structured.block_exit_labels.emplace(block, ctx.state.current_label);
 		EmitStructuredTerminator(ctx, block);

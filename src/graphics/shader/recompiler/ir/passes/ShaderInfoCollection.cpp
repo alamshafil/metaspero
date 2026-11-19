@@ -6,9 +6,67 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fmt/format.h>
+#include <unordered_set>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 namespace {
+
+bool IsZeroImmediate(const Value& value) {
+	const auto resolved = value.Resolve();
+	if (!resolved.IsImmediate()) {
+		return false;
+	}
+	if (resolved.GetType() == Type::U32) {
+		return resolved.U32() == 0u;
+	}
+	if (resolved.GetType() == Type::U64) {
+		return resolved.U64() == 0ull;
+	}
+	return false;
+}
+
+// A Ballot only requires 64-lane emulation if its bit pattern is inspected beyond wave-size-
+// independent zero/non-zero mask checks (And/Or/Select/Phi -> ==0 / !=0).
+bool BallotNeedsWave64(const Inst& ballot_inst) {
+	constexpr size_t kMaxVisited = 64;
+	std::vector<const Inst*> worklist;
+	std::unordered_set<const Inst*> visited;
+	worklist.push_back(&ballot_inst);
+	visited.insert(&ballot_inst);
+
+	while (!worklist.empty()) {
+		const auto* cur = worklist.back();
+		worklist.pop_back();
+		for (const auto& use: cur->Uses()) {
+			const auto* user = use.user;
+			if (user == nullptr || user->Parent() == nullptr) {
+				return true;
+			}
+			const auto op = user->GetOpcode();
+			if ((op == ValueOpcode::IEqual32 || op == ValueOpcode::INotEqual32 ||
+			     op == ValueOpcode::IEqual64 || op == ValueOpcode::INotEqual64) &&
+			    user->NumArgs() == 2 && IsZeroImmediate(user->Arg(1u - use.operand))) {
+				continue;
+			}
+			const bool safe_propagate =
+			    op == ValueOpcode::CompositeExtractU32x4 ||
+			    op == ValueOpcode::CompositeConstructU64 ||
+			    op == ValueOpcode::CompositeExtractU64 || op == ValueOpcode::BitwiseAnd32 ||
+			    op == ValueOpcode::BitwiseAnd64 || op == ValueOpcode::BitwiseOr32 ||
+			    op == ValueOpcode::Phi || (op == ValueOpcode::SelectU32 && use.operand != 0u);
+			if (!safe_propagate) {
+				return true;
+			}
+			if (visited.insert(user).second) {
+				if (visited.size() > kMaxVisited) {
+					return true;
+				}
+				worklist.push_back(user);
+			}
+		}
+	}
+	return false;
+}
 
 [[noreturn]] void Fail(std::string_view message) {
 	EXIT("shader info collection failed: %s", std::string(message).c_str());
@@ -278,6 +336,7 @@ struct InputUsage {
 	std::array<StageInputKind, static_cast<size_t>(StageInputKind::Parameter)> builtins {};
 	uint32_t builtin_mask = 0;
 	uint32_t builtin_count = 0;
+	bool     has_barrier   = false;
 
 	void AddBuiltin(StageInputKind kind) {
 		const auto bit = 1u << static_cast<uint32_t>(kind);
@@ -526,6 +585,7 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 		case ValueOpcode::ReadConst: info.uses_flattened_srt = true; break;
 		case ValueOpcode::BitwiseXor32: info.has_bitwise_xor = true; break;
 		case ValueOpcode::StoreCompletion: info.subgroup_barrier = true; break;
+		case ValueOpcode::Barrier: inputs.has_barrier = true; break;
 		case ValueOpcode::DataCacheInvalidate: info.coherent_buffers = true; break;
 		case ValueOpcode::BvhIntersect: info.bvh = info.uses_dma = true; break;
 		case ValueOpcode::Bvh8Intersect: info.bvh8 = info.uses_dma = true; break;
@@ -535,11 +595,22 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 			info.subgroup_vote |=
 			    inst.Flags<CFG::BranchCondition>() != CFG::BranchCondition::ScalarInstruction;
 			break;
-		case ValueOpcode::Ballot: info.subgroup_ballot = true; break;
-		case ValueOpcode::LiveMask: info.subgroup_ballot = info.helper_invocation = true; break;
+		case ValueOpcode::Ballot:
+			info.subgroup_ballot = true;
+			if (inst.HasUses() && BallotNeedsWave64(inst)) {
+				info.requires_wave64_emulation = true;
+			}
+			break;
+		case ValueOpcode::LiveMask:
+			info.subgroup_ballot           = info.helper_invocation = true;
+			info.requires_wave64_emulation = true;
+			break;
 		case ValueOpcode::SubgroupUMinU32:
 		case ValueOpcode::SubgroupUMaxU32:
-		case ValueOpcode::SubgroupOrU32: info.subgroup_arithmetic = true; break;
+		case ValueOpcode::SubgroupOrU32:
+			info.subgroup_arithmetic       = true;
+			info.requires_wave64_emulation = true;
+			break;
 		case ValueOpcode::DppMoveU32:
 		case ValueOpcode::ReadFirstLane:
 		case ValueOpcode::ReadLane: {
@@ -547,6 +618,9 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 			info.subgroup_shuffle = true;
 			if (inst.GetOpcode() == ValueOpcode::DppMoveU32) {
 				info.subgroup_local_invocation_id = true;
+				info.requires_wave64_emulation    = true;
+			} else if (inst.GetOpcode() == ValueOpcode::ReadLane) {
+				info.requires_wave64_emulation = true;
 			}
 			break;
 		}
@@ -554,6 +628,7 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 		case ValueOpcode::WriteLane: {
 			info.subgroup_ballot              = true;
 			info.subgroup_local_invocation_id = true;
+			info.requires_wave64_emulation    = true;
 			break;
 		}
 		case ValueOpcode::SwizzleU32:
@@ -565,6 +640,7 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 			info.subgroup_ballot              = true;
 			info.subgroup_shuffle             = true;
 			info.subgroup_local_invocation_id = true;
+			info.requires_wave64_emulation    = true;
 			break;
 		}
 		case ValueOpcode::LaneId:
@@ -572,6 +648,7 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				inputs.AddBuiltin(StageInputKind::InvocationId);
 			} else {
 				info.subgroup_local_invocation_id = true;
+				info.requires_wave64_emulation    = true;
 			}
 			break;
 		case ValueOpcode::ImageQueryLod: info.compute_derivatives = true; break;
@@ -603,7 +680,8 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info,
 	    info.subgroup_shuffle = info.subgroup_arithmetic = info.helper_invocation =
 	    info.subgroup_local_invocation_id = info.compute_derivatives = info.image_gather_extended =
 	    info.function_lds = info.function_scratch = info.pixel_valid_mask = info.buffer_int64_atomics =
-	    info.buffer_u8 = info.buffer_u16 = info.shared_int64_atomics = info.coherent_buffers = info.float64 = false;
+	    info.buffer_u8 = info.buffer_u16 = info.shared_int64_atomics = info.coherent_buffers =
+	        info.float64 = info.requires_wave64_emulation = false;
 	InputUsage inputs;
 	for (const auto* block: program.blocks) {
 		for (const auto& inst: *block) {
@@ -644,6 +722,13 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info,
 	}
 	for (uint32_t i = 0; i < inputs.builtin_count; i++) {
 		AddBuiltinInput(info, inputs.builtins[i], fragment_barycentric);
+	}
+	if (program.wave_size == 64u && ShaderWorkgroupInput(program.stage, input_info) != nullptr) {
+		info.requires_wave64_emulation |=
+		    info.uses_gds || info.compute_derivatives || program.dispatcher_fallback ||
+		    (info.uses_lds && !inputs.has_barrier);
+	} else {
+		info.requires_wave64_emulation = false;
 	}
 	program.shader_info_complete = true;
 }
