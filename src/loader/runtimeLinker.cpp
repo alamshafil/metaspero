@@ -57,6 +57,7 @@
 #include <mach/mach_vm.h>
 #endif
 #include <sys/sysctl.h>
+#include <sys/ucontext.h>
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 #include <sys/uio.h>
 #include <unistd.h>
@@ -791,9 +792,19 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 				return true;
 			}
 		}
-		// Writable page means an alignment fault, left to the FEX handler.
+		// If the page is already writable, either this is an ARM64 alignment fault (DFSC == 0x21,
+		// left to the FEX handler) or another thread just resolved the GPU write-protection fault
+		// concurrently before our signal handler ran (in which case retrying succeeds immediately).
 		if (writable) {
+#if defined(__aarch64__)
+			const auto* uc = static_cast<const ucontext_t*>(info->native_context);
+			const bool  is_alignment_fault =
+			    uc != nullptr && uc->uc_mcontext != nullptr &&
+			    ((uc->uc_mcontext->__es.__esr & 0x3fu) == 0x21u);
+			return !is_alignment_fault;
+#else
 			return false;
+#endif
 		}
 #else
 		if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
