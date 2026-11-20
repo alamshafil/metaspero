@@ -757,7 +757,7 @@ public:
 	Source(AvPlayerMemAllocator m, AvPlayerFileReplacement f, AvPlayerEventReplacement e,
 	       int32_t video_buffers, bool vdec2, uint32_t demux_buffer_size)
 	    : mem(m), file(f), event(e),
-	      max_video_buffers(std::clamp(video_buffers <= 0 ? 2 : video_buffers, 2, 16)),
+	      max_video_buffers(std::clamp(video_buffers <= 0 ? 4 : std::max(video_buffers, 4), 2, 16)),
 	      use_vdec2(vdec2),
 	      video_packets(
 	          std::clamp(demux_buffer_size == 0 ? AVPLAYER_DEMUX_BUFFER_DEFAULT : demux_buffer_size,
@@ -1057,7 +1057,14 @@ public:
 			return false;
 		}
 		if (current_video) {
-			video_buffers.Push(std::move(current_video->buffer));
+			if (allocated_video_buffers >= 3) {
+				if (previous_video) {
+					video_buffers.Push(std::move(previous_video->buffer));
+				}
+				previous_video = std::move(current_video);
+			} else {
+				video_buffers.Push(std::move(current_video->buffer));
+			}
 		}
 		current_video = std::move(*frame);
 		*out          = current_video->info;
@@ -1135,9 +1142,13 @@ private:
 		video_buffers.Clear();
 		audio_buffers.Clear();
 		if (!retain_output_buffers) {
+			previous_video.reset();
 			current_video.reset();
 			current_audio.reset();
+		} else {
+			previous_video.reset();
 		}
+		allocated_video_buffers = 0;
 		if (sws != nullptr) {
 			sws_freeContext(sws);
 			sws = nullptr;
@@ -1229,12 +1240,17 @@ private:
 		if (video_id) {
 			auto size     = VideoBufferSize(fmt->streams[video_id.value()]);
 			auto retained = current_video ? 1u : 0u;
+			allocated_video_buffers = retained;
 			for (size_t i = retained; i < static_cast<size_t>(max_video_buffers); i++) {
 				auto buffer = std::make_unique<GuestBuffer>(mem, 0x100, size, true);
 				if (!buffer->Valid()) {
+					if (allocated_video_buffers >= 2) {
+						break;
+					}
 					return false;
 				}
 				video_buffers.Push(std::move(buffer));
+				allocated_video_buffers++;
 			}
 		}
 		if (audio_id) {
@@ -1632,17 +1648,35 @@ private:
 			}
 			return false;
 		}
-		auto* dst = buffer->Get();
-		auto* c   = dst + pitch * h;
+		auto*       dst    = buffer->Get();
+		auto*       c      = dst + pitch * h;
+		const auto  y_pad  = static_cast<uint8_t>(s->codecpar->color_range == AVCOL_RANGE_JPEG ? 0 : 16);
+		const auto  pad_w  = pitch - static_cast<uint32_t>(src->width);
 		// PPSA02433 samples the padded columns; zero chroma would turn them green.
-		std::memset(dst, s->codecpar->color_range == AVCOL_RANGE_JPEG ? 0 : 16,
-		            static_cast<size_t>(pitch) * h);
-		std::memset(c, 128, static_cast<size_t>(pitch) * h / 2);
+		// Only pad the unused margins rather than blanking the active frame first.
 		for (int y = 0; y < src->height; y++) {
-			std::memcpy(dst + y * pitch, nv12->data[0] + y * nv12->linesize[0], src->width);
+			auto* row = dst + static_cast<size_t>(y) * pitch;
+			std::memcpy(row, nv12->data[0] + y * nv12->linesize[0], src->width);
+			if (pad_w > 0) {
+				std::memset(row + src->width, y_pad, pad_w);
+			}
 		}
-		for (int y = 0; y < src->height / 2; y++) {
-			std::memcpy(c + y * pitch, nv12->data[1] + y * nv12->linesize[1], src->width);
+		if (static_cast<uint32_t>(src->height) < h) {
+			std::memset(dst + static_cast<size_t>(src->height) * pitch, y_pad,
+			            static_cast<size_t>(h - static_cast<uint32_t>(src->height)) * pitch);
+		}
+		const uint32_t chroma_h = static_cast<uint32_t>(src->height / 2);
+		const uint32_t total_ch = h / 2;
+		for (uint32_t y = 0; y < chroma_h; y++) {
+			auto* row = c + static_cast<size_t>(y) * pitch;
+			std::memcpy(row, nv12->data[1] + static_cast<int>(y) * nv12->linesize[1], src->width);
+			if (pad_w > 0) {
+				std::memset(row + src->width, 128, pad_w);
+			}
+		}
+		if (chroma_h < total_ch) {
+			std::memset(c + static_cast<size_t>(chroma_h) * pitch, 128,
+			            static_cast<size_t>(total_ch - chroma_h) * pitch);
 		}
 		std::memset(info, 0, sizeof(*info));
 		info->data       = dst;
@@ -1749,7 +1783,9 @@ private:
 	WorkQueue<ReadyFrame>                    video_frames;
 	WorkQueue<ReadyFrame>                    audio_frames;
 	std::optional<ReadyFrame>                current_video;
+	std::optional<ReadyFrame>                previous_video;
 	std::optional<ReadyFrame>                current_audio;
+	size_t                                   allocated_video_buffers = 0;
 	LibKernel::Pthread                       demux_thread = nullptr;
 	LibKernel::Pthread                       video_thread = nullptr;
 	LibKernel::Pthread                       audio_thread = nullptr;
