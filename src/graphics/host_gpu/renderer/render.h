@@ -222,6 +222,17 @@ private:
 	std::vector<ImageId>                  m_bound_images;
 	std::vector<vk::DescriptorImageInfo>  m_descriptor_images;
 	std::vector<vk::WriteDescriptorSet>   m_descriptor_writes;
+	struct CachedTextureDesc {
+		std::array<uint32_t, 8> dwords {};
+		uint64_t                resource_flags = 0;
+		TextureCache::ImageDesc desc {};
+		Prospero::BufferFormat  format            = Prospero::BufferFormat::kInvalid;
+		vk::Format              pixel_format      = vk::Format::eUndefined;
+		vk::Format              view_format       = vk::Format::eUndefined;
+		bool                    shader_conversion = false;
+		bool                    valid             = false;
+	};
+	std::array<CachedTextureDesc, 64>     m_texture_desc_cache {};
 	vk::DescriptorSetLayout               m_pssr_descriptor_layout = nullptr;
 	vk::PipelineLayout                    m_pssr_pipeline_layout   = nullptr;
 	vk::Pipeline                          m_pssr_pipeline          = nullptr;

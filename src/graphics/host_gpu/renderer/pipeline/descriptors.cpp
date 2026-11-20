@@ -509,149 +509,193 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		}
 	}
 
-	const auto address         = descriptor.Base40();
-	const auto width           = static_cast<uint32_t>(descriptor.Width5()) + 1u;
-	const auto height          = static_cast<uint32_t>(descriptor.Height5()) + 1u;
-	const auto base_level      = descriptor.BaseLevel();
-	const auto last_level      = descriptor.LastLevel();
-	const auto type            = TextureType(descriptor);
-	const bool multisampled    = IsMultisampledTexture(type);
-	const auto max_mip         = resource.r128 ? last_level : descriptor.MaxMip();
-	const auto physical_levels = multisampled ? 1u : static_cast<uint32_t>(max_mip) + 1u;
-	// IMAGE_STORE addresses BASE_LEVEL; only IMAGE_STORE_MIP selects other view mips.
-	const bool single_storage_mip =
-	    storage && resource.mip_mode != ShaderRecompiler::IR::ImageMipMode::Dynamic;
-	auto view_levels = multisampled || single_storage_mip
-	                       ? 1u
-	                       : static_cast<uint32_t>(last_level - base_level) + 1u;
-	auto levels =
-	    multisampled ? 1u : std::max(physical_levels, base_level + view_levels);
-	const auto tile       = descriptor.TileMode();
-	const bool depth_tile = tile == Prospero::TileMode::kDepth;
-	const bool msaa_tile  = depth_tile || tile == Prospero::TileMode::kRenderTarget;
-	const bool msaa_array = type == Prospero::ImageType::kColor2DMsaaArray;
-	if ((!multisampled && base_level > last_level) ||
-	    (multisampled &&
-	     (base_level != 0 || last_level == 0 || last_level > 3 || max_mip != last_level ||
-	      !msaa_tile || (descriptor.MsaaDepth() && !depth_tile) ||
-	      (!msaa_array && (descriptor.Depth() != 0 || descriptor.BaseArray5() != 0))))) {
-		EXIT("unsupported texture mip view: base=%u last=%u levels=%u max=%u type=%u tile=%u "
-		     "class=%u numeric=%u dimension=%u mip_mode=%u read=%d written=%d "
-		     "dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
-		     base_level, last_level, levels, descriptor.MaxMip(),
-		     static_cast<uint32_t>(descriptor.Type()), static_cast<uint32_t>(tile),
-		     static_cast<uint32_t>(resource.resource_class),
-		     static_cast<uint32_t>(resource.numeric_class),
-		     static_cast<uint32_t>(resource.dimension), static_cast<uint32_t>(resource.mip_mode),
-		     resource.read, resource.written, descriptor.fields[0], descriptor.fields[1],
-		     descriptor.fields[2], descriptor.fields[3], descriptor.fields[4], descriptor.fields[5],
-		     descriptor.fields[6], descriptor.fields[7]);
+	const uint64_t resource_flags =
+	    (static_cast<uint64_t>(storage) << 0u) |
+	    (static_cast<uint64_t>(resource.r128) << 1u) |
+	    (static_cast<uint64_t>(resource.heap) << 2u) |
+	    (static_cast<uint64_t>(resource.depth_compare) << 3u) |
+	    (static_cast<uint64_t>(resource.skip_degamma) << 4u) |
+	    (static_cast<uint64_t>(ShaderRecompiler::IR::ReadsDepthBits(resource)) << 5u) |
+	    (static_cast<uint64_t>(resource.resource_class) << 8u) |
+	    (static_cast<uint64_t>(resource.numeric_class) << 16u) |
+	    (static_cast<uint64_t>(resource.dimension) << 24u) |
+	    (static_cast<uint64_t>(resource.mip_mode) << 32u);
+	std::array<uint32_t, 8> raw_dwords {};
+	for (size_t di = 0; di < 8; di++) {
+		raw_dwords[di] = descriptor.fields[di];
 	}
-	const auto samples = multisampled ? 1u << last_level : 1u;
-	const auto depth          = static_cast<uint32_t>(descriptor.Depth()) + 1u;
-	const auto format         = ShaderRecompiler::IR::ReadsDepthBits(resource)
-	                                ? Prospero::BufferFormat::k16UNorm
-	                                : descriptor.Format();
-	const auto surface_format = TextureGetSurfaceFormatInfo(format);
-	const bool shader_conversion =
-	    surface_format.conversion_format != Prospero::BufferFormat::kInvalid;
-	const bool sampled_numeric_class =
-	    storage || resource.numeric_class ==
-	                   Prospero::SampledTextureNumericClass(Prospero::RemapTextureFormat(format));
-	if (!storage && resource.resource_class == ShaderRecompiler::IR::ImageResourceClass::Sampled &&
-	    !sampled_numeric_class) {
-		EXIT("sampled image numeric class mismatch: numeric=%u format=%u addr=0x%016" PRIx64 "\n",
-		     static_cast<uint32_t>(resource.numeric_class), static_cast<uint32_t>(format), address);
+	uint64_t desc_hash = resource_flags * 0x9e3779b97f4a7c15ull;
+	for (uint32_t w: raw_dwords) {
+		desc_hash = (desc_hash ^ w) * 0xbf58476d1ce4e5b9ull;
 	}
+	auto& cached_slot =
+	    m_texture_desc_cache[(desc_hash ^ (desc_hash >> 32u)) & (m_texture_desc_cache.size() - 1)];
 
-	const bool    volume       = type == Prospero::ImageType::kColor3D;
-	const bool    layered      = type == Prospero::ImageType::kColor1DArray ||
-	                             type == Prospero::ImageType::kColor2DArray ||
-	                             type == Prospero::ImageType::kColor2DMsaaArray;
-	auto          image_layers = layered ? depth : 1u;
-	// A cube holds six faces even when DEPTH, its last face slice, ends before them (Teardown's
-	// sky cube has DEPTH 0).
-	if (descriptor.Type() == Prospero::ImageType::kCube) {
-		image_layers = std::max(image_layers, 6u);
-	}
-	auto          view_base    = static_cast<uint32_t>(base_level);
-	auto pixel_format = surface_format.vk_format;
-	if (resource.depth_compare) {
-		if (const auto* depth_format = FindGuestDepthFormatPolicy(format)) {
-			pixel_format = depth_format->depth_attachment_format;
-		}
-	}
-	const auto view_format =
-	    storage ? StorageViewFormat(resource, format, pixel_format) : pixel_format;
-	const auto              block_bytes = Prospero::BlockCompressedBytesPerBlock(format);
 	TextureCache::ImageDesc desc {};
-	desc.info.data         = {address, 0};
-	desc.info.pixel_format = pixel_format;
-	desc.info.guest_format = format;
-	desc.info.type         = TextureBaseType(type);
-	desc.info.extent       = {width, height, volume ? depth : 1u};
-	desc.info.resources    = {levels, image_layers};
-	desc.info.bytes_per_block =
-	    block_bytes != 0 ? block_bytes : Prospero::NumBytesPerElement(format);
-	desc.info.samples   = samples;
-	desc.info.tile_mode = tile;
-	if (!resource.r128 && descriptor.MetaCompress() && tile != Prospero::TileMode::kDepth) {
-		desc.info.metadata.kind = ImageMetadataKind::Dcc;
-	}
-	if (levels > physical_levels) {
-		if (!ResolveTextureMipView(desc.info, physical_levels,
-		                           !resource.r128 && descriptor.MetaCompress(), view_levels,
-		                           view_base)) {
-			// The layout stores no mip past MAX_MIP here, so a view starting in the chain ends at
-			// MAX_MIP; dynamic-mip shaders still count mips up to LAST_LEVEL.
-			if (base_level >= physical_levels ||
-			    resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::Dynamic) {
-				EXIT("unsupported texture mip view changes physical layout: base=%u last=%u "
-				     "max=%u extent=%ux%ux%u tile=%u\n",
-				     base_level, last_level, max_mip, width, height, depth,
-				     static_cast<uint32_t>(tile));
+	Prospero::BufferFormat  format            = Prospero::BufferFormat::kInvalid;
+	vk::Format              pixel_format      = vk::Format::eUndefined;
+	vk::Format              view_format       = vk::Format::eUndefined;
+	bool                    shader_conversion = false;
+	if (!resource.heap && cached_slot.valid && cached_slot.resource_flags == resource_flags &&
+	    cached_slot.dwords == raw_dwords) {
+		desc              = cached_slot.desc;
+		format            = cached_slot.format;
+		pixel_format      = cached_slot.pixel_format;
+		view_format       = cached_slot.view_format;
+		shader_conversion = cached_slot.shader_conversion;
+	} else {
+		const auto address         = descriptor.Base40();
+		const auto width           = static_cast<uint32_t>(descriptor.Width5()) + 1u;
+		const auto height          = static_cast<uint32_t>(descriptor.Height5()) + 1u;
+		const auto base_level      = descriptor.BaseLevel();
+		const auto last_level      = descriptor.LastLevel();
+		const auto type            = TextureType(descriptor);
+		const bool multisampled    = IsMultisampledTexture(type);
+		const auto max_mip         = resource.r128 ? last_level : descriptor.MaxMip();
+		const auto physical_levels = multisampled ? 1u : static_cast<uint32_t>(max_mip) + 1u;
+		// IMAGE_STORE addresses BASE_LEVEL; only IMAGE_STORE_MIP selects other view mips.
+		const bool single_storage_mip =
+		    storage && resource.mip_mode != ShaderRecompiler::IR::ImageMipMode::Dynamic;
+		auto view_levels = multisampled || single_storage_mip
+		                       ? 1u
+		                       : static_cast<uint32_t>(last_level - base_level) + 1u;
+		auto levels =
+		    multisampled ? 1u : std::max(physical_levels, base_level + view_levels);
+		const auto tile       = descriptor.TileMode();
+		const bool depth_tile = tile == Prospero::TileMode::kDepth;
+		const bool msaa_tile  = depth_tile || tile == Prospero::TileMode::kRenderTarget;
+		const bool msaa_array = type == Prospero::ImageType::kColor2DMsaaArray;
+		if ((!multisampled && base_level > last_level) ||
+		    (multisampled &&
+		     (base_level != 0 || last_level == 0 || last_level > 3 || max_mip != last_level ||
+		      !msaa_tile || (descriptor.MsaaDepth() && !depth_tile) ||
+		      (!msaa_array && (descriptor.Depth() != 0 || descriptor.BaseArray5() != 0))))) {
+			EXIT("unsupported texture mip view: base=%u last=%u levels=%u max=%u type=%u tile=%u "
+			     "class=%u numeric=%u dimension=%u mip_mode=%u read=%d written=%d "
+			     "dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+			     base_level, last_level, levels, descriptor.MaxMip(),
+			     static_cast<uint32_t>(descriptor.Type()), static_cast<uint32_t>(tile),
+			     static_cast<uint32_t>(resource.resource_class),
+			     static_cast<uint32_t>(resource.numeric_class),
+			     static_cast<uint32_t>(resource.dimension), static_cast<uint32_t>(resource.mip_mode),
+			     resource.read, resource.written, descriptor.fields[0], descriptor.fields[1],
+			     descriptor.fields[2], descriptor.fields[3], descriptor.fields[4], descriptor.fields[5],
+			     descriptor.fields[6], descriptor.fields[7]);
+		}
+		const auto samples = multisampled ? 1u << last_level : 1u;
+		const auto depth   = static_cast<uint32_t>(descriptor.Depth()) + 1u;
+		format             = ShaderRecompiler::IR::ReadsDepthBits(resource)
+		                         ? Prospero::BufferFormat::k16UNorm
+		                         : descriptor.Format();
+		const auto surface_format = TextureGetSurfaceFormatInfo(format);
+		shader_conversion =
+		    surface_format.conversion_format != Prospero::BufferFormat::kInvalid;
+		const bool sampled_numeric_class =
+		    storage || resource.numeric_class ==
+		                   Prospero::SampledTextureNumericClass(Prospero::RemapTextureFormat(format));
+		if (!storage && resource.resource_class == ShaderRecompiler::IR::ImageResourceClass::Sampled &&
+		    !sampled_numeric_class) {
+			EXIT("sampled image numeric class mismatch: numeric=%u format=%u addr=0x%016" PRIx64 "\n",
+			     static_cast<uint32_t>(resource.numeric_class), static_cast<uint32_t>(format), address);
+		}
+
+		const bool    volume       = type == Prospero::ImageType::kColor3D;
+		const bool    layered      = type == Prospero::ImageType::kColor1DArray ||
+		                             type == Prospero::ImageType::kColor2DArray ||
+		                             type == Prospero::ImageType::kColor2DMsaaArray;
+		auto          image_layers = layered ? depth : 1u;
+		// A cube holds six faces even when DEPTH, its last face slice, ends before them (Teardown's
+		// sky cube has DEPTH 0).
+		if (descriptor.Type() == Prospero::ImageType::kCube) {
+			image_layers = std::max(image_layers, 6u);
+		}
+		auto view_base = static_cast<uint32_t>(base_level);
+		pixel_format   = surface_format.vk_format;
+		if (resource.depth_compare) {
+			if (const auto* depth_format = FindGuestDepthFormatPolicy(format)) {
+				pixel_format = depth_format->depth_attachment_format;
 			}
-			view_levels                = physical_levels - base_level;
-			desc.info.resources.levels = physical_levels;
-			desc.info.data.size        = 0;
+		}
+		view_format            = storage ? StorageViewFormat(resource, format, pixel_format) : pixel_format;
+		const auto block_bytes = Prospero::BlockCompressedBytesPerBlock(format);
+		desc.info.data         = {address, 0};
+		desc.info.pixel_format = pixel_format;
+		desc.info.guest_format = format;
+		desc.info.type         = TextureBaseType(type);
+		desc.info.extent       = {width, height, volume ? depth : 1u};
+		desc.info.resources    = {levels, image_layers};
+		desc.info.bytes_per_block =
+		    block_bytes != 0 ? block_bytes : Prospero::NumBytesPerElement(format);
+		desc.info.samples   = samples;
+		desc.info.tile_mode = tile;
+		if (!resource.r128 && descriptor.MetaCompress() && tile != Prospero::TileMode::kDepth) {
+			desc.info.metadata.kind = ImageMetadataKind::Dcc;
+		}
+		if (levels > physical_levels) {
+			if (!ResolveTextureMipView(desc.info, physical_levels,
+			                           !resource.r128 && descriptor.MetaCompress(), view_levels,
+			                           view_base)) {
+				// The layout stores no mip past MAX_MIP here, so a view starting in the chain ends at
+				// MAX_MIP; dynamic-mip shaders still count mips up to LAST_LEVEL.
+				if (base_level >= physical_levels ||
+				    resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::Dynamic) {
+					EXIT("unsupported texture mip view changes physical layout: base=%u last=%u "
+					     "max=%u extent=%ux%ux%u tile=%u\n",
+					     base_level, last_level, max_mip, width, height, depth,
+					     static_cast<uint32_t>(tile));
+				}
+				view_levels                = physical_levels - base_level;
+				desc.info.resources.levels = physical_levels;
+				desc.info.data.size        = 0;
+				desc.info.UpdateSize();
+			}
+		} else {
 			desc.info.UpdateSize();
 		}
-	} else {
-		desc.info.UpdateSize();
+		const auto alignment = desc.info.DataAlignment();
+		EXIT_NOT_IMPLEMENTED(desc.info.data.size == 0 || alignment == 0 ||
+		                     (address & (static_cast<uint64_t>(alignment) - 1u)) != 0);
+		// Image heaps keep the descriptors of unmapped textures, which PS5 never samples.
+		if (resource.heap && !m_context.IsMapped(address, desc.info.data.size)) {
+			return {.layout = vk::ImageLayout::eGeneral};
+		}
+		if (storage) {
+			ValidateStorageTexture(resource, descriptor, desc.info.data.size);
+		}
+		if (!resource.r128 && descriptor.MetaCompress() && tile != Prospero::TileMode::kDepth) {
+			TileSizeAlign metadata_size {};
+			(void)TileGetDccSize(width, height, volume ? depth : image_layers,
+			                     desc.info.bytes_per_block, physical_levels, tile, metadata_size,
+			                     std::countr_zero(samples));
+			desc.info.metadata.range         = {descriptor.MetaAddr() << 8u, metadata_size.size};
+			desc.info.metadata.dcc_alpha_msb = descriptor.DccAlphaPos();
+		}
+		desc.view_info = TextureViewInfo(resource, descriptor, view_format, surface_format, storage,
+		                                 view_levels, desc.info.resources.layers);
+		desc.view_info.base_level = view_base;
+		// Without VK_EXT_image_view_min_lod (MoltenVK) the T# MinLod clamp cannot reach the view: fold it into a
+		// higher view base level (sampled, non-Dynamic only). The fraction rounds up to a whole level.
+		if (desc.view_info.min_lod != 0 && !storage && m_context.GetGraphics().min_lod_remap &&
+		    resource.mip_mode != ShaderRecompiler::IR::ImageMipMode::Dynamic) {
+			const auto mapped = MapMinLodToBaseLevel(desc.view_info.base_level, desc.view_info.level_count,
+			                                         desc.view_info.min_lod);
+			desc.view_info.base_level  = mapped.base_level;
+			desc.view_info.level_count = mapped.level_count;
+			desc.view_info.min_lod     = mapped.min_lod;
+		}
+		desc.type = storage ? TextureCache::BindingType::Storage : TextureCache::BindingType::Texture;
+		desc.heap = resource.heap;
+		if (!resource.heap) {
+			cached_slot.dwords            = raw_dwords;
+			cached_slot.resource_flags    = resource_flags;
+			cached_slot.desc              = desc;
+			cached_slot.format            = format;
+			cached_slot.pixel_format      = pixel_format;
+			cached_slot.view_format       = view_format;
+			cached_slot.shader_conversion = shader_conversion;
+			cached_slot.valid             = true;
+		}
 	}
-	const auto alignment = desc.info.DataAlignment();
-	EXIT_NOT_IMPLEMENTED(desc.info.data.size == 0 || alignment == 0 ||
-	                     (address & (static_cast<uint64_t>(alignment) - 1u)) != 0);
-	// Image heaps keep the descriptors of unmapped textures, which PS5 never samples.
-	if (resource.heap && !m_context.IsMapped(address, desc.info.data.size)) {
-		return {.layout = vk::ImageLayout::eGeneral};
-	}
-	if (storage) {
-		ValidateStorageTexture(resource, descriptor, desc.info.data.size);
-	}
-	if (!resource.r128 && descriptor.MetaCompress() && tile != Prospero::TileMode::kDepth) {
-		TileSizeAlign metadata_size {};
-		(void)TileGetDccSize(width, height, volume ? depth : image_layers,
-		                     desc.info.bytes_per_block, physical_levels, tile, metadata_size,
-		                     std::countr_zero(samples));
-		desc.info.metadata.range         = {descriptor.MetaAddr() << 8u, metadata_size.size};
-		desc.info.metadata.dcc_alpha_msb = descriptor.DccAlphaPos();
-	}
-	desc.view_info = TextureViewInfo(resource, descriptor, view_format, surface_format, storage,
-	                                 view_levels, desc.info.resources.layers);
-	desc.view_info.base_level = view_base;
-	// Without VK_EXT_image_view_min_lod (MoltenVK) the T# MinLod clamp cannot reach the view: fold it into a
-	// higher view base level (sampled, non-Dynamic only). The fraction rounds up to a whole level.
-	if (desc.view_info.min_lod != 0 && !storage && m_context.GetGraphics().min_lod_remap &&
-	    resource.mip_mode != ShaderRecompiler::IR::ImageMipMode::Dynamic) {
-		const auto mapped = MapMinLodToBaseLevel(desc.view_info.base_level, desc.view_info.level_count,
-		                                         desc.view_info.min_lod);
-		desc.view_info.base_level  = mapped.base_level;
-		desc.view_info.level_count = mapped.level_count;
-		desc.view_info.min_lod     = mapped.min_lod;
-	}
-	desc.type = storage ? TextureCache::BindingType::Storage : TextureCache::BindingType::Texture;
-	desc.heap = resource.heap;
 
 	auto id = texture_cache.FindImage(desc, shader_conversion);
 	if (!id) {
