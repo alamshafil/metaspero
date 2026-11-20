@@ -274,13 +274,6 @@ void TextureCache::DeleteImage(ImageId id) {
 	UnregisterImage(id);
 	if (m_scheduler.Active()) {
 		m_scheduler.DeferOperation([this, id] {
-			if (m_graphics.device_address_destruction_waits_for_queue) {
-				// MoltenVK retains references in active Metal command buffers.
-				// Draining the queue on the host ensures no submitted Metal command buffer is
-				// alive or still retaining this image before it is destroyed.
-				m_graphics.WaitQueueIdle();
-				m_scheduler.GetMasterSemaphore().Refresh();
-			}
 			m_slot_images.erase(id);
 		});
 	} else {
@@ -981,7 +974,10 @@ void TextureCache::InitializeImage(ImageId id) {
 	if (image.info.samples > 1) {
 		return;
 	}
-	const bool upload = image.IsBufferModified() || image.IsCpuDirty();
+	if (image.IsMaybeCpuDirty()) {
+		image.ResolveMaybeCpuHash(image.HashGuestEdges());
+	}
+	const bool upload = image.IsBufferModified() || image.IsDefinitelyCpuDirty();
 	if (upload) {
 		const auto [source, source_offset] =
 		    m_buffer_cache.ObtainBufferForImage(image.info.data.address, image.info.data.size);
@@ -1045,7 +1041,7 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 	const GuestRange viewed {range.address + slice_size * first + mip.offset,
 	                         slice_size * (count - 1) + mip.size};
 	const auto run = [&](uint32_t slice) { return viewed.address + slice_size * slice; };
-	if (m_buffer_cache.IsRegionGpuModified(viewed.address, viewed.size)) {
+	if (m_buffer_cache.HasGpuDirtyBytes(viewed.address, viewed.size)) {
 		std::array<vk::ClearAttachment, TileManager::ColorClearSlots> clears {};
 		uint32_t keys = 0;
 		for (uint32_t key = 0; key < clears.size(); key++) {
@@ -1070,8 +1066,7 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 			const bool native_current = (image.usage.render_target || image.IsGpuModified()) &&
 			                            !image.IsBufferModified() && !image.IsCpuDirty();
 			// 2D-array attachment views select 2D layers or, of a volume, depth slices.
-			if (m_graphics.conditional_rendering_enabled &&
-			    count <= m_graphics.GetPhysicalDeviceProperties().limits.maxFramebufferLayers &&
+			if (count <= m_graphics.GetPhysicalDeviceProperties().limits.maxFramebufferLayers &&
 			    (image.backing.usage & vk::ImageUsageFlagBits::eColorAttachment) &&
 			    (m_graphics.GetFormatProperties(view.format).optimalTilingFeatures &
 			     vk::FormatFeatureFlagBits::eColorAttachment) &&
@@ -1091,19 +1086,25 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 				const auto command = m_scheduler.Current().Handle();
 				const auto area    = BeginColorRendering(image, view.format, view.base_level,
 				                                         image_first, count, nullptr, command);
-				vk::ClearRect rect {.rect = area, .layerCount = 1};
-				for (uint32_t slice = 0; slice < count; slice++) {
-					rect.baseArrayLayer = slice;
-					for (uint32_t key = 0; key < clears.size(); key++) {
-						if ((keys & (1u << key)) != 0) {
-							const vk::ConditionalRenderingBeginInfoEXT predicate {
-							    .buffer = predicates,
-							    .offset = (slice * clears.size() + key) * sizeof(uint32_t)};
-							command.beginConditionalRenderingEXT(&predicate);
-							command.clearAttachments(1, &clears[key], 1, &rect);
-							command.endConditionalRenderingEXT();
+				if (m_graphics.conditional_rendering_enabled) {
+					vk::ClearRect rect {.rect = area, .layerCount = 1};
+					for (uint32_t slice = 0; slice < count; slice++) {
+						rect.baseArrayLayer = slice;
+						for (uint32_t key = 0; key < clears.size(); key++) {
+							if ((keys & (1u << key)) != 0) {
+								const vk::ConditionalRenderingBeginInfoEXT predicate {
+								    .buffer = predicates,
+								    .offset = (slice * clears.size() + key) *
+								              sizeof(vk::DrawIndirectCommand)};
+								command.beginConditionalRenderingEXT(&predicate);
+								command.clearAttachments(1, &clears[key], 1, &rect);
+								command.endConditionalRenderingEXT();
+							}
 						}
 					}
+				} else {
+					m_blit_helper.ClearColorIndirect(command, view.format, image.backing.samples,
+					                                 area, count, keys, clears, predicates);
 				}
 				command.endRendering();
 				CommitGpuWrite(image);
@@ -1118,43 +1119,68 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 		    Common::DebugCounters::Counter::ColorMetadataReadbackNs);
 		m_buffer_cache.ReadMemory(viewed.address, viewed.size, false);
 	}
-	for (uint32_t slice = 0; slice < count; slice++) {
+	std::vector<uint8_t> bytes;
+	for (uint32_t slice = 0; slice < count;) {
 		const auto address = run(slice);
-		uint8_t code = 0;
+		uint8_t    code    = 0;
 		if (!LibKernel::Memory::TryReadBacking(address, &code, sizeof(code))) {
 			EXIT("TextureCache: failed to read color metadata backing\n");
 		}
 		vk::ClearValue clear {};
 		if (!DecodeColorClear(desc, code, clear.color)) {
+			++slice;
 			continue;
 		}
-		std::vector<uint8_t> bytes(mip.size);
+		bytes.resize(mip.size);
 		if (!LibKernel::Memory::TryReadBacking(address, bytes.data(), bytes.size())) {
 			EXIT("TextureCache: failed to read color metadata slice\n");
 		}
 		if (!std::all_of(bytes.begin(), bytes.end(), [code](uint8_t byte) { return byte == code; })) {
+			++slice;
 			continue;
+		}
+		uint32_t clear_slices = 1;
+		while (slice + clear_slices < count) {
+			const auto next_address = run(slice + clear_slices);
+			uint8_t    next_code    = 0;
+			if (!LibKernel::Memory::TryReadBacking(next_address, &next_code, sizeof(next_code)) ||
+			    next_code != code ||
+			    !LibKernel::Memory::TryReadBacking(next_address, bytes.data(), bytes.size()) ||
+			    !std::all_of(bytes.begin(), bytes.end(),
+			                 [code](uint8_t byte) { return byte == code; })) {
+				break;
+			}
+			++clear_slices;
 		}
 		{
 			std::scoped_lock lock {m_lock};
-			const auto& image = m_slot_images[id];
-			const bool depth = image.info.IsDepth();
+			const auto&      image = m_slot_images[id];
+			const bool       depth = image.info.IsDepth();
 			if (depth) {
-				const auto value = clear.color.float32[0];
+				const auto value   = clear.color.float32[0];
 				clear.depthStencil = {value, 0u};
 			}
 			ClearImage(m_scheduler.Current(), id, depth ? image.backing.format : view.format,
 			           {depth ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor,
-			            view.base_level, view.level_count,
-			            image_first + slice, 1}, clear);
+			            view.base_level, view.level_count, image_first + slice, clear_slices},
+			           clear);
 		}
 		// Publish the conversion's expanded keys without treating them as guest writes
 		// to overlapping image data. Invalidate the buffer before updating its backing.
 		if (desc.type != BindingType::VideoOut) {
 			std::fill(bytes.begin(), bytes.end(), uint8_t {0xff});
-			m_buffer_cache.InvalidateMemory(address, bytes.size());
-			LibKernel::Memory::WriteBacking(address, bytes.data(), bytes.size());
+			if (mip.size == slice_size) {
+				m_buffer_cache.InvalidateMemory(address, uint64_t {clear_slices} * slice_size);
+			}
+			for (uint32_t s = 0; s < clear_slices; ++s) {
+				const auto slice_address = run(slice + s);
+				if (mip.size != slice_size) {
+					m_buffer_cache.InvalidateMemory(slice_address, bytes.size());
+				}
+				LibKernel::Memory::WriteBacking(slice_address, bytes.data(), bytes.size());
+			}
 		}
+		slice += clear_slices;
 	}
 }
 
@@ -1599,7 +1625,10 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 	                               range.baseArrayLayer == 0 && range.layerCount == layers;
 	const bool full_image = range.aspectMask == aspects && full_subresources;
 	TrackImage(id);
-	if (!full_image && (image.IsBufferModified() || image.IsCpuDirty())) {
+	if (!full_image && image.IsMaybeCpuDirty()) {
+		image.ResolveMaybeCpuHash(image.HashGuestEdges());
+	}
+	if (!full_image && (image.IsBufferModified() || image.IsDefinitelyCpuDirty())) {
 		InitializeImage(id);
 		if (image.info.samples == 1 && (image.IsBufferModified() || image.IsCpuDirty())) {
 			EXIT("TextureCache: image clear retained guest ownership\n");

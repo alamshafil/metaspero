@@ -628,12 +628,15 @@ vk::Buffer TileManager::CheckColorClear(Result metadata, uint64_t stride, uint32
 	EXIT_IF(slices == 0 || slices > max_slices || metadata.size % 4 != 0 || stride % 4 != 0 ||
 	        metadata.size / 4 > UINT32_MAX || stride * (slices - 1) >= metadata.size);
 	if (m_color_clear == nullptr) {
-		m_color_clear      = CreatePipeline(GPU_TILER_COLOR_CLEAR_SPV, nullptr);
+		m_color_clear = CreatePipeline(GPU_TILER_COLOR_CLEAR_SPV, nullptr);
+		vk::BufferUsageFlags predicate_usage =
+		    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndirectBuffer;
+		if (m_graphics.conditional_rendering_enabled) {
+			predicate_usage |= vk::BufferUsageFlagBits::eConditionalRenderingEXT;
+		}
 		m_clear_predicates = std::make_unique<Buffer>(
-		    m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
-		    vk::BufferUsageFlagBits::eStorageBuffer |
-		        vk::BufferUsageFlagBits::eConditionalRenderingEXT,
-		    uint64_t {max_slices} * ColorClearSlots * sizeof(uint32_t));
+		    m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0, predicate_usage,
+		    uint64_t {max_slices} * ColorClearSlots * sizeof(vk::DrawIndirectCommand));
 	}
 	const auto source = BindStorage(metadata, metadata.size);
 	const vk::DescriptorBufferInfo infos[] {source.info,

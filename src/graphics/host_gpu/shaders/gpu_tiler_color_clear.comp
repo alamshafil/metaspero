@@ -40,8 +40,12 @@ void main() {
 	const uint slot = key >> 5u;
 	const bool hit  = mismatch == 0u && (key & 0x1fu) == 0u && (params.keys & (1u << slot)) != 0u;
 	if (gl_LocalInvocationIndex < Slots) {
-		predicates.data[slice * Slots + gl_LocalInvocationIndex] =
-		    uint(hit && slot == gl_LocalInvocationIndex);
+		const uint matched  = uint(hit && slot == gl_LocalInvocationIndex);
+		const uint base_out = (slice * Slots + gl_LocalInvocationIndex) * 4u;
+		predicates.data[base_out + 0u] = matched * 3u;
+		predicates.data[base_out + 1u] = matched;
+		predicates.data[base_out + 2u] = 0u;
+		predicates.data[base_out + 3u] = slice;
 	}
 	if (hit && params.expand != 0u) {
 		for (uint i = gl_LocalInvocationIndex; i < params.words; i += gl_WorkGroupSize.x) {

@@ -5,6 +5,7 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <compare>
+#include <span>
 #include <vector>
 
 namespace Libs::Graphics {
@@ -23,11 +24,15 @@ public:
 	KYTY_CLASS_NO_COPY(BlitHelper);
 
 	void ReinterpretColorAsMsDepth(Image& source, Image& destination);
+	void ClearColorIndirect(vk::CommandBuffer command, vk::Format format, uint32_t samples,
+	                        vk::Rect2D area, uint32_t slices, uint32_t keys,
+	                        std::span<const vk::ClearAttachment> clears, vk::Buffer predicates);
 
 private:
 	struct PipelineKey {
-		uint32_t   samples = 1;
-		vk::Format format  = vk::Format::eUndefined;
+		uint32_t   samples     = 1;
+		vk::Format format      = vk::Format::eUndefined;
+		bool       color_clear = false;
 
 		auto operator<=>(const PipelineKey&) const = default;
 	};
@@ -41,10 +46,13 @@ private:
 
 	GraphicContext&         m_graphics;
 	CommandScheduler&       m_scheduler;
-	vk::DescriptorSetLayout m_descriptor_layout = nullptr;
-	vk::PipelineLayout      m_pipeline_layout   = nullptr;
-	vk::ShaderModule        m_vertex_shader     = nullptr;
-	vk::ShaderModule        m_fragment_shader   = nullptr;
+	vk::DescriptorSetLayout m_descriptor_layout  = nullptr;
+	vk::PipelineLayout      m_pipeline_layout    = nullptr;
+	vk::ShaderModule        m_vertex_shader      = nullptr;
+	vk::ShaderModule        m_fragment_shader    = nullptr;
+	vk::ShaderModule        m_clear_float_shader = nullptr;
+	vk::ShaderModule        m_clear_uint_shader  = nullptr;
+	vk::ShaderModule        m_clear_sint_shader  = nullptr;
 	std::vector<Pipeline>   m_pipelines;
 };
 
