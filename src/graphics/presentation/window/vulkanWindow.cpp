@@ -646,7 +646,10 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 #elif defined(__ANDROID__)
 	device_features.depthBounds = supported2.features.depthBounds;
 	device_features.depthClamp  = supported2.features.depthClamp;
+#elif defined(__APPLE__)
+	device_features.depthClamp  = supported2.features.depthClamp;
 #endif
+	graphics.depth_clamp_enabled = device_features.depthClamp == VK_TRUE;
 	device_features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 	device_features.shaderStorageImageMultisample =
 	    supported2.features.shaderStorageImageMultisample;

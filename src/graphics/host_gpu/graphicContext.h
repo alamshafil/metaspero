@@ -52,6 +52,7 @@ struct GraphicContext {
 	bool                               occlusion_queries_enabled             = false;
 	bool                               occlusion_query_precise_enabled       = false;
 	bool                               supports_block_texel_view              = false;
+	bool                               depth_clamp_enabled                   = false;
 	bool                               is_moltenvk                           = false;
 	vk::DriverId                       driver_id                             = static_cast<vk::DriverId>(0);
 	bool                               mesh_shader_enabled                   = false;

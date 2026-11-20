@@ -252,12 +252,15 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	clip_ext.depthClipEnable = static_params.depth_clip_enable ? VK_TRUE : VK_FALSE;
 
 	vk::PipelineRasterizationStateCreateInfo rasterizer {};
-	// MoltenVK lacks VK_EXT_depth_clip_enable; omit the depth-clip struct on macOS and accept
-	// Vulkan's default depth clipping (enabled) instead of the PS5's clamp behavior.
 #if !defined(__APPLE__)
 	// The DB clamps depth to the viewport range after polygon offset is applied.
 	rasterizer.depthClampEnable = VK_TRUE;
 	rasterizer.pNext = &clip_ext;
+#else
+	// MoltenVK lacks VK_EXT_depth_clip_enable, but supports core depthClamp (MTLDepthClipModeClamp).
+	// Enable depth clamping whenever the guest disables depth clipping (e.g. directional shadow maps).
+	rasterizer.depthClampEnable =
+	    (!static_params.depth_clip_enable && graphics.depth_clamp_enabled) ? VK_TRUE : VK_FALSE;
 #endif
 	vk::PipelineRasterizationProvokingVertexStateCreateInfoEXT provoking_vertex {};
 	EXIT_NOT_IMPLEMENTED(static_params.provoking_vtx_last &&
