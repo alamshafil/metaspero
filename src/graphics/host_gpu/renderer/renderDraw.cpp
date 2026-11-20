@@ -1156,6 +1156,39 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 	vk::DeviceAddress     mesh_indices = 0;
 	if (!mesh_active) {
 		vertex_bindings = AcquireVertexBuffers(buffer, state.vertex_info[0]);
+		// MoltenVK/Metal has no per-binding size limit on setVertexBuffer, so draws that fetch
+		// vertices past the guest descriptor's byte size (e.g. a 3-vertex fullscreen triangle
+		// drawn with vertexCount=4) read adjacent garbage from the shared stream buffer instead
+		// of robust zero-filled attributes. Zero-pad those trailing bytes on MoltenVK.
+		if (m_context.GetGraphics().is_moltenvk && !draw.indexed && draw.index_count > 0 &&
+		    emit.indirect.address == 0) {
+			const auto& vs_info = state.vertex_info[0];
+			auto&       stream  = m_context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Stream);
+			for (int i = 0; i < vs_info.buffers_num; i++) {
+				const auto& vb = vs_info.buffers[i];
+				if (vb.stride == 0 || vb.fetch_index != 0 || vertex_bindings.sizes[i] == 0) {
+					continue;
+				}
+				const uint64_t end_vertex =
+				    static_cast<uint64_t>(std::max<int32_t>(emit.vertex_offset, 0)) +
+				    draw.index_count;
+				const uint64_t required    = end_vertex * vb.stride;
+				const uint64_t valid_bytes = vertex_bindings.sizes[i];
+				if (required > valid_bytes && required <= 64ull * 1024ull &&
+				    vertex_bindings.buffers[i] == stream.Handle()) {
+					std::vector<uint8_t> tmp(valid_bytes);
+					std::memcpy(tmp.data(), stream.Mapped().data() + vertex_bindings.offsets[i],
+					            valid_bytes);
+					auto [mapped, offset] = stream.Map(required, 16);
+					std::memcpy(mapped, tmp.data(), valid_bytes);
+					std::memset(mapped + valid_bytes, 0, required - valid_bytes);
+					stream.Commit();
+					vertex_bindings.buffers[i] = stream.Handle();
+					vertex_bindings.offsets[i] = offset;
+					vertex_bindings.sizes[i]   = required;
+				}
+			}
+		}
 		index_binding   = PrepareIndexBuffer(buffer, index_source);
 	} else if (draw.indexed) {
 		const auto [indices, offset] =
