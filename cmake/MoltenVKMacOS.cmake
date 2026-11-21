@@ -3,6 +3,8 @@
 # Fetches the official MoltenVK macOS release from KhronosGroup and exposes:
 # - KYTY_MOLTENVK_FRAMEWORK: path to MoltenVK.framework (macos-arm64_x86_64)
 # - KYTY_MOLTENVK_DYLIB: path to libMoltenVK.dylib (macOS universal)
+# - KYTY_MOLTENVK_MESH_FRAMEWORK: path to MoltenVK-Mesh.framework (experimental mesh shader fork)
+# - KYTY_MOLTENVK_MESH_DYLIB: path to libMoltenVK-Mesh.dylib (experimental mesh shader fork)
 
 include_guard(GLOBAL)
 include(FetchContent)
@@ -40,3 +42,19 @@ file(GLOB_RECURSE _kyty_mvk_dylib
 list(GET _kyty_mvk_dylib 0 KYTY_MOLTENVK_DYLIB)
 
 message(STATUS "MoltenVK ${KYTY_MOLTENVK_MACOS_VERSION} (official, macOS): ${KYTY_MOLTENVK_FRAMEWORK}")
+
+# Mesh shader fork MoltenVK (macOS)
+set(KYTY_MOLTENVK_MESH_MACOS_ARCHIVE "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/archives/MoltenVK-Mesh-macOS.tar.gz")
+set(KYTY_MOLTENVK_MESH_MACOS_SHA256 "3acb4c2c32dcc9658be766904345a7eea6e2a7097ec1bd52f49f3fff529a994b")
+
+if(EXISTS "${KYTY_MOLTENVK_MESH_MACOS_ARCHIVE}")
+	FetchContent_Declare(moltenvk_mesh_macos
+		URL "${KYTY_MOLTENVK_MESH_MACOS_ARCHIVE}"
+		URL_HASH "SHA256=${KYTY_MOLTENVK_MESH_MACOS_SHA256}"
+		DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+	FetchContent_MakeAvailable(moltenvk_mesh_macos)
+
+	set(KYTY_MOLTENVK_MESH_FRAMEWORK "${moltenvk_mesh_macos_SOURCE_DIR}/dynamic/MoltenVK-Mesh.xcframework/macos-arm64_x86_64/MoltenVK-Mesh.framework")
+	set(KYTY_MOLTENVK_MESH_DYLIB "${moltenvk_mesh_macos_SOURCE_DIR}/dynamic/dylib/macOS/libMoltenVK-Mesh.dylib")
+	message(STATUS "MoltenVK Mesh Shader Fork (macOS): ${KYTY_MOLTENVK_MESH_FRAMEWORK}")
+endif()

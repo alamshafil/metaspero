@@ -28,6 +28,8 @@ enum class PresentMode { Fifo, Mailbox, Immediate };
 
 enum class PssrUpscaler { Linear, DLSS, FSR };
 
+enum class MoltenVkVariant { Mainline, MeshShaderFork };
+
 using Keymap = std::vector<std::string>;
 using ControllerColor = std::array<uint8_t, 3>;
 
@@ -60,6 +62,7 @@ struct ConfigOptions {
 	// 0 shares player 1 with the first gamepad; 1..MAX_PLAYERS dedicates that player to the keyboard.
 	uint32_t               keyboard_player                = 0;
 	PresentMode            present_mode                = PresentMode::Mailbox;
+	MoltenVkVariant        moltenvk_variant            = MoltenVkVariant::Mainline;
 	int32_t                gpu_index                   = -1;
 	bool                   fullscreen_enabled          = false;
 	bool                   hdr_enabled                 = false;
@@ -134,6 +137,7 @@ int      GetPlayerFromUserId(int32_t user_id);
 // Players after the first are guests: they have no profile, trophies or NP account.
 bool     IsGuestUserId(int32_t user_id);
 PresentMode GetPresentMode();
+MoltenVkVariant GetMoltenVkVariant();
 int32_t GetGpuIndex();
 bool     FullscreenEnabled();
 bool     HdrEnabled();

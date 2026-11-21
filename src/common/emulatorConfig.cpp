@@ -91,6 +91,10 @@ PresentMode GetPresentMode() {
 	return g_config->present_mode;
 }
 
+MoltenVkVariant GetMoltenVkVariant() {
+	return g_config->moltenvk_variant;
+}
+
 int32_t GetGpuIndex() {
 	return g_config->gpu_index;
 }

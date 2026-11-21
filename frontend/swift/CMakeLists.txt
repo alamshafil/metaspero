@@ -131,6 +131,9 @@ if(IOS)
         XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY ON
         XCODE_EMBED_FRAMEWORKS_REMOVE_HEADERS_ON_COPY ON
     )
+    if(KYTY_MOLTENVK_MESH_FRAMEWORK)
+        set_property(TARGET Metaspero APPEND PROPERTY XCODE_EMBED_FRAMEWORKS "${KYTY_MOLTENVK_MESH_FRAMEWORK}")
+    endif()
     if(KYTY_IOS_TEAM_ID)
         set_target_properties(Metaspero PROPERTIES XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${KYTY_IOS_TEAM_ID}")
     endif()
@@ -166,6 +169,9 @@ else()
         XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY ON
         XCODE_EMBED_FRAMEWORKS_REMOVE_HEADERS_ON_COPY ON
     )
+    if(KYTY_MOLTENVK_MESH_FRAMEWORK)
+        set_property(TARGET Metaspero APPEND PROPERTY XCODE_EMBED_FRAMEWORKS "${KYTY_MOLTENVK_MESH_FRAMEWORK}")
+    endif()
     if(KYTY_MOLTENVK_DYLIB)
         add_custom_command(TARGET Metaspero POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Metaspero>/../Frameworks"
@@ -174,6 +180,16 @@ else()
                 "$<TARGET_FILE_DIR:Metaspero>/../Frameworks/libMoltenVK.dylib"
             COMMAND codesign -s - --force "$<TARGET_FILE_DIR:Metaspero>/../Frameworks/libMoltenVK.dylib"
             COMMENT "Copy and codesign libMoltenVK.dylib into Metaspero.app/Contents/Frameworks"
+        )
+    endif()
+    if(NOT CMAKE_GENERATOR MATCHES "Xcode" AND KYTY_MOLTENVK_MESH_DYLIB)
+        add_custom_command(TARGET Metaspero POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Metaspero>/../Frameworks"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${KYTY_MOLTENVK_MESH_DYLIB}"
+                "$<TARGET_FILE_DIR:Metaspero>/../Frameworks/libMoltenVK-Mesh.dylib"
+            COMMAND codesign -s - --force "$<TARGET_FILE_DIR:Metaspero>/../Frameworks/libMoltenVK-Mesh.dylib"
+            COMMENT "Copy and codesign libMoltenVK-Mesh.dylib into Metaspero.app/Contents/Frameworks"
         )
     endif()
 endif()

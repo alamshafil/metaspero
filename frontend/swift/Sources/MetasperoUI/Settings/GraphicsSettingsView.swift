@@ -7,6 +7,9 @@ struct GraphicsSettingsView: View {
     @AppStorage(SettingsKey.presentMode) private var presentMode = SettingsDefault.presentMode
     @AppStorage(SettingsKey.vblankFrequency) private var vblankFrequency = SettingsDefault.vblankFrequency
 
+    // Driver
+    @AppStorage(SettingsKey.moltenVkVariant) private var moltenVkVariant = SettingsDefault.moltenVkVariant
+
     // Overlays
     @AppStorage(SettingsKey.perfOverlayEnabled) private var perfOverlayEnabled = false
     @AppStorage(SettingsKey.enableMetalHud) private var enableMetalHud = false
@@ -59,6 +62,11 @@ struct GraphicsSettingsView: View {
                     PlatformLabel("Install Custom Driver (.zip)", systemImage: "arrow.down.doc.fill")
                 }
                 #else
+                Picker("MoltenVK Driver", selection: $moltenVkVariant) {
+                    Text("Mainline").tag("Mainline")
+                    Text("Mesh Shader Fork").tag("MeshShaderFork")
+                }
+
                 HStack {
                     Text("Active Driver")
                     Spacer()

@@ -503,26 +503,31 @@ static void KytyFatalExitCallback(int status, const char *message) {
 }
 
 + (NSString *)moltenVkVersion {
-    // 1. Check embedded Frameworks/MoltenVK.framework
-    NSString *bundleFrameworkPath = [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@"Frameworks/MoltenVK.framework"];
-    NSBundle *mvkBundle = [NSBundle bundleWithPath:bundleFrameworkPath];
-    if (mvkBundle) {
+    NSString *variant = [[NSUserDefaults standardUserDefaults] stringForKey:@"moltenVkVariant"];
+    const BOOL isMeshFork = (variant == nil) || [variant isEqualToString:@"MeshShaderFork"];
+    NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+    NSString *frameworkName = isMeshFork ? @"MoltenVK-Mesh.framework" : @"MoltenVK.framework";
+    NSString *suffix = isMeshFork ? @"Mesh Shader Fork" : @"Mainline Metal";
+
+    for (NSString *subDir in @[@"Contents/Frameworks", @"Frameworks"]) {
+        NSString *fwPath = [[bundlePath stringByAppendingPathComponent:subDir]
+            stringByAppendingPathComponent:frameworkName];
+        NSBundle *mvkBundle = [NSBundle bundleWithPath:fwPath];
         NSString *ver = [mvkBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
-        if (ver && ver.length > 0) {
-            return [NSString stringWithFormat:@"MoltenVK %@ (Metal)", ver];
+        if (ver.length > 0) {
+            return [NSString stringWithFormat:@"MoltenVK %@ (%@)", ver, suffix];
         }
     }
-    
-    // 2. Check loaded bundle identifier
-    NSBundle *loadedBundle = [NSBundle bundleWithIdentifier:@"com.moltenvk.framework"];
-    if (loadedBundle) {
+
+    if (!isMeshFork) {
+        NSBundle *loadedBundle = [NSBundle bundleWithIdentifier:@"com.moltenvk.framework"];
         NSString *ver = [loadedBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
-        if (ver && ver.length > 0) {
-            return [NSString stringWithFormat:@"MoltenVK %@ (Metal)", ver];
+        if (ver.length > 0) {
+            return [NSString stringWithFormat:@"MoltenVK %@ (%@)", ver, suffix];
         }
     }
-    
-    return @"MoltenVK 1.4.3 (Metal)";
+
+    return [NSString stringWithFormat:@"MoltenVK (%@)", suffix];
 }
 
 + (void)applyGraphicsDebugSettings {
@@ -741,6 +746,11 @@ static void KytyFatalExitCallback(int status, const char *message) {
             } else {
                 unsetenv("MTL_HUD_ENABLED");
             }
+
+            NSString *mvkVariant = getStringSetting(@"moltenVkVariant", @"MeshShaderFork");
+            options.config.moltenvk_variant = [mvkVariant isEqualToString:@"MeshShaderFork"]
+                                                  ? Config::MoltenVkVariant::MeshShaderFork
+                                                  : Config::MoltenVkVariant::Mainline;
 
 #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
             // MoltenVK Metal optimizations for iOS

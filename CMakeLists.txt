@@ -1239,6 +1239,14 @@ if(APPLE AND NOT IOS)
 			--entitlements "${KYTY_SOURCE_DIR}/macos_jit.entitlements"
 			$<TARGET_FILE:kyty_emulator>
 		COMMENT "Codesign kyty_emulator with JIT entitlements (macOS)")
+	if(KYTY_MOLTENVK_MESH_DYLIB)
+		add_custom_command(TARGET kyty_emulator POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different
+				"${KYTY_MOLTENVK_MESH_DYLIB}"
+				"$<TARGET_FILE_DIR:kyty_emulator>/libMoltenVK-Mesh.dylib"
+			COMMAND codesign -s - --force "$<TARGET_FILE_DIR:kyty_emulator>/libMoltenVK-Mesh.dylib"
+			COMMENT "Copy libMoltenVK-Mesh.dylib adjacent to kyty_emulator (macOS)")
+	endif()
 elseif(IOS)
 	include("${CMAKE_CURRENT_LIST_DIR}/cmake/MoltenVKiOS.cmake")
 	set_target_properties(kyty_emulator PROPERTIES
@@ -1255,6 +1263,12 @@ elseif(IOS)
 			--entitlements "${KYTY_SOURCE_DIR}/ios_jit.entitlements"
 			$<TARGET_FILE:kyty_emulator>
 		COMMENT "Package MoltenVK framework and codesign kyty_emulator (iOS)")
+	if(KYTY_MOLTENVK_MESH_FRAMEWORK)
+		add_custom_command(TARGET kyty_emulator POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_directory "${KYTY_MOLTENVK_MESH_FRAMEWORK}" "$<TARGET_FILE_DIR:kyty_emulator>/Frameworks/MoltenVK-Mesh.framework"
+			COMMAND codesign -s - --force "$<TARGET_FILE_DIR:kyty_emulator>/Frameworks/MoltenVK-Mesh.framework/MoltenVK"
+			COMMENT "Package MoltenVK-Mesh framework (iOS)")
+	endif()
 endif()
 
 install(TARGETS kyty_emulator DESTINATION .)

@@ -830,6 +830,20 @@ void WindowContext::Run() {
 	}
 }
 
+#if defined(__APPLE__)
+static std::string FindBundledMoltenVk(const std::string& base_path, const char* suffix) {
+	const std::string dylib     = std::string("libMoltenVK") + suffix + ".dylib";
+	const std::string framework = std::string("MoltenVK") + suffix + ".framework/MoltenVK";
+	for (const std::string& rel : {dylib, "Frameworks/" + framework, "Frameworks/" + dylib,
+	                               "../Frameworks/" + dylib, "../Frameworks/" + framework}) {
+		if (std::string path = base_path + rel; Common::File::IsFileExisting(path)) {
+			return path;
+		}
+	}
+	return {};
+}
+#endif
+
 static void WindowCreate(WindowContext& context) {
 	EXIT_IF(context.window != nullptr);
 	EXIT_IF(context.graphic_ctx.screen_width == 0);
@@ -847,29 +861,20 @@ static void WindowCreate(WindowContext& context) {
 
 	uint32_t window_flags = WindowContext::InitialWindowFlags(Config::FullscreenEnabled());
 #if defined(__APPLE__)
-	// SDL loads Vulkan while creating a Vulkan window, so select the bundled
-	// MoltenVK loader before calling SDL_CreateWindow. Keep an explicit user
-	// override, and fall back to SDL's normal loader search when no bundle is present.
-	if (std::getenv("SDL_VULKAN_LIBRARY") == nullptr) {
+	// Select the bundled MoltenVK loader before SDL initializes Vulkan, preserving any user env override.
+	static const bool has_user_vulkan_override = (std::getenv("SDL_VULKAN_LIBRARY") != nullptr);
+	if (!has_user_vulkan_override) {
 		if (const char* base_path = SDL_GetBasePath(); base_path != nullptr) {
-			const std::string base_path_str = base_path;
-			std::string       moltenvk_path = base_path_str + "libMoltenVK.dylib";
-			if (!Common::File::IsFileExisting(moltenvk_path)) {
-				moltenvk_path = base_path_str + "Frameworks/MoltenVK.framework/MoltenVK";
+			const bool  want_mesh  = (Config::GetMoltenVkVariant() == Config::MoltenVkVariant::MeshShaderFork);
+			std::string path       = want_mesh ? FindBundledMoltenVk(base_path, "-Mesh") : std::string{};
+			const bool  using_mesh = !path.empty();
+			if (path.empty()) {
+				path = FindBundledMoltenVk(base_path, "");
 			}
-			if (!Common::File::IsFileExisting(moltenvk_path)) {
-				moltenvk_path = base_path_str + "Frameworks/libMoltenVK.dylib";
-			}
-			if (!Common::File::IsFileExisting(moltenvk_path)) {
-				moltenvk_path = base_path_str + "../Frameworks/libMoltenVK.dylib";
-			}
-			if (!Common::File::IsFileExisting(moltenvk_path)) {
-				moltenvk_path = base_path_str + "../Frameworks/MoltenVK.framework/MoltenVK";
-			}
-			if (Common::File::IsFileExisting(moltenvk_path)) {
-				SDL_setenv_unsafe("SDL_VULKAN_LIBRARY", moltenvk_path.c_str(), 0);
-				SDL_SetHint(SDL_HINT_VULKAN_LIBRARY, moltenvk_path.c_str());
-				LOGF("Vulkan loader: %s\n", moltenvk_path.c_str());
+			if (!path.empty()) {
+				SDL_setenv_unsafe("SDL_VULKAN_LIBRARY", path.c_str(), 1);
+				SDL_SetHint(SDL_HINT_VULKAN_LIBRARY, path.c_str());
+				LOGF("Vulkan loader (%s): %s\n", using_mesh ? "Mesh Shader Fork" : "Mainline", path.c_str());
 			}
 		}
 	}

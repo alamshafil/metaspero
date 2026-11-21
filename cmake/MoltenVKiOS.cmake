@@ -2,6 +2,7 @@
 #
 # Fetches the official, unmodified MoltenVK iOS release from KhronosGroup (the same upstream the macOS
 # build uses for libMoltenVK.dylib) and exposes the device framework as KYTY_MOLTENVK_FRAMEWORK.
+# Also exposes KYTY_MOLTENVK_MESH_FRAMEWORK if the experimental mesh shader fork is present.
 # Device (ios-arm64) only, the iOS simulator is not supported.
 
 include_guard(GLOBAL)
@@ -30,3 +31,18 @@ if(NOT _kyty_mvk_binary)
 endif()
 get_filename_component(KYTY_MOLTENVK_FRAMEWORK "${_kyty_mvk_binary}" DIRECTORY)
 message(STATUS "MoltenVK ${KYTY_MOLTENVK_IOS_VERSION} (official, iOS): ${KYTY_MOLTENVK_FRAMEWORK}")
+
+# Mesh shader fork MoltenVK (iOS)
+set(KYTY_MOLTENVK_MESH_IOS_ARCHIVE "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/archives/MoltenVK-Mesh-iOS.tar.gz")
+set(KYTY_MOLTENVK_MESH_IOS_SHA256 "1995fc0ebfa33cc273a19635cca7a6148ff4c9b194914d0ef0516108f0d8627d")
+
+if(EXISTS "${KYTY_MOLTENVK_MESH_IOS_ARCHIVE}")
+	FetchContent_Declare(moltenvk_mesh_ios
+		URL "${KYTY_MOLTENVK_MESH_IOS_ARCHIVE}"
+		URL_HASH "SHA256=${KYTY_MOLTENVK_MESH_IOS_SHA256}"
+		DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+	FetchContent_MakeAvailable(moltenvk_mesh_ios)
+
+	set(KYTY_MOLTENVK_MESH_FRAMEWORK "${moltenvk_mesh_ios_SOURCE_DIR}/dynamic/MoltenVK-Mesh.xcframework/ios-arm64/MoltenVK-Mesh.framework")
+	message(STATUS "MoltenVK Mesh Shader Fork (iOS): ${KYTY_MOLTENVK_MESH_FRAMEWORK}")
+endif()
