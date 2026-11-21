@@ -62,7 +62,7 @@ struct AboutKytyContentView: View {
                         Text(appVersion)
                             .font(.subheadline)
                             .foregroundColor(.secondary)
-                        Text("PlayStation 5 Research Emulator for Apple Platforms")
+                        Text("PlayStation 5 Research Emulator for Apple Silicon and Android")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }

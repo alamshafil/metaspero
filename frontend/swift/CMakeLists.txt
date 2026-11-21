@@ -24,7 +24,14 @@ set(SWIFT_SOURCES
     Sources/MetasperoUI/InputMappingView.swift
     Sources/MetasperoUI/AboutView.swift
     Sources/MetasperoUI/EmulationView.swift
-    Sources/MetasperoUI/SettingsView.swift
+    Sources/MetasperoUI/Settings/SettingsKeys.swift
+    Sources/MetasperoUI/Settings/SettingsStorageHelpers.swift
+    Sources/MetasperoUI/Settings/SettingsView.swift
+    Sources/MetasperoUI/Settings/AdvancedSettingsView.swift
+    Sources/MetasperoUI/Settings/LibrarySettingsView.swift
+    Sources/MetasperoUI/Settings/GraphicsSettingsView.swift
+    Sources/MetasperoUI/Settings/ControllersSettingsView.swift
+    Sources/MetasperoUI/Settings/DiagnosticsSettingsView.swift
     Sources/MetasperoUI/LogView.swift
     Sources/MetasperoUI/MemoryWarningToastView.swift
     Sources/MetasperoUI/PlatformIcon.swift

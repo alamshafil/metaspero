@@ -703,7 +703,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
                 options.config.present_mode = Config::PresentMode::Mailbox;
             }
 
-            options.config.user_name = [getStringSetting(@"userName", @"Kyty") UTF8String];
+            options.config.user_name = [getStringSetting(@"userName", @"Metaspero") UTF8String];
             options.config.user_id = (int32_t)getIntSetting(@"userId", Config::DEFAULT_USER_ID);
             options.config.console_language = (uint32_t)getIntSetting(@"consoleLanguage", Config::DEFAULT_CONSOLE_LANGUAGE);
             NSInteger vblankFreq = getIntSetting(@"vblankFrequency", 60);
@@ -712,7 +712,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
             }
             options.config.vblank_frequency = (uint32_t)vblankFreq;
 
-            options.config.tessellation_enabled = getBoolSetting(@"tessellationEnabled", false);
             options.config.controller_vibration_intensity = getBoolSetting(@"enableHaptics", true) ? 100u : 0u;
             options.config.relaxed_shader_float = getBoolSetting(@"relaxedShaderFloat", false);
             options.config.shader_cache_enabled = getBoolSetting(@"shaderCacheEnabled", true);
@@ -721,10 +720,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
                 renderScale = 100;
             }
             options.config.resolution_scale = (uint32_t)renderScale;
-            options.config.readback_linear_images = getBoolSetting(@"readbackLinearImages", false);
-            options.config.sync_raw_image_buffers = getBoolSetting(@"syncRawImageBuffers", false);
-            options.config.hdr_enabled = getBoolSetting(@"hdrEnabled", false);
-            options.config.fullscreen_enabled = getBoolSetting(@"fullscreenEnabled", false);
 
             options.config.skip_notice_screen = getBoolSetting(@"skipNoticeScreen", false);
             options.config.network_connected = getBoolSetting(@"networkConnected", false);

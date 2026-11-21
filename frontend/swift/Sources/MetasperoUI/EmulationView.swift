@@ -12,21 +12,14 @@ import AppKit
 #endif
 #endif
 
-/// On-screen controls default: on for iOS, off for macOS (opt-in via Settings).
-#if os(macOS)
-let touchOverlayDefault = false
-#else
-let touchOverlayDefault = true
-#endif
-
 struct EmulationView: View {
     let game: GameItem
     @Binding var isEmulating: Bool
 #if !SKIP
     @State private var isClosing: Bool = false
     @State private var closingTimeoutTask: Task<Void, Never>? = nil
-    @AppStorage("enableTouchOverlay") private var enableTouchOverlay = touchOverlayDefault
-    @AppStorage("resolutionScale") private var resolutionScale = "720p"
+    @AppStorage(SettingsKey.enableTouchOverlay) private var enableTouchOverlay = SettingsDefault.enableTouchOverlay
+    @AppStorage(SettingsKey.resolutionScale) private var resolutionScale = SettingsDefault.resolutionScale
     @ObservedObject private var physicalManager = PhysicalControllerManager.shared
 #endif
 
@@ -171,7 +164,7 @@ struct InGameOverlayView: View {
     let game: GameItem
     let onExit: () -> Void
     
-    @AppStorage("enableTouchOverlay") private var enableTouchOverlay = touchOverlayDefault
+    @AppStorage(SettingsKey.enableTouchOverlay) private var enableTouchOverlay = SettingsDefault.enableTouchOverlay
     @ObservedObject private var physicalManager = PhysicalControllerManager.shared
     @State private var showTouchOverlay = true
     @State private var showLogSheet = false

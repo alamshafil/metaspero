@@ -47,6 +47,8 @@ public enum PlatformIconMap {
             return Icons.Filled.ContentCopy
         case "folder", "folder.fill":
             return Icons.Filled.Folder
+        case "folder.badge.plus":
+            return Icons.Filled.CreateNewFolder
         case "network":
             return Icons.Filled.Language
         case "arrow.down.doc.fill":

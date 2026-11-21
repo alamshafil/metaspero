@@ -145,7 +145,7 @@ struct LibraryView: View {
                 LogView()
             }
             .sheet(isPresented: $showSettingsSheet) {
-                SettingsView()
+                SettingsView(isSheet: true)
             }
         } else {
             NavigationStack {
@@ -370,7 +370,7 @@ struct LibraryView: View {
             LogView()
         }
         .sheet(isPresented: $showSettingsSheet) {
-            SettingsView()
+            SettingsView(isSheet: true)
         }
         .sheet(item: $selectedGameForDetails) { game in
             GameDetailsView(
