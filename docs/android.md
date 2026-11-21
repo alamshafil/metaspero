@@ -86,12 +86,12 @@ To build Metaspero for Android ARM64:
    - macOS (Apple Silicon) or Linux (x86_64 or arm64).
 
 2. **Android SDK & NDK:**
-   - Android NDK version `28.2.13676358` (NDK r28) or newer.
+   - Android NDK `r30` (LTS) (NDK `r29` or newer required for libc++ `std::atomic_ref`).
    - Export `ANDROID_NDK_HOME` in your shell environment:
      ```bash
-     export ANDROID_NDK_HOME=$HOME/Library/Android/sdk/ndk/28.2.13676358
+     export ANDROID_NDK_HOME=$HOME/Library/Android/sdk/ndk/30.0.16248370
      ```
-   - Android SDK with platforms 35 or 36 and command-line tools (`adb`).
+   - Android SDK with platform `37.2` and command-line tools (`adb`).
 
 3. **Native Build Tools:**
    - CMake 3.25 or newer (`brew install cmake` or distro package manager).
@@ -111,7 +111,7 @@ To build Metaspero for Android ARM64:
 - `_Build/android-arm64/`: Native CMake configuration, object files, stripped `.so` libraries, and in-tree builds of FFmpeg and FEXCore.
 - `frontend/swift/.build/`: Swift Package Manager checkout and Skip plugin cache. Skip stores intermediate transpiled Kotlin source files and `.aar` library archives here.
 - `frontend/android/app/libs/`: Stores the assembled `MetasperoUI-debug.aar` and Skip runtime dependencies for Gradle.
-- `frontend/android/app/build/`: Android Gradle Plugin build cache, dexed classes, and final output APK (`app-debug.apk`).
+- `frontend/android/app/build/`: Android Gradle Plugin build cache, dexed classes, and final output APK (`app-release.apk` for Release builds, `app-debug.apk` for Debug builds).
 
 ### Method 1: Automated Build
 
@@ -126,11 +126,11 @@ This single command automatically:
 2. Cross-compiles `libkyty_android.so`, `libhardware.so`, and `libsync.so` with CMake and Ninja.
 3. Stages and strips the native `.so` libraries into `frontend/android/app/src/main/jniLibs/arm64-v8a/` using `llvm-strip`.
 4. Transpiles and packages the SwiftUI frontend into `MetasperoUI-debug.aar` using the Skip toolchain.
-5. Assembles the debug APK using the Gradle wrapper.
+5. Assembles the APK using the Gradle wrapper (`assembleRelease` for Release builds, signed for sideloading, or `assembleDebug` for Debug builds).
 
 The final generated APK is located at:
 ```
-frontend/android/app/build/outputs/apk/debug/app-debug.apk
+frontend/android/app/build/outputs/apk/release/app-release.apk
 ```
 
 ### Method 2: Manual Step-by-Step Build
@@ -185,7 +185,6 @@ frontend/android/app/build/outputs/apk/debug/app-debug.apk
 - `3rdparty/CMakeLists.txt`: Integrates in-tree FFmpeg compilation via `cmake/FFmpegAndroid.cmake` and configures `cpuinfo` with Clang compatibility.
 
 ### Platform Support Files
-- `cmake/android/atomic_ref_polyfill.h`: Provides a polyfill for `std::atomic_ref` missing from NDK r28 libc++.
 - `cmake/android/bionic_compat.h`: Polyfills glibc functions absent in Bionic, including cooperative `SIGUSR2` signal-based thread cancellation.
 - `cmake/android/hardware_stub.c`: Minimal `hw_get_module` symbols for Turnip driver dynamic linker compatibility.
 - `cmake/android/sync_stub.c`: Minimal `sync_wait` and `sync_merge` symbols for Turnip driver dynamic linker compatibility.

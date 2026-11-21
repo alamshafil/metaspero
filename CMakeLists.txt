@@ -51,11 +51,12 @@ if(CMAKE_SYSTEM_NAME MATCHES ".*Linux")
 endif()
 
 if(ANDROID)
+	if(CMAKE_ANDROID_NDK_VERSION AND CMAKE_ANDROID_NDK_VERSION VERSION_LESS 29)
+		message(FATAL_ERROR "Android builds require NDK r29 or newer for libc++ std::atomic_ref, found ${CMAKE_ANDROID_NDK_VERSION}")
+	endif()
 	# Android uses POSIX/Linux code paths with Android-specific customizations.
 	set(LINUX TRUE)
-	add_compile_definitions(KYTY_PLATFORM_ANDROID=1 _LIBCPP_ENABLE_EXPERIMENTAL)
-	# NDK r28's libc++ has no std::atomic_ref (needed by FEXCore and the emulator).
-	add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${CMAKE_CURRENT_LIST_DIR}/cmake/android/atomic_ref_polyfill.h>")
+	add_compile_definitions(KYTY_PLATFORM_ANDROID=1)
 	add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${CMAKE_CURRENT_LIST_DIR}/cmake/android/bionic_compat.h>")
 	# 16 KB page devices reject 4 KB-aligned segments, nothing here executes from the stack.
 	add_link_options(-Wl,-z,max-page-size=16384 -Wl,-z,noexecstack)
@@ -1321,11 +1322,19 @@ elseif(ANDROID)
 			)
 		endif()
 
+		if(CMAKE_BUILD_TYPE MATCHES Debug)
+			set(KYTY_ANDROID_GRADLE_TASK "assembleDebug")
+			set(KYTY_ANDROID_APK_VARIANT "Debug")
+		else()
+			set(KYTY_ANDROID_GRADLE_TASK "assembleRelease")
+			set(KYTY_ANDROID_APK_VARIANT "Release")
+		endif()
+
 		add_custom_target(kyty_android_apk ALL
-			COMMAND "${GRADLEW_BIN}" assembleDebug
+			COMMAND "${GRADLEW_BIN}" "${KYTY_ANDROID_GRADLE_TASK}"
 			WORKING_DIRECTORY "${ANDROID_APP_DIR}"
 			DEPENDS kyty_android_stage_libs
-			COMMENT "==> Assembling complete Android APK via Gradle..."
+			COMMENT "==> Assembling complete Android ${KYTY_ANDROID_APK_VARIANT} APK via Gradle..."
 		)
 		if(TARGET kyty_android_swift_aar)
 			add_dependencies(kyty_android_apk kyty_android_swift_aar)
