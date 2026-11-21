@@ -1313,21 +1313,38 @@ elseif(ANDROID)
 			COMMENT "==> Staging and stripping native libraries into Android jniLibs..."
 		)
 
-		find_program(SWIFT_EXECUTABLE swift)
-		if(SWIFT_EXECUTABLE)
-			add_custom_target(kyty_android_swift_aar
-				COMMAND ${SWIFT_EXECUTABLE} build
-				WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/frontend/swift"
-				COMMENT "==> Transpiling SwiftUI views via Skip..."
-			)
-		endif()
-
 		if(CMAKE_BUILD_TYPE MATCHES Debug)
 			set(KYTY_ANDROID_GRADLE_TASK "assembleDebug")
 			set(KYTY_ANDROID_APK_VARIANT "Debug")
+			set(KYTY_ANDROID_AAR_VARIANT "debug")
 		else()
 			set(KYTY_ANDROID_GRADLE_TASK "assembleRelease")
 			set(KYTY_ANDROID_APK_VARIANT "Release")
+			set(KYTY_ANDROID_AAR_VARIANT "release")
+		endif()
+
+		find_program(SWIFT_EXECUTABLE swift)
+		if(SWIFT_EXECUTABLE)
+			set(ANDROID_LIBS_DIR "${ANDROID_APP_DIR}/app/libs")
+			set(SKIPSTONE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/frontend/swift/.build/plugins/outputs/swift/MetasperoUI/destination/skipstone")
+			add_custom_target(kyty_android_swift_aar
+				COMMAND ${SWIFT_EXECUTABLE} build
+				COMMAND "${GRADLEW_BIN}" -p "${SKIPSTONE_DIR}"
+					":MetasperoUI:${KYTY_ANDROID_GRADLE_TASK}"
+					":SkipUI:${KYTY_ANDROID_GRADLE_TASK}"
+					":SkipModel:${KYTY_ANDROID_GRADLE_TASK}"
+					":SkipFoundation:${KYTY_ANDROID_GRADLE_TASK}"
+					":SkipLib:${KYTY_ANDROID_GRADLE_TASK}"
+				COMMAND ${CMAKE_COMMAND} -E remove_directory "${ANDROID_LIBS_DIR}"
+				COMMAND ${CMAKE_COMMAND} -E make_directory "${ANDROID_LIBS_DIR}"
+				COMMAND ${CMAKE_COMMAND} -E copy "${SKIPSTONE_DIR}/MetasperoUI/build/outputs/aar/MetasperoUI-${KYTY_ANDROID_AAR_VARIANT}.aar" "${ANDROID_LIBS_DIR}/"
+				COMMAND ${CMAKE_COMMAND} -E copy "${SKIPSTONE_DIR}/SkipUI/build/outputs/aar/SkipUI-${KYTY_ANDROID_AAR_VARIANT}.aar" "${ANDROID_LIBS_DIR}/"
+				COMMAND ${CMAKE_COMMAND} -E copy "${SKIPSTONE_DIR}/SkipModel/build/outputs/aar/SkipModel-${KYTY_ANDROID_AAR_VARIANT}.aar" "${ANDROID_LIBS_DIR}/"
+				COMMAND ${CMAKE_COMMAND} -E copy "${SKIPSTONE_DIR}/SkipFoundation/build/outputs/aar/SkipFoundation-${KYTY_ANDROID_AAR_VARIANT}.aar" "${ANDROID_LIBS_DIR}/"
+				COMMAND ${CMAKE_COMMAND} -E copy "${SKIPSTONE_DIR}/SkipLib/build/outputs/aar/SkipLib-${KYTY_ANDROID_AAR_VARIANT}.aar" "${ANDROID_LIBS_DIR}/"
+				WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/frontend/swift"
+				COMMENT "==> Transpiling and packaging SwiftUI ${KYTY_ANDROID_APK_VARIANT} AARs via Skip..."
+			)
 		endif()
 
 		add_custom_target(kyty_android_apk ALL
