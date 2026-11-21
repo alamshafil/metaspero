@@ -64,13 +64,7 @@ object NativeBridge {
     @JvmStatic
     external fun nativeStartGame(
         gamePath: String,
-        resolution: String,
-        presentMode: String,
-        skipMeshShaders: Boolean,
-        srtArm64Jit: Boolean,
-        perfOverlay: Boolean,
-        renderScalePercent: Int,
-        relaxedShaderFloat: Boolean
+        settingsJson: String
     ): Boolean
 
     @JvmStatic

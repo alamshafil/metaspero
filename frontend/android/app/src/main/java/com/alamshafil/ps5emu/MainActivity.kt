@@ -76,6 +76,12 @@ class MainActivity : ComponentActivity() {
                 KytyBridge.addCustomGamePath(savedPath)
             }
         }
+        KytyBridge.onCustomGamePathsChanged = { updatedPaths ->
+            val persisted = updatedPaths
+                .filter { it.isNotBlank() && it != filesDir.absolutePath }
+                .toSet()
+            gamePrefs.edit().putStringSet("custom_game_paths", persisted).apply()
+        }
 
         // Bridge SwiftUI launch action into native Android EmulationActivity
         KytyBridge.onLaunchGame = { gamePath ->
@@ -85,14 +91,8 @@ class MainActivity : ComponentActivity() {
                 GpuDriverManager.applyDriver(this@MainActivity, driver)
             }
 
-            val prefs = getSharedPreferences("defaults", Context.MODE_PRIVATE)
-            val res = prefs.getString("resolutionScale", "720p") ?: "720p"
-            val present = prefs.getString("presentMode", "Mailbox") ?: "Mailbox"
-
             val intent = Intent(this@MainActivity, EmulationActivity::class.java).apply {
                 putExtra("EXTRA_GAME_PATH", gamePath)
-                putExtra("EXTRA_RESOLUTION", res)
-                putExtra("EXTRA_PRESENT_MODE", present)
             }
             startActivity(intent)
         }

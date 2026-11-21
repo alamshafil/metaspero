@@ -293,9 +293,7 @@ JNIEXPORT void JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeSurfaceChan
 }
 
 JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGame(
-    JNIEnv* env, jclass, jstring j_game_path, jstring j_res, jstring j_present,
-    jboolean j_skip_mesh_shaders, jboolean j_srt_arm64_jit, jboolean j_perf_overlay,
-    jint j_render_scale_percent, jboolean j_relaxed_shader_float) {
+    JNIEnv* env, jclass, jstring j_game_path, jstring j_settings_json) {
     std::lock_guard<std::mutex> lifecycle_lock(g_lifecycle_mutex);
 
     if (g_is_running.load() && !g_is_stopping.load()) {
@@ -312,57 +310,100 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
         game_path = "/storage/emulated/0/" + game_path.substr(strlen("primary:"));
     }
 
-    std::string resolution = "720p";
-    if (j_res != nullptr) {
-        const char* res_chars = env->GetStringUTFChars(j_res, nullptr);
-        if (res_chars) {
-            resolution = res_chars;
-            env->ReleaseStringUTFChars(j_res, res_chars);
+    std::string settings_raw = "{}";
+    if (j_settings_json != nullptr) {
+        const char* json_chars = env->GetStringUTFChars(j_settings_json, nullptr);
+        if (json_chars) {
+            settings_raw = json_chars;
+            env->ReleaseStringUTFChars(j_settings_json, json_chars);
         }
     }
 
-    std::string present_mode = "Mailbox";
-    if (j_present != nullptr) {
-        const char* pres_chars = env->GetStringUTFChars(j_present, nullptr);
-        if (pres_chars) {
-            present_mode = pres_chars;
-            env->ReleaseStringUTFChars(j_present, pres_chars);
-        }
+    nlohmann::json settings = nlohmann::json::parse(settings_raw, nullptr, false);
+    if (settings.is_discarded() || !settings.is_object()) {
+        LOGW("Invalid settings JSON, falling back to defaults");
+        settings = nlohmann::json::object();
     }
+
+    auto getStringSetting = [&](const char* key, const std::string& default_val) -> std::string {
+        auto it = settings.find(key);
+        if (it != settings.end() && it->is_string()) {
+            return it->get<std::string>();
+        }
+        return default_val;
+    };
+
+    auto getBoolSetting = [&](const char* key, bool default_val) -> bool {
+        auto it = settings.find(key);
+        if (it != settings.end() && it->is_boolean()) {
+            return it->get<bool>();
+        }
+        return default_val;
+    };
+
+    auto getIntSetting = [&](const char* key, int64_t default_val) -> int64_t {
+        auto it = settings.find(key);
+        if (it != settings.end() && it->is_number_integer()) {
+            return it->get<int64_t>();
+        }
+        return default_val;
+    };
 
     if (g_emulator_thread.joinable()) {
         g_emulator_thread.join();
     }
 
-    if (j_skip_mesh_shaders == JNI_TRUE) {
+    if (getBoolSetting("skipMeshShaders", false)) {
         setenv("KYTY_SKIP_MESH_SHADERS", "1", 1);
         LOGI("Graphics Debug: Skip Mesh Shaders ENABLED");
     } else {
         unsetenv("KYTY_SKIP_MESH_SHADERS");
     }
 
-    if (j_srt_arm64_jit == JNI_TRUE) {
+    if (getBoolSetting("enableSrtArm64Jit", false)) {
         setenv("KYTY_SRT_ARM64_JIT", "1", 1);
         LOGI("Graphics Debug: ARM64 SRT Walker JIT ENABLED (experimental)");
     } else {
         unsetenv("KYTY_SRT_ARM64_JIT");
     }
 
-    const bool perf_overlay = (j_perf_overlay == JNI_TRUE);
-    const uint32_t render_scale =
-        (j_render_scale_percent >= 25 && j_render_scale_percent <= 100)
-            ? static_cast<uint32_t>(j_render_scale_percent)
-            : 100u;
-    const bool relaxed_shader_float = (j_relaxed_shader_float == JNI_TRUE);
-    LOGI("Performance: Kyty stats overlay %s, renderScale=%u%%, relaxedFloat=%s",
-         perf_overlay ? "ENABLED" : "disabled", render_scale,
-         relaxed_shader_float ? "ENABLED" : "disabled");
+    const std::string resolution = getStringSetting("resolutionScale", "720p");
+    const std::string present_mode = getStringSetting("presentMode", "Mailbox");
+    const std::string user_name = getStringSetting("userName", "Metaspero");
+    const int32_t user_id = static_cast<int32_t>(getIntSetting("userId", Config::DEFAULT_USER_ID));
+    const uint32_t console_language =
+        static_cast<uint32_t>(getIntSetting("consoleLanguage", Config::DEFAULT_CONSOLE_LANGUAGE));
+
+    int64_t vblank_freq = getIntSetting("vblankFrequency", 60);
+    if (vblank_freq < 30 || vblank_freq > 360) {
+        vblank_freq = 60;
+    }
+
+    int64_t render_scale_raw = getIntSetting("renderScalePercent", 100);
+    if (render_scale_raw < 20 || render_scale_raw > 100) {
+        render_scale_raw = 100;
+    }
+    const uint32_t render_scale = static_cast<uint32_t>(render_scale_raw);
+
+    const bool perf_overlay = getBoolSetting("perfOverlayEnabled", false);
+    const bool relaxed_shader_float = getBoolSetting("relaxedShaderFloat", false);
+    const bool shader_cache_enabled = getBoolSetting("shaderCacheEnabled", true);
+    const bool skip_notice_screen = getBoolSetting("skipNoticeScreen", false);
+    const bool network_connected = getBoolSetting("networkConnected", false);
+    const bool enable_haptics = getBoolSetting("enableHaptics", true);
+
+    LOGI("Settings: res=%s, present=%s, renderScale=%u%%, vblank=%lldHz, relaxedFloat=%s, perfOverlay=%s, user=%s(%d), lang=%u",
+         resolution.c_str(), present_mode.c_str(), render_scale, static_cast<long long>(vblank_freq),
+         relaxed_shader_float ? "on" : "off", perf_overlay ? "on" : "off",
+         user_name.c_str(), user_id, console_language);
 
     g_is_running.store(true);
     g_is_stopping.store(false);
 
-    g_emulator_thread = std::thread([game_path, resolution, present_mode, perf_overlay,
-                                     render_scale, relaxed_shader_float]() {
+    g_emulator_thread = std::thread([game_path, resolution, present_mode, user_name, user_id,
+                                     console_language, vblank_freq, perf_overlay, render_scale,
+                                     relaxed_shader_float, shader_cache_enabled,
+                                     skip_notice_screen, network_connected, enable_haptics]() {
         std::unique_lock<std::timed_mutex> session_lock(g_session_mutex, std::chrono::seconds(10));
         if (!session_lock.owns_lock()) {
             LOGE("Failed to acquire session lock within 10s");
@@ -414,14 +455,17 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
             options.config.present_mode = Config::PresentMode::Mailbox;
         }
 
-        options.config.user_name        = "Kyty";
-        options.config.user_id          = Config::DEFAULT_USER_ID;
-        options.config.console_language = Config::DEFAULT_CONSOLE_LANGUAGE;
-        options.config.vblank_frequency = 60;
-
-        options.config.perf_overlay_enabled = perf_overlay;
-        options.config.resolution_scale     = render_scale;
-        options.config.relaxed_shader_float = relaxed_shader_float;
+        options.config.user_name                      = user_name;
+        options.config.user_id                        = user_id;
+        options.config.console_language               = console_language;
+        options.config.vblank_frequency               = static_cast<uint32_t>(vblank_freq);
+        options.config.perf_overlay_enabled           = perf_overlay;
+        options.config.resolution_scale               = render_scale;
+        options.config.relaxed_shader_float           = relaxed_shader_float;
+        options.config.shader_cache_enabled           = shader_cache_enabled;
+        options.config.skip_notice_screen             = skip_notice_screen;
+        options.config.network_connected              = network_connected;
+        options.config.controller_vibration_intensity = enable_haptics ? 100u : 0u;
 
         LOGI("Starting Emulator::Run for %s", game_path.c_str());
         Emulator::Run(options);

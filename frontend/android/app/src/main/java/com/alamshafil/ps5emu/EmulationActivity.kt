@@ -48,13 +48,7 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var logTextView: TextView
     private lateinit var closingOverlay: FrameLayout
     private var gamePath: String = ""
-    private var resolution: String = "720p"
-    private var presentMode: String = "Mailbox"
-    private var skipMeshShaders: Boolean = false
-    private var enableSrtArm64Jit: Boolean = false
-    private var perfOverlayEnabled: Boolean = false
-    private var renderScalePercent: Int = 100
-    private var relaxedShaderFloat: Boolean = false
+    private var settingsJson: String = "{}"
     private var enableTouchControls: Boolean = false
     private var isStopping: Boolean = false
     private var lastVisibleStatsMode: Int = 0
@@ -99,8 +93,6 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         gamePath = intent.getStringExtra("EXTRA_GAME_PATH") ?: ""
-        resolution = intent.getStringExtra("EXTRA_RESOLUTION") ?: "720p"
-        presentMode = intent.getStringExtra("EXTRA_PRESENT_MODE") ?: "Mailbox"
 
         val rootLayout = FrameLayout(this).apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -119,16 +111,12 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         }
         rootLayout.addView(surfaceView)
 
-        // Read user preferences for touch gamepad and HUD
+        // Read user preferences for touch gamepad, HUD, and forward all settings to native core as JSON
         val prefs = getSharedPreferences("defaults", Context.MODE_PRIVATE)
+        settingsJson = serializeSettingsToJson(prefs)
         enableTouchControls = prefs.getBoolean("enableTouchOverlay", true)
         val enableHud = prefs.getBoolean("enableMetalHud", false)
         val hudDetailLevel = prefs.getString("hudDetailLevel", "Full") ?: "Full"
-        skipMeshShaders = prefs.getBoolean("skipMeshShaders", false)
-        enableSrtArm64Jit = prefs.getBoolean("enableSrtArm64Jit", false)
-        perfOverlayEnabled = prefs.getBoolean("perfOverlayEnabled", false)
-        renderScalePercent = prefs.getInt("renderScalePercent", 100).coerceIn(25, 100)
-        relaxedShaderFloat = prefs.getBoolean("relaxedShaderFloat", false)
 
         // Virtual On-Screen Gamepad
         virtualGamepad = VirtualGamepad(this).apply {
@@ -645,13 +633,21 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         } catch (_: Exception) {}
     }
 
+    private fun serializeSettingsToJson(prefs: android.content.SharedPreferences): String {
+        val json = org.json.JSONObject()
+        for ((key, value) in prefs.all) {
+            when (value) {
+                is Boolean, is Int, is Long, is Float, is Double, is String -> json.put(key, value)
+                is Set<*> -> json.put(key, org.json.JSONArray(value.filterNotNull()))
+            }
+        }
+        return json.toString()
+    }
+
     override fun surfaceCreated(holder: SurfaceHolder) {
         NativeBridge.nativeSetSurface(holder.surface)
         if (gamePath.isNotEmpty()) {
-            NativeBridge.nativeStartGame(
-                gamePath, resolution, presentMode, skipMeshShaders,
-                enableSrtArm64Jit, perfOverlayEnabled, renderScalePercent, relaxedShaderFloat
-            )
+            NativeBridge.nativeStartGame(gamePath, settingsJson)
         }
     }
 
