@@ -13,6 +13,7 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -46,6 +47,68 @@ private val DarkColorScheme = darkColorScheme(
 class MainActivity : ComponentActivity() {
 
     private var installedDrivers: List<DriverInfo> = emptyList()
+
+    private val pickFolderLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode != RESULT_OK) return@registerForActivityResult
+        val uri = result.data?.data ?: return@registerForActivityResult
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (_: Exception) {}
+        val posixPath = resolveSafUriToPosixPath(uri, isTree = true)
+        if (posixPath != null) {
+            KytyBridge.addCustomGamePath(posixPath)
+            persistCustomGamePath(posixPath)
+            Toast.makeText(this, "Added: $posixPath", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "Unsupported folder provider: ${uri.authority}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val pickFileLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode != RESULT_OK) return@registerForActivityResult
+        val uri = result.data?.data ?: return@registerForActivityResult
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (_: Exception) {}
+        val posixPath = resolveSafUriToPosixPath(uri, isTree = false)
+        if (posixPath != null) {
+            val parentDir = java.io.File(posixPath).parent ?: posixPath
+            KytyBridge.addCustomGamePath(parentDir)
+            persistCustomGamePath(parentDir)
+            Toast.makeText(this, "Added: $posixPath", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "Unsupported file provider: ${uri.authority}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val pickDriverLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode != RESULT_OK) return@registerForActivityResult
+        val uri = result.data?.data ?: return@registerForActivityResult
+        Toast.makeText(this, "Installing GPU driver...", Toast.LENGTH_SHORT).show()
+        Thread {
+            val installed = GpuDriverManager.installDriverZip(this, uri)
+            runOnUiThread {
+                if (installed != null) {
+                    Toast.makeText(this, "Installed: ${installed.name}", Toast.LENGTH_LONG).show()
+                    refreshDrivers(installed.id)
+                } else {
+                    Toast.makeText(this, "Failed to install driver ZIP", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -112,7 +175,7 @@ class MainActivity : ComponentActivity() {
                                         Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
                                     )
                                 }
-                                startActivityForResult(intent, REQUEST_CODE_PICK_FOLDER)
+                                pickFolderLauncher.launch(intent)
                             } catch (e: Exception) {
                                 Toast.makeText(this@MainActivity, "Folder picker error: ${e.message}", Toast.LENGTH_SHORT).show()
                             }
@@ -126,7 +189,7 @@ class MainActivity : ComponentActivity() {
                                         Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
                                     )
                                 }
-                                startActivityForResult(intent, REQUEST_CODE_PICK_FILE)
+                                pickFileLauncher.launch(intent)
                             } catch (e: Exception) {
                                 Toast.makeText(this@MainActivity, "File picker error: ${e.message}", Toast.LENGTH_SHORT).show()
                             }
@@ -146,7 +209,7 @@ class MainActivity : ComponentActivity() {
                         type = "application/zip"
                         putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/octet-stream", "*/*"))
                     }
-                    startActivityForResult(intent, REQUEST_CODE_PICK_DRIVER)
+                    pickDriverLauncher.launch(intent)
                 } catch (e: Exception) {
                     Toast.makeText(this@MainActivity, "Driver picker error: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
@@ -227,71 +290,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (resultCode != RESULT_OK || data == null) return
-
-        when (requestCode) {
-            REQUEST_CODE_PICK_FOLDER -> {
-                val uri = data.data
-                if (uri != null) {
-                    try {
-                        contentResolver.takePersistableUriPermission(
-                            uri,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        )
-                    } catch (_: Exception) {}
-                    val posixPath = resolveSafUriToPosixPath(uri, isTree = true)
-                    if (posixPath != null) {
-                        KytyBridge.addCustomGamePath(posixPath)
-                        persistCustomGamePath(posixPath)
-                        Toast.makeText(this, "Added: $posixPath", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(this, "Unsupported folder provider: ${uri.authority}", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-            REQUEST_CODE_PICK_FILE -> {
-                val uri = data.data
-                if (uri != null) {
-                    try {
-                        contentResolver.takePersistableUriPermission(
-                            uri,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        )
-                    } catch (_: Exception) {}
-                    val posixPath = resolveSafUriToPosixPath(uri, isTree = false)
-                    if (posixPath != null) {
-                        val parentDir = java.io.File(posixPath).parent ?: posixPath
-                        KytyBridge.addCustomGamePath(parentDir)
-                        persistCustomGamePath(parentDir)
-                        Toast.makeText(this, "Added: $posixPath", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(this, "Unsupported file provider: ${uri.authority}", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-            REQUEST_CODE_PICK_DRIVER -> {
-                val uri = data.data
-                if (uri != null) {
-                    Toast.makeText(this, "Installing GPU driver...", Toast.LENGTH_SHORT).show()
-                    Thread {
-                        val installed = GpuDriverManager.installDriverZip(this, uri)
-                        runOnUiThread {
-                            if (installed != null) {
-                                Toast.makeText(this, "Installed: ${installed.name}", Toast.LENGTH_LONG).show()
-                                refreshDrivers(installed.id)
-                            } else {
-                                Toast.makeText(this, "Failed to install driver ZIP", Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    }.start()
-                }
-            }
-        }
-    }
-
     private fun persistCustomGamePath(path: String) {
         if (path.isBlank() || path == filesDir.absolutePath) return
         val prefs = getSharedPreferences("kyty_prefs", Context.MODE_PRIVATE)
@@ -336,11 +334,5 @@ class MainActivity : ComponentActivity() {
         }
 
         return null
-    }
-
-    companion object {
-        private const val REQUEST_CODE_PICK_FOLDER = 1001
-        private const val REQUEST_CODE_PICK_DRIVER = 1002
-        private const val REQUEST_CODE_PICK_FILE = 1003
     }
 }

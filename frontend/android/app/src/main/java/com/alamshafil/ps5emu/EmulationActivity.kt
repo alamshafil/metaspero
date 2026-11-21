@@ -34,6 +34,7 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.view.WindowCompat
 import java.io.File
 import java.util.Locale
 
@@ -612,7 +613,7 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     private fun hideSystemUI() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                window.setDecorFitsSystemWindows(false)
+                WindowCompat.setDecorFitsSystemWindows(window, false)
                 val controller = window.insetsController
                 controller?.let {
                     it.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
