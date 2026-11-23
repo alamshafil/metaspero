@@ -359,7 +359,11 @@ bool FexGuestEngine::Initialize() {
     // Keep software TSO disabled on ARM64 to prevent unaligned LDAR/STLR SIGBUS storms and startup stalls
     FEXCore::Config::Set(FEXCore::Config::CONFIG_TSOENABLED, "0");
     FEXCore::Config::Set(FEXCore::Config::CONFIG_HALFBARRIERTSOENABLED, "0");
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    FEXCore::Config::Set(FEXCore::Config::CONFIG_DISABLEL2CACHE, "1");
+#else
     FEXCore::Config::Set(FEXCore::Config::CONFIG_DISABLEL2CACHE, "0");
+#endif
     FEXCore::Config::Set(FEXCore::Config::CONFIG_DYNAMICL1CACHE, "1");
 
     FEXCore::HostFeatures features{};
