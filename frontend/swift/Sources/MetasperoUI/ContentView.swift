@@ -18,6 +18,10 @@ public struct ContentView: View {
     @State private var showCrashAlert = false
     @State private var crashAlertMessage = ""
     @State private var showLogSheetFromCrash = false
+
+    @AppStorage(SettingsKey.showExperimentalWarning) private var showExperimentalWarning = SettingsDefault.showExperimentalWarning
+    @State private var showExperimentalAlert = false
+    @State private var hasCheckedBootWarning = false
     
     public init() {}
     
@@ -67,6 +71,14 @@ public struct ContentView: View {
                 .frame(minWidth: 960, minHeight: 640)
 #endif
         }
+        .alert("Experimental Software", isPresented: $showExperimentalAlert) {
+            Button("Don't Show Again") {
+                showExperimentalWarning = false
+            }
+            Button("I Understand", role: .cancel) {}
+        } message: {
+            Text("Metaspero is an early-stage, highly experimental PlayStation 5 emulator.\n\nExpect crashes, visual glitches, audio instability, and low frame rates.\n\nUse at your own risk.")
+        }
         .alert("Emulation Stopped", isPresented: $showCrashAlert) {
             Button("View Logs") {
                 showLogSheetFromCrash = true
@@ -80,6 +92,13 @@ public struct ContentView: View {
         }
         .withMemoryWarningToast()
         .onAppear {
+            if showExperimentalWarning && !hasCheckedBootWarning {
+                hasCheckedBootWarning = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    showExperimentalAlert = true
+                }
+            }
+            
             NotificationCenter.default.addObserver(
                 forName: .KytyEmulationCrashed,
                 object: nil,

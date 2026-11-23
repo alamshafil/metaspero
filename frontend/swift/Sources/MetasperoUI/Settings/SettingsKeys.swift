@@ -9,6 +9,7 @@ enum SettingsKey {
     static let consoleLanguage = "consoleLanguage"
     static let networkConnected = "networkConnected"
     static let skipNoticeScreen = "skipNoticeScreen"
+    static let showExperimentalWarning = "showExperimentalWarning"
 
     // Library & Storage
     static let gameScanPaths = "KytyGameScanPaths"
@@ -49,6 +50,7 @@ enum SettingsDefault {
     static let vblankFrequency = 60
     static let moltenVkVariant = "MeshShaderFork"
     static let hudDetailLevel = "Full"
+    static let showExperimentalWarning = true
 
     /// On-screen virtual gamepad overlay: enabled by default on iOS/Android, opt-in on macOS.
     #if os(macOS)

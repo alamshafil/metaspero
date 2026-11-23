@@ -7,6 +7,7 @@ struct AdvancedSettingsView: View {
     @AppStorage(SettingsKey.consoleLanguage) private var consoleLanguage = SettingsDefault.consoleLanguage
     @AppStorage(SettingsKey.networkConnected) private var networkConnected = false
     @AppStorage(SettingsKey.skipNoticeScreen) private var skipNoticeScreen = false
+    @AppStorage(SettingsKey.showExperimentalWarning) private var showExperimentalWarning = SettingsDefault.showExperimentalWarning
 
     var body: some View {
         Form {
@@ -52,6 +53,7 @@ struct AdvancedSettingsView: View {
             Section {
                 Toggle("Simulate Connected Network", isOn: $networkConnected)
                 Toggle("Skip Startup Logo & Notice Screens", isOn: $skipNoticeScreen)
+                Toggle("Show Experimental Warning on Launch", isOn: $showExperimentalWarning)
             } header: {
                 Text("System")
             }
