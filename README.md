@@ -12,13 +12,13 @@ This project is forked from [KytyPS5](https://github.com/KytyPS5/KytyPS5) and up
 
 | Dead Cells | XIII |
 | :---: | :---: |
-| ![Dead Cells](docs/screenshots/ios-dead-cells.png) | ![XIII](docs/screenshots/ios-xiii.png) |
+| ![Dead Cells](docs/screenshots/ios-dead-cells.jpg) | ![XIII](docs/screenshots/ios-xiii.jpg) |
 
 ### Library
 
-| macOS | iOS |
-| :---: | :---: |
-| ![macOS Home](docs/screenshots/mac-library.png) | ![iOS Home](docs/screenshots/ios-library.png) |
+| macOS | iOS | Android |
+| :---: | :---: | :---: |
+| ![macOS Home](docs/screenshots/mac-library.png) | ![iOS Home](docs/screenshots/ios-library.jpg) | ![Android Home](docs/screenshots/android-library.jpg) |
 
 ## Requirements
 
@@ -153,7 +153,7 @@ ctest --test-dir _Build/macos-arm64 --output-on-failure
 Ensure `ANDROID_NDK_HOME` points to your NDK installation:
 
 ```bash
-export ANDROID_NDK_HOME=$HOME/Library/Android/sdk/ndk/28.2.13676358
+export ANDROID_NDK_HOME=$HOME/Library/Android/sdk/ndk/30.0.16248370
 ```
 
 Configure the Android preset:
@@ -169,6 +169,8 @@ cmake --build _Build/android-arm64 --target kyty_android_apk
 ```
 
 The generated APK will be at:
+`frontend/android/app/build/outputs/apk/release/app-release.apk`
+or for debug builds at:
 `frontend/android/app/build/outputs/apk/debug/app-debug.apk`
 
 ### 5. Open and Build in Xcode
