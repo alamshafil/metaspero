@@ -43,6 +43,23 @@ if(EXISTS "${KYTY_MOLTENVK_MESH_IOS_ARCHIVE}")
 		DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 	FetchContent_MakeAvailable(moltenvk_mesh_ios)
 
-	set(KYTY_MOLTENVK_MESH_FRAMEWORK "${moltenvk_mesh_ios_SOURCE_DIR}/dynamic/MoltenVK-Mesh.xcframework/ios-arm64/MoltenVK-Mesh.framework")
+	# iOS rejects two embedded bundles with the same CFBundleIdentifier, so embed a copy
+	# of the mesh framework with a unique identifier.
+	set(_kyty_mesh_src "${moltenvk_mesh_ios_SOURCE_DIR}/dynamic/MoltenVK-Mesh.xcframework/ios-arm64/MoltenVK-Mesh.framework")
+	set(KYTY_MOLTENVK_MESH_FRAMEWORK "${CMAKE_BINARY_DIR}/moltenvk_mesh_ios_fixed/MoltenVK-Mesh.framework")
+	file(REMOVE_RECURSE "${KYTY_MOLTENVK_MESH_FRAMEWORK}")
+	file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/moltenvk_mesh_ios_fixed")
+	file(COPY "${_kyty_mesh_src}" DESTINATION "${CMAKE_BINARY_DIR}/moltenvk_mesh_ios_fixed")
+	execute_process(COMMAND /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.moltenvk.framework.mesh"
+		"${KYTY_MOLTENVK_MESH_FRAMEWORK}/Info.plist" RESULT_VARIABLE _kyty_plist_rc)
+	if(NOT _kyty_plist_rc EQUAL 0)
+		message(FATAL_ERROR "Failed to set unique bundle id on MoltenVK-Mesh.framework")
+	endif()
+	# The original ad-hoc signature carries the old identifier, re-sign so it matches.
+	execute_process(COMMAND codesign -s - --force --identifier com.moltenvk.framework.mesh
+		"${KYTY_MOLTENVK_MESH_FRAMEWORK}" RESULT_VARIABLE _kyty_sign_rc)
+	if(NOT _kyty_sign_rc EQUAL 0)
+		message(WARNING "Failed to re-sign MoltenVK-Mesh.framework")
+	endif()
 	message(STATUS "MoltenVK Mesh Shader Fork (iOS): ${KYTY_MOLTENVK_MESH_FRAMEWORK}")
 endif()
