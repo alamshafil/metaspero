@@ -353,16 +353,16 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
         g_emulator_thread.join();
     }
 
-    if (getBoolSetting("skipMeshShaders", false)) {
+    const bool skip_mesh = getBoolSetting("skipMeshShaders", false);
+    if (skip_mesh) {
         setenv("KYTY_SKIP_MESH_SHADERS", "1", 1);
-        LOGI("Graphics Debug: Skip Mesh Shaders ENABLED");
     } else {
         unsetenv("KYTY_SKIP_MESH_SHADERS");
     }
 
-    if (getBoolSetting("enableSrtArm64Jit", false)) {
+    const bool srt_arm64_jit = getBoolSetting("enableSrtArm64Jit", false);
+    if (srt_arm64_jit) {
         setenv("KYTY_SRT_ARM64_JIT", "1", 1);
-        LOGI("Graphics Debug: ARM64 SRT Walker JIT ENABLED (experimental)");
     } else {
         unsetenv("KYTY_SRT_ARM64_JIT");
     }
@@ -392,9 +392,10 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
     const bool network_connected = getBoolSetting("networkConnected", false);
     const bool enable_haptics = getBoolSetting("enableHaptics", true);
 
-    LOGI("Settings: res=%s, present=%s, renderScale=%u%%, vblank=%lldHz, relaxedFloat=%s, perfOverlay=%s, user=%s(%d), lang=%u",
+    LOGI("Settings: res=%s, present=%s, renderScale=%u%%, vblank=%lldHz, relaxedFloat=%s, perfOverlay=%s, skipMesh=%s, srtJit=%s, user=%s(%d), lang=%u",
          resolution.c_str(), present_mode.c_str(), render_scale, static_cast<long long>(vblank_freq),
          relaxed_shader_float ? "on" : "off", perf_overlay ? "on" : "off",
+         skip_mesh ? "on" : "off", srt_arm64_jit ? "on" : "off",
          user_name.c_str(), user_id, console_language);
 
     g_is_running.store(true);

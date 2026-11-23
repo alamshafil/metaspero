@@ -553,9 +553,9 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	// Indirect mesh draws launch their records' groups from a task shader when available.
 	graphics.mesh_shader_enabled = mesh.meshShader;
 	graphics.task_shader_enabled = mesh.taskShader;
-	Log::WriteToConsoleAndLog(fmt::format(
-	    "Vulkan Mesh shader support: meshShader={}, taskShader={}\n",
-	    mesh.meshShader != VK_FALSE, mesh.taskShader != VK_FALSE));
+	LOGF("Vulkan Mesh shader support: meshShader=%s, taskShader=%s\n",
+	     mesh.meshShader != VK_FALSE ? "true" : "false",
+	     mesh.taskShader != VK_FALSE ? "true" : "false");
 
 	vk::StructureChain<
 	    vk::PhysicalDeviceProperties2, vk::PhysicalDeviceFloatControlsProperties,
@@ -608,10 +608,10 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	    float_controls.shaderDenormFlushToZeroFloat32 == VK_TRUE;
 	graphics.r8_srgb_views   = graphics.SamplesFiltered(vk::Format::eR8Srgb);
 	graphics.r8g8_srgb_views = graphics.SamplesFiltered(vk::Format::eR8G8Srgb);
-	Log::WriteToConsoleAndLog(fmt::format(
-	    "Vulkan float/robust: ftz32={} robust2={} storageAlign={}\n",
-	    graphics.float32_denorm_flush_to_zero, graphics.robust_buffer_access_enabled,
-	    static_cast<uint64_t>(robustness2_props.robustStorageBufferAccessSizeAlignment)));
+	LOGF("Vulkan float/robust: ftz32=%s robust2=%s storageAlign=%" PRIu64 "\n",
+	     graphics.float32_denorm_flush_to_zero ? "true" : "false",
+	     graphics.robust_buffer_access_enabled ? "true" : "false",
+	     static_cast<uint64_t>(robustness2_props.robustStorageBufferAccessSizeAlignment));
 	// The device clock ticks at timestampPeriod nanoseconds.
 	if (shader_clock.shaderDeviceClock) {
 		graphics.device_clock_period_ps = static_cast<uint32_t>(
@@ -623,12 +623,11 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	LOGF("Vulkan depth feedback support: %s\n",
 	     graphics.attachment_feedback_loop_enabled ? "true" : "false");
 	if (graphics.mesh_shader_enabled) {
-		Log::WriteToConsoleAndLog(fmt::format(
-		    "Vulkan MeshEXT: invocations={} vertices={} primitives={} shared={}\n",
-		    graphics.mesh_shader_properties.maxMeshWorkGroupInvocations,
-		    graphics.mesh_shader_properties.maxMeshOutputVertices,
-		    graphics.mesh_shader_properties.maxMeshOutputPrimitives,
-		    graphics.mesh_shader_properties.maxMeshSharedMemorySize));
+		LOGF("Vulkan MeshEXT: invocations=%u vertices=%u primitives=%u shared=%u\n",
+		     graphics.mesh_shader_properties.maxMeshWorkGroupInvocations,
+		     graphics.mesh_shader_properties.maxMeshOutputVertices,
+		     graphics.mesh_shader_properties.maxMeshOutputPrimitives,
+		     graphics.mesh_shader_properties.maxMeshSharedMemorySize);
 	}
 	// Device selection checks the other required features.
 #if !defined(__ANDROID__)

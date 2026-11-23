@@ -87,15 +87,12 @@ static void ConfigureMetalLayerHud(CALayer *layer, BOOL enabled) {
     if ([layer isKindOfClass:NSClassFromString(@"CAMetalLayer")]) {
         SEL setDevHud = NSSelectorFromString(@"setDeveloperHUDProperties:");
         if ([layer respondsToSelector:setDevHud]) {
-            NSDictionary *props = enabled ? @{ @"mode" : @"default" } : nil;
+            NSDictionary *props = enabled ? @{ @"mode" : @"default" } : @{ @"mode" : @"disabled" };
             #pragma clang diagnostic push
             #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
             [layer performSelector:setDevHud withObject:props];
             #pragma clang diagnostic pop
         }
-    }
-    for (CALayer *sub in layer.sublayers) {
-        ConfigureMetalLayerHud(sub, enabled);
     }
 }
 
@@ -142,17 +139,11 @@ static void PushHostPixelSize(int w, int h) {
 
 // Called by the core once its presentation surface exists. The core renders into the host
 // view's CAMetalLayer, so there is nothing to show or hide here, we only sync
-// the renderer with the view's current size and apply the Metal HUD.
+// the renderer with the view's current size.
 extern "C" void KytyNotifyWindowCreated(void *window) {
     (void)window;
     if (g_host_layer == nil) return;
     PushHostPixelSize(g_host_pixel_w.load(), g_host_pixel_h.load());
-    if ([KytyBridge isMetalHudEnabled]) {
-        CAMetalLayer *layer = g_host_layer;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            ConfigureMetalLayerHud(layer, YES);
-        });
-    }
 }
 
 extern "C" void KytyNotifyWindowDestroyed() {
@@ -535,8 +526,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
     BOOL skipMesh = [defaults boolForKey:@"skipMeshShaders"];
     if (skipMesh) {
         setenv("KYTY_SKIP_MESH_SHADERS", "1", 1);
-        std::printf("[KytyBridge] Graphics Debug: Skip Mesh Shaders ENABLED\n");
-        std::fflush(stdout);
     } else {
         unsetenv("KYTY_SKIP_MESH_SHADERS");
     }
@@ -544,8 +533,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
     BOOL srtArm64Jit = [defaults boolForKey:@"enableSrtArm64Jit"];
     if (srtArm64Jit) {
         setenv("KYTY_SRT_ARM64_JIT", "1", 1);
-        std::printf("[KytyBridge] Graphics Debug: ARM64 SRT Walker JIT ENABLED (experimental)\n");
-        std::fflush(stdout);
     } else {
         unsetenv("KYTY_SRT_ARM64_JIT");
     }
@@ -558,6 +545,12 @@ static void KytyFatalExitCallback(int status, const char *message) {
         setenv("MTL_HUD_ENABLED", "1", 1);
     } else {
         unsetenv("MTL_HUD_ENABLED");
+    }
+    if (g_host_layer != nil) {
+        CAMetalLayer *layer = g_host_layer;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ConfigureMetalLayerHud(layer, enabled);
+        });
     }
 }
 
@@ -766,13 +759,20 @@ static void KytyFatalExitCallback(int status, const char *message) {
             setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0", 0);
 #endif
             
+            BOOL skipMesh = getBoolSetting(@"skipMeshShaders", false);
+            BOOL srtJit = getBoolSetting(@"enableSrtArm64Jit", false);
+            std::string debugFlags;
+            if (skipMesh) debugFlags += ", Skip Mesh Shaders: ENABLED";
+            if (srtJit) debugFlags += ", ARM64 SRT JIT: ENABLED";
+
             std::printf("[KytyBridge] Configured app0_dir: %s, elf: %s\n",
                         options.app0_dir.string().c_str(), options.elf.string().c_str());
-            std::printf("[KytyBridge] Graphics: %ux%u, Present Mode: %s, Metal HUD: %s, Kyty Stats Overlay: %s\n",
+            std::printf("[KytyBridge] Graphics: %ux%u, Present Mode: %s, Metal HUD: %s, Kyty Stats Overlay: %s%s\n",
                         options.config.screen_width, options.config.screen_height,
                         present ? [present UTF8String] : "Mailbox",
                         [KytyBridge isMetalHudEnabled] ? "ENABLED" : "DISABLED",
-                        options.config.perf_overlay_enabled ? "ENABLED" : "DISABLED");
+                        options.config.perf_overlay_enabled ? "ENABLED" : "DISABLED",
+                        debugFlags.c_str());
             std::printf("[KytyBridge] User: %s (ID: %d), Lang: %u, VBlank: %u Hz, Patch: %s\n",
                         options.config.user_name.c_str(), options.config.user_id,
                         options.config.console_language, options.config.vblank_frequency,
