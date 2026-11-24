@@ -716,6 +716,7 @@ int KYTY_SYSV_ABI GetDispatchPackets(const Context* context, const CommandSpace*
 } // namespace
 
 LIB_DEFINE(InitPsmlMfsr2_1) {
+	g_initialized = false;
 	LIB_FUNC("o+NM86gEwFE", Initialize);
 	LIB_FUNC("1ic5q-kdOsc", GetSharedRequirements);
 	LIB_FUNC("gMduXCLYrNg", CreateSharedResources);
@@ -730,6 +731,7 @@ LIB_DEFINE(InitPsmlMfsr2_1) {
 } // namespace Mfsr2
 
 LIB_DEFINE(InitPsml_1) {
+	g_initialized = false;
 	LIB_FUNC("3WVD91e12ZQ", Initialize);
 	LIB_FUNC("+2KpvixvL6E", GetSharedRequirements);
 	LIB_FUNC("eWoKNeB6V-k", CreateSharedResources);

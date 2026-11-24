@@ -72,19 +72,23 @@ static KYTY_SYSV_ABI int UserServiceGetInitialUser(int* user_id) {
 	return OK;
 }
 
+static bool g_logged_in[Config::MAX_PLAYERS] = {};
+
+static void ResetLoggedInState() {
+	std::memset(g_logged_in, 0, sizeof(g_logged_in));
+}
+
 static KYTY_SYSV_ABI int UserServiceGetEvent(SceUserServiceEvent* event) {
 	PRINT_NAME();
 
 	EXIT_NOT_IMPLEMENTED(event == nullptr);
 
-	static bool logged_in[Config::MAX_PLAYERS] = {};
-
 	for (int player = 0; player < Config::MAX_PLAYERS; player++) {
 		const bool connected = IsPlayerLoggedIn(player);
-		if (connected != logged_in[player]) {
-			logged_in[player] = connected;
-			event->event_type = connected ? UserServiceEventTypeLogin : UserServiceEventTypeLogout;
-			event->user_id    = Config::GetPlayerUserId(player);
+		if (connected != g_logged_in[player]) {
+			g_logged_in[player] = connected;
+			event->event_type   = connected ? UserServiceEventTypeLogin : UserServiceEventTypeLogout;
+			event->user_id      = Config::GetPlayerUserId(player);
 			return OK;
 		}
 	}
@@ -286,6 +290,7 @@ static KYTY_SYSV_ABI int UserServicePlatformPrivacyWs1Stub(uint64_t, uint64_t, u
 } // namespace UserService
 
 LIB_DEFINE(InitUserService_1) {
+	UserService::ResetLoggedInState();
 	LIB_FUNC("j3YMu1MVNNo", UserService::UserServiceInitialize);
 	LIB_FUNC("az-0R6eviZ0", UserService::UserServiceInitialize2);
 	LIB_FUNC("CdWp0oHWGr0", UserService::UserServiceGetInitialUser);

@@ -338,6 +338,7 @@ LIB_DEFINE(InitAppContent_1_Temporary) {
 } // namespace LibAppContentTemporary
 
 LIB_DEFINE(InitAppContent_1) {
+	AppContent::g_addcont_mounts.clear();
 	LIB_FUNC("R9lA82OraNs", AppContent::AppContentInitialize);
 	LIB_FUNC("99b82IKXpH4", AppContent::AppContentAppParamGetInt);
 	LIB_FUNC("VANhIWcqYak", AppContent::AppContentAddcontMount);

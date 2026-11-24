@@ -1409,6 +1409,13 @@ LIB_DEFINE(InitSaveDataNative_1) {
 } // namespace LibSaveDataNative
 
 LIB_DEFINE(InitSaveData_1) {
+	{
+		Common::LockGuard lock(SaveData::g_mount_mutex);
+		SaveData::g_save_data_memory.clear();
+		SaveData::g_save_data_events.clear();
+		SaveData::g_mount_slots             = {};
+		SaveData::g_next_transaction_resource = 1;
+	}
 	LIB_FUNC("TywrFKCoLGY", SaveData::SaveDataInitialize3);
 	LIB_FUNC("dyIhnXq-0SM", SaveData::SaveDataDirNameSearch);
 	LIB_FUNC("ZP4e7rlzOUk", SaveData::SaveDataMount3);

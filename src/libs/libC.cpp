@@ -697,6 +697,8 @@ void RunThreadAtexitDestructors() {
 }
 
 LIB_DEFINE(InitLibcInternalExt_1) {
+	LibcInternalExt::g_mspace_atomic_id_mask = 0;
+	std::memset(LibcInternalExt::g_mstate_table, 0, sizeof(LibcInternalExt::g_mstate_table));
 	LIB_FUNC("NWtTN10cJzE", LibcInternalExt::LibcHeapGetTraceInfo);
 	LIB_FUNC("qBS714-Jr3g", LibcInternalExt::LibcInternalExtCxaThreadAtexit);
 }

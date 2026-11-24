@@ -1684,6 +1684,8 @@ static int KYTY_SYSV_ABI NpCommerceDialogUpdateStatus() {
 }
 
 LIB_DEFINE(InitNet_1_NpCommerce) {
+	g_commerce_status = COMMERCE_STATUS_NONE;
+	g_commerce_result = {};
 	LIB_FUNC("0aR2aWmQal4", NpCommerceDialogInitialize);
 	LIB_FUNC("m-I92Ab50W8", NpCommerceDialogTerminate);
 	LIB_FUNC("DfSCDRA3EjY", NpCommerceDialogOpen);
@@ -2964,6 +2966,7 @@ static int KYTY_SYSV_ABI SharePlayGetCurrentConnectionInfoA(SharePlayConnectionI
 }
 
 LIB_DEFINE(InitPlatform_1_SharePlay) {
+	LibSharePlay::g_share_play_initialized = false;
 	LIB_FUNC("isruqthpYcw", LibSharePlay::SharePlayInitialize);
 	LIB_FUNC("UaLjloJinow", LibSharePlay::SharePlayTerminate);
 	LIB_FUNC("+MCXJlWdi+s", LibSharePlay::SharePlayGetCurrentConnectionInfoA);

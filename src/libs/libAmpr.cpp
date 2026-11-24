@@ -2377,6 +2377,16 @@ LIB_DEFINE(InitAmpr_1) {
 		std::scoped_lock lock(AprShared::g_mutex);
 		AprShared::g_next_submission_id = 1;
 		AprShared::g_submissions.clear();
+		AprShared::g_files.clear();
+		AprShared::g_resolved_paths.clear();
+	}
+	{
+		std::scoped_lock lock(Ampr::g_command_buffer_mutex);
+		Ampr::g_command_buffers.clear();
+		Ampr::g_command_buffer_aliases.clear();
+		for (auto& counter : Ampr::g_counters) {
+			counter.store(0, std::memory_order_relaxed);
+		}
 	}
 	LIB_FUNC("8aI7R7WaOlc", Ampr::CommandBufferConstructor);
 	LIB_FUNC("a8uLzYY--tM", Ampr::AprCommandBufferConstructor);

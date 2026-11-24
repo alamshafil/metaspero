@@ -219,6 +219,10 @@ static int32_t KYTY_SYSV_ABI GetResult(const SceVrTracker2GetResultParam* param,
 } // namespace VrTracker2
 
 LIB_DEFINE(InitVrTracker2_1) {
+	VrTracker2::g_initialized.store(false, std::memory_order_release);
+	for (auto& dev : VrTracker2::g_devices) {
+		dev.store(-1, std::memory_order_release);
+	}
 	LIB_FUNC("TwqZnaIjWv4", VrTracker2::QueryMemory);
 	LIB_FUNC("6Jy73SRfG-o", VrTracker2::Initialize);
 	LIB_FUNC("Dog+g25QYjw", VrTracker2::RegisterDevice);

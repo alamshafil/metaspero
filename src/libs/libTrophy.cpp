@@ -550,6 +550,13 @@ static int KYTY_SYSV_ABI NpTrophy2DestroyContext(int context) {
 }
 
 LIB_DEFINE(InitNet_1_NpTrophy2) {
+	{
+		std::scoped_lock lock(LibNpTrophy2::g_trophy_mutex);
+		LibNpTrophy2::g_packages.clear();
+		LibNpTrophy2::g_states.clear();
+		LibNpTrophy2::g_contexts.clear();
+		LibNpTrophy2::g_next_context = 1;
+	}
 	LIB_FUNC("Bagshr7OQ6Q", LibNpTrophy2::NpTrophy2CreateContext);
 	LIB_FUNC("Gz1rmUZpROM", LibNpTrophy2::NpTrophy2CreateHandle);
 	LIB_FUNC("bIDov3wBu5Q", LibNpTrophy2::NpTrophy2RegisterContext);
@@ -1300,6 +1307,11 @@ static int KYTY_SYSV_ABI NpUniversalDataSystemTerminate() {
 }
 
 LIB_DEFINE(InitNet_1_NpUniversalDataSystem) {
+	{
+		std::scoped_lock lock(LibNpTrophy2::g_trophy_mutex);
+		LibNpUniversalDataSystem::g_contexts.clear();
+		LibNpUniversalDataSystem::g_next_context = 1;
+	}
 	LIB_FUNC("sjaobBgqeB4", LibNpUniversalDataSystem::NpUniversalDataSystemInitialize);
 	LIB_FUNC("5zBnau1uIEo", LibNpUniversalDataSystem::NpUniversalDataSystemCreateContext);
 	LIB_FUNC("hT0IAEvN+M0", LibNpUniversalDataSystem::NpUniversalDataSystemCreateHandle);

@@ -491,6 +491,11 @@ static int KYTY_SYSV_ABI NpEntitlementAccessGetEntitlementKey(
 }
 
 LIB_DEFINE(InitNet_1_NpEntitlementAccess) {
+	LibNpEntitlementAccess::g_np_entitlement_initialized.store(false, std::memory_order_release);
+	{
+		std::scoped_lock lock(LibNpEntitlementAccess::g_np_entitlement_request_mutex);
+		LibNpEntitlementAccess::g_np_entitlement_requests.clear();
+	}
 	LIB_FUNC("jO8DM8oyego", LibNpEntitlementAccess::NpEntitlementAccessInitialize);
 	LIB_FUNC("lPDO62PpJIA", LibNpEntitlementAccess::NpEntitlementAccessGetSkuFlag);
 	LIB_FUNC("TFyU+KFBv54",

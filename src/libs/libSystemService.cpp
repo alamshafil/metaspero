@@ -605,6 +605,10 @@ LIB_DEFINE(InitSystemGesture_1) {
 } // namespace SystemGesture
 
 LIB_DEFINE(InitSystemService_1) {
+	{
+		std::scoped_lock lock(SystemService::g_event_mutex);
+		SystemService::g_events.clear();
+	}
 	LIB_FUNC("JoBqSQt1yyA", SystemService::SystemServiceLoadExec);
 	LIB_FUNC("Vo5V8KAwCmk", SystemService::SystemServiceHideSplashScreen);
 	LIB_FUNC("fZo48un7LK4", SystemService::SystemServiceParamGetInt);
