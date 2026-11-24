@@ -220,13 +220,8 @@ struct InGameOverlayView: View {
                 } label: {
                     ZStack {
                         Circle()
-                            .fill(Color.black.opacity(0.60))
+                            .fill(Color.black.opacity(0.50))
                             .frame(width: 34, height: 34)
-                            .overlay(
-                                Circle()
-                                    .stroke(Color.white.opacity(0.22), lineWidth: 1)
-                            )
-                            .shadow(color: Color.black.opacity(0.35), radius: 6, x: 0, y: 2)
                         
                         Image(systemName: "ellipsis")
                             .font(.system(size: 15, weight: .bold))

@@ -120,6 +120,7 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
+            hapticsEnabled = prefs.getBoolean("enableHaptics", true)
             visibility = if (enableTouchControls) View.VISIBLE else View.GONE
         }
         rootLayout.addView(virtualGamepad)
@@ -161,8 +162,7 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
             }
             val menuBg = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.argb(140, 30, 30, 30))
-                setStroke((1f * density).toInt(), Color.argb(80, 255, 255, 255))
+                setColor(Color.argb(128, 18, 20, 26))
             }
             background = menuBg
             setOnClickListener { showOptionsMenu(this) }
@@ -189,6 +189,9 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
 
     override fun onPause() {
         super.onPause()
+        if (::virtualGamepad.isInitialized) {
+            virtualGamepad.releaseAllInputs()
+        }
         statsHandler.removeCallbacks(statsRunnable)
         statsHandler.removeCallbacks(logRefreshRunnable)
     }
