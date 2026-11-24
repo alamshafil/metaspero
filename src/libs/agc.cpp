@@ -3,6 +3,7 @@
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
@@ -1613,7 +1614,7 @@ int KYTY_SYSV_ABI AgcJumpPatchSetTarget(uint32_t* cmd, const volatile uint32_t* 
 int KYTY_SYSV_ABI AgcSuspendPoint() {
 	PRINT_NAME();
 
-	if (g_renderer == nullptr) {
+	if (g_renderer == nullptr || Common::HostException::IsEmulationShuttingDown()) {
 		return OK;
 	}
 	g_renderer->GetGpu().SuspendPoint();

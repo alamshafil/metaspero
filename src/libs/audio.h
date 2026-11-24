@@ -254,6 +254,7 @@ uint64_t KYTY_SYSV_ABI AvPlayerCurrentTime(AvPlayerInternal* h);
 int KYTY_SYSV_ABI      AvPlayerJumpToTime(AvPlayerInternal* h, uint64_t time_ms);
 int KYTY_SYSV_ABI      AvPlayerClose(AvPlayerInternal* h);
 int KYTY_SYSV_ABI      AvPlayerSetLogCallback(void* callback, void* user_data);
+void                   Shutdown();
 
 } // namespace AvPlayer
 

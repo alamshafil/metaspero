@@ -222,6 +222,7 @@ void Initialize() {
 }
 
 void Shutdown() {
+	AvPlayer::Shutdown();
 	Ngs2::Shutdown();
 	delete g_audio;
 	g_audio = nullptr;

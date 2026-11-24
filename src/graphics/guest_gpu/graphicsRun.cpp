@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <deque>
 #include <memory>
@@ -77,7 +78,9 @@ void GuestGpu::SendCommand(Common::UniqueFunction<void>&& command) {
 		return;
 	}
 	Common::LockGuard lock(m_queue_mutex);
-	EXIT_IF(!m_accepting);
+	if (!m_accepting || m_stopping || Common::HostException::IsEmulationShuttingDown()) {
+		return;
+	}
 	m_commands.push_back(std::move(command));
 	m_pending_commands.fetch_add(1, std::memory_order_release);
 	m_work_available.Signal();
@@ -103,12 +106,19 @@ void GuestGpu::SendCommandSync(Common::UniqueFunction<void>&& command) {
 		command();
 		return;
 	}
-	std::binary_semaphore done {0};
-	SendCommand([operation = std::move(command), &done]() mutable {
+	if (Common::HostException::IsEmulationShuttingDown() || IsStopping()) {
+		return;
+	}
+	auto done = std::make_shared<std::binary_semaphore>(0);
+	SendCommand([operation = std::move(command), done]() mutable {
 		operation();
-		done.release();
+		done->release();
 	});
-	done.acquire();
+	while (!done->try_acquire_for(std::chrono::milliseconds(10))) {
+		if (Common::HostException::IsEmulationShuttingDown() || IsStopping()) {
+			return;
+		}
+	}
 }
 
 void GuestGpu::Submit(std::span<const uint32_t> commands) {
@@ -145,9 +155,21 @@ void GuestGpu::SubmitFlipPreparation(uint64_t request_id) {
 
 void GuestGpu::SuspendPoint() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
+	if (Common::HostException::IsEmulationShuttingDown() || IsStopping()) {
+		return;
+	}
 	// Do not hold a queue lock while waiting: asynchronous work may be needed to
 	// finish the preceding graphics frame. The first point returns immediately.
-	m_suspend_point_ready->acquire();
+	auto ready = m_suspend_point_ready;
+	while (!ready->try_acquire_for(std::chrono::milliseconds(10))) {
+		if (Common::HostException::IsEmulationShuttingDown() || IsStopping()) {
+			return;
+		}
+	}
+	if (Common::HostException::IsEmulationShuttingDown() || IsStopping()) {
+		ready->release();
+		return;
+	}
 	Submission submission;
 	submission.type = SubmissionType::SuspendPoint;
 	Enqueue(std::move(submission));
@@ -383,7 +405,9 @@ void CommandProcessor::DmaData(uint8_t dst_sel, uint64_t dst_address_or_offset, 
 
 void GuestGpu::Enqueue(Submission submission) {
 	Common::LockGuard lock(m_queue_mutex);
-	EXIT_IF(!m_accepting);
+	if (!m_accepting || m_stopping || Common::HostException::IsEmulationShuttingDown()) {
+		return;
+	}
 	m_queues[submission.queue_id].push_back(std::move(submission));
 	m_submission_count++;
 	m_work_available.Signal();
@@ -392,8 +416,9 @@ void GuestGpu::Enqueue(Submission submission) {
 void GuestGpu::WaitForIdle() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
 	Common::LockGuard lock(m_queue_mutex);
-	while (m_processing || !m_commands.empty() || m_submission_count != 0) {
-		m_idle.Wait(&m_queue_mutex);
+	while (!m_stopping && !Common::HostException::IsEmulationShuttingDown() &&
+	       (m_processing || !m_commands.empty() || m_submission_count != 0)) {
+		m_idle.WaitFor(&m_queue_mutex, 10000);
 	}
 }
 

@@ -1,5 +1,6 @@
 #include "common/common.h"
 #include "common/file.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
@@ -19,6 +20,7 @@
 #include <atomic>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -129,7 +131,7 @@ struct AvPlayerEventReplacement {
 	AvPlayerEventCallback event_callback = nullptr;
 };
 static void emit_event(AvPlayerEventReplacement event, int32_t id, void* data = nullptr) {
-	if (event.event_callback != nullptr) {
+	if (event.event_callback != nullptr && !Common::HostException::IsEmulationShuttingDown()) {
 		LOGF("\t event_id = %d\n", id);
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
 		Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
@@ -438,10 +440,11 @@ public:
 		const auto size =
 		    value.packet == nullptr ? 0u : static_cast<size_t>(std::max(value.packet->size, 0));
 		std::unique_lock lock(mutex);
-		available.wait(lock, [&] {
-			return stop || bytes + size <= capacity || (queue.empty() && bytes == 0);
-		});
-		if (stop) {
+		while (!stop && !Common::HostException::IsEmulationShuttingDown() &&
+		       bytes + size > capacity && !(queue.empty() && bytes == 0)) {
+			available.wait_for(lock, std::chrono::milliseconds(10));
+		}
+		if (stop || Common::HostException::IsEmulationShuttingDown()) {
 			return false;
 		}
 		bytes += size;
@@ -452,8 +455,11 @@ public:
 	std::optional<DemuxPacket> WaitPop(const std::atomic_bool& stop,
 	                                   const std::atomic_bool& finished) {
 		std::unique_lock lock(mutex);
-		available.wait(lock, [&] { return stop || finished || !queue.empty(); });
-		if (stop || queue.empty()) {
+		while (!stop && !finished && !Common::HostException::IsEmulationShuttingDown() &&
+		       queue.empty()) {
+			available.wait_for(lock, std::chrono::milliseconds(10));
+		}
+		if (stop || Common::HostException::IsEmulationShuttingDown() || queue.empty()) {
 			return std::nullopt;
 		}
 		auto value = std::move(queue.front());
@@ -527,21 +533,23 @@ private:
 	}
 	void Reset() {
 		if (m_data != nullptr) {
+			if (!Common::HostException::IsEmulationShuttingDown()) {
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
-			auto fn = m_texture ? m_mem.deallocate_texture : m_mem.deallocate;
-			if (fn != nullptr) {
-				Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
-				    reinterpret_cast<uint64_t>(fn),
-				    reinterpret_cast<uint64_t>(m_mem.object_pointer),
-				    reinterpret_cast<uint64_t>(m_data));
-			}
+				auto fn = m_texture ? m_mem.deallocate_texture : m_mem.deallocate;
+				if (fn != nullptr) {
+					Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
+					    reinterpret_cast<uint64_t>(fn),
+					    reinterpret_cast<uint64_t>(m_mem.object_pointer),
+					    reinterpret_cast<uint64_t>(m_data));
+				}
 #else
-			if (m_texture) {
-				m_mem.deallocate_texture(m_mem.object_pointer, m_data);
-			} else {
-				m_mem.deallocate(m_mem.object_pointer, m_data);
-			}
+				if (m_texture) {
+					m_mem.deallocate_texture(m_mem.object_pointer, m_data);
+				} else {
+					m_mem.deallocate(m_mem.object_pointer, m_data);
+				}
 #endif
+			}
 			m_data = nullptr;
 		}
 	}
@@ -582,8 +590,10 @@ public:
 	}
 	std::optional<T> WaitPop(const std::atomic_bool& stop) {
 		std::unique_lock lock(mutex);
-		available.wait(lock, [&] { return stop || !queue.empty(); });
-		if (stop || queue.empty()) {
+		while (!stop && !Common::HostException::IsEmulationShuttingDown() && queue.empty()) {
+			available.wait_for(lock, std::chrono::milliseconds(10));
+		}
+		if (stop || Common::HostException::IsEmulationShuttingDown() || queue.empty()) {
 			return std::nullopt;
 		}
 		auto value = std::move(queue.front());
@@ -622,7 +632,7 @@ public:
 			av_freep(&ctx->buffer);
 			avio_context_free(&ctx);
 		}
-		if (opened) {
+		if (opened && !Common::HostException::IsEmulationShuttingDown()) {
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
 			Loader::Fex::FexGuestEngine::Instance().CallGuestFunction(
 			    reinterpret_cast<uint64_t>(file.close),
@@ -1837,6 +1847,9 @@ static void pump_warnings(AvPlayerInternal* h) {
 		emit_event(h->event, AVPLAYER_EVENT_WARNING_ID, &warning);
 	}
 }
+static std::mutex                     g_active_players_mutex;
+static std::vector<AvPlayerInternal*> g_active_players;
+
 static AvPlayerInternal* create_player(const AvPlayerMemAllocator&     mem,
                                        const AvPlayerFileReplacement&  file,
                                        const AvPlayerEventReplacement& event, bool auto_start,
@@ -1851,6 +1864,10 @@ static AvPlayerInternal* create_player(const AvPlayerMemAllocator&     mem,
 	h->auto_start    = auto_start || event.event_callback == nullptr;
 	h->video_buffers = std::clamp(video_buffers <= 0 ? 2 : video_buffers, 2, 16);
 	h->post_init.demux_video_buffer_size = 4 * 1024 * 1024;
+	{
+		std::lock_guard lock(g_active_players_mutex);
+		g_active_players.push_back(h);
+	}
 	return h;
 }
 static int add_source(AvPlayerInternal* h, const std::string& filename, AvPlayerSourceType type) {
@@ -2179,9 +2196,26 @@ int KYTY_SYSV_ABI AvPlayerClose(AvPlayerInternal* h) {
 	if (h == nullptr) {
 		return AVPLAYER_ERROR_INVALID_PARAMS;
 	}
+	{
+		std::lock_guard lock(g_active_players_mutex);
+		std::erase(g_active_players, h);
+	}
 	h->source.reset();
 	delete h;
 	return 0;
+}
+void Shutdown() {
+	std::vector<AvPlayerInternal*> players;
+	{
+		std::lock_guard lock(g_active_players_mutex);
+		players.swap(g_active_players);
+	}
+	for (auto* h : players) {
+		if (h != nullptr) {
+			h->source.reset();
+			delete h;
+		}
+	}
 }
 int KYTY_SYSV_ABI AvPlayerSetLogCallback(void* callback, void* user_data) {
 	PRINT_NAME();

@@ -918,10 +918,11 @@ FlipQueue::~FlipQueue() {
 void FlipQueue::Cancel(VideoOutConfig& cfg) {
 	std::vector<Graphics::Presenter::Frame*> frames;
 	m_mutex.Lock();
-	while (std::any_of(m_requests.begin(), m_requests.end(), [&cfg](const auto& r) {
+	while (!Common::HostException::IsEmulationShuttingDown() &&
+	       std::any_of(m_requests.begin(), m_requests.end(), [&cfg](const auto& r) {
 		return r.cfg == &cfg && r.state == RequestState::Presenting;
 	})) {
-		m_done_cond_var.Wait(&m_mutex);
+		m_done_cond_var.WaitFor(&m_mutex, 10000);
 	}
 	for (auto* queue: {&m_requests, &m_cpu_requests}) {
 		for (auto it = queue->begin(); it != queue->end();) {
@@ -1702,8 +1703,9 @@ KYTY_SYSV_ABI int VideoOutWaitVblank(int handle) {
 
 	Common::LockGuard lock(ctx->mutex);
 	const auto        count = ctx->vblank_status.count;
-	while (ctx->opened && ctx->vblank_status.count == count) {
-		ctx->vblank_cond.Wait(&ctx->mutex);
+	while (ctx->opened && ctx->vblank_status.count == count &&
+	       !Common::HostException::IsEmulationShuttingDown()) {
+		ctx->vblank_cond.WaitFor(&ctx->mutex, 10000);
 	}
 
 	return OK;
