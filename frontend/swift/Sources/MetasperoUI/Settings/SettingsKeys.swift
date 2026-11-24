@@ -24,7 +24,6 @@ enum SettingsKey {
     static let relaxedShaderFloat = "relaxedShaderFloat"
     static let perfOverlayEnabled = "perfOverlayEnabled"
     static let enableMetalHud = "enableMetalHud"
-    static let hudDetailLevel = "hudDetailLevel"
     static let skipMeshShaders = "skipMeshShaders"
     static let enableSrtArm64Jit = "enableSrtArm64Jit"
 
@@ -47,7 +46,6 @@ enum SettingsDefault {
     static let presentMode = "Mailbox"
     static let vblankFrequency = 60
     static let moltenVkVariant = "MeshShaderFork"
-    static let hudDetailLevel = "Full"
     static let showExperimentalWarning = true
 
     /// On-screen virtual gamepad overlay: enabled by default on iOS/Android, opt-in on macOS.

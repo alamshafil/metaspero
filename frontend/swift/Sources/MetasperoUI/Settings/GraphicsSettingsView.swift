@@ -12,7 +12,6 @@ struct GraphicsSettingsView: View {
     // Overlays
     @AppStorage(SettingsKey.perfOverlayEnabled) private var perfOverlayEnabled = false
     @AppStorage(SettingsKey.enableMetalHud) private var enableMetalHud = false
-    @AppStorage(SettingsKey.hudDetailLevel) private var hudDetailLevel = SettingsDefault.hudDetailLevel
 
     // Experimental
     @AppStorage(SettingsKey.renderScalePercent) private var renderScalePercent = SettingsDefault.renderScalePercent
@@ -76,12 +75,6 @@ struct GraphicsSettingsView: View {
 
                 #if SKIP
                 Toggle("Performance & FPS HUD", isOn: $enableMetalHud)
-                if enableMetalHud {
-                    Picker("HUD Detail Level", selection: $hudDetailLevel) {
-                        Text("Full Stats").tag("Full")
-                        Text("Minimal").tag("Minimal")
-                    }
-                }
                 #else
                 Toggle("Apple Metal Performance HUD", isOn: $enableMetalHud)
                     .onChange(of: enableMetalHud) { newValue in

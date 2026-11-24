@@ -2,7 +2,6 @@
 package com.alamshafil.ps5emu
 
 import android.app.Activity
-import android.app.ActivityManager
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
@@ -17,12 +16,10 @@ import android.os.SystemClock
 import android.text.Spannable
 import android.text.SpannableStringBuilder
 import android.text.style.ForegroundColorSpan
-import android.view.Display
 import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -52,13 +49,12 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     private var settingsJson: String = "{}"
     private var enableTouchControls: Boolean = false
     private var isStopping: Boolean = false
-    private var lastVisibleStatsMode: Int = 0
+    private var showStatsOverlay: Boolean = false
 
     private val density: Float get() = resources.displayMetrics.density
     private fun dp(v: Float): Int = (v * density).toInt()
 
     private val statsHandler = Handler(Looper.getMainLooper())
-    private var statsOverlayMode = 0 // 0: full, 1: minimal, 2: hidden
 
     private val statsRunnable = object : Runnable {
         override fun run() {
@@ -116,8 +112,7 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         val prefs = getSharedPreferences("defaults", Context.MODE_PRIVATE)
         settingsJson = serializeSettingsToJson(prefs)
         enableTouchControls = prefs.getBoolean("enableTouchOverlay", true)
-        val enableHud = prefs.getBoolean("enableMetalHud", false)
-        val hudDetailLevel = prefs.getString("hudDetailLevel", "Full") ?: "Full"
+        showStatsOverlay = prefs.getBoolean("enableMetalHud", false)
 
         // Virtual On-Screen Gamepad
         virtualGamepad = VirtualGamepad(this).apply {
@@ -130,13 +125,6 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         rootLayout.addView(virtualGamepad)
 
         // Performance & FPS HUD Overlay
-        statsOverlayMode = when {
-            !enableHud -> 2 // hidden
-            hudDetailLevel == "Minimal" -> 1 // minimal
-            else -> 0 // full
-        }
-        lastVisibleStatsMode = if (statsOverlayMode == 2) 0 else statsOverlayMode
-
         tvStatsOverlay = TextView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -150,21 +138,13 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
             textSize = 11f
             setTextColor(Color.WHITE)
 
-            val bg = GradientDrawable().apply {
+            background = GradientDrawable().apply {
                 setColor(Color.argb(175, 12, 16, 24))
                 cornerRadius = 14f * density
-                setStroke((1f * density).toInt(), Color.argb(60, 255, 255, 255))
             }
-            background = bg
-            visibility = if (statsOverlayMode != 2) View.VISIBLE else View.GONE
+            visibility = if (showStatsOverlay) View.VISIBLE else View.GONE
 
-            setOnClickListener {
-                statsOverlayMode = (statsOverlayMode + 1) % 3
-                if (statsOverlayMode != 2) {
-                    lastVisibleStatsMode = statsOverlayMode
-                }
-                visibility = if (statsOverlayMode != 2) View.VISIBLE else View.GONE
-            }
+            setOnClickListener { toggleStatsOverlay() }
         }
         rootLayout.addView(tvStatsOverlay)
 
@@ -199,7 +179,9 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     override fun onResume() {
         super.onResume()
         hideSystemUI()
-        statsHandler.post(statsRunnable)
+        if (showStatsOverlay) {
+            statsHandler.post(statsRunnable)
+        }
         if (::logOverlay.isInitialized && logOverlay.visibility == View.VISIBLE) {
             statsHandler.post(logRefreshRunnable)
         }
@@ -282,39 +264,18 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun updateStatsOverlay() {
-        if (statsOverlayMode == 2) return
+        if (!showStatsOverlay) return
 
         val fps = NativeBridge.nativeGetFps()
         val ramMb = getAppMemoryUsageMb()
         val cpuPct = getCpuUsagePercent()
         val gpuPct = getGpuUsagePercent(fps)
 
-        val text = when (statsOverlayMode) {
-            1 -> {
-                // Minimal: FPS, CPU, GPU, RAM
-                String.format(
-                    Locale.US,
-                    "%.1f FPS  |  CPU: %.0f%%  |  GPU: %.0f%%  |  %d MB",
-                    fps, cpuPct, gpuPct, ramMb
-                )
-            }
-            else -> {
-                // Full HUD: Driver, FPS (Frame Time), CPU %, GPU %, Memory
-                val driverName = GpuDriverManager.getInstalledDrivers(this)
-                    .find { it.id == GpuDriverManager.getSelectedDriverId(this) }?.name ?: "Vulkan"
-                String.format(
-                    Locale.US,
-                    "GPU: %s\nFPS: %.1f  (%.2f ms)\nCPU: %.0f%%  |  GPU: %.0f%%\nRAM: %d MB",
-                    driverName,
-                    fps,
-                    if (fps > 0) 1000.0 / fps else 0.0,
-                    cpuPct,
-                    gpuPct,
-                    ramMb
-                )
-            }
-        }
-        tvStatsOverlay.text = text
+        tvStatsOverlay.text = String.format(
+            Locale.US,
+            "%.1f FPS  |  CPU: %.0f%%  |  GPU: %.0f%%  |  %d MB",
+            fps, cpuPct, gpuPct, ramMb
+        )
     }
 
     private fun getAppMemoryUsageMb(): Long {
@@ -347,7 +308,7 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
             0,
             MENU_TOGGLE_HUD,
             2,
-            if (statsOverlayMode == 2) "Show Performance HUD" else "Hide Performance HUD"
+            if (showStatsOverlay) "Hide Performance HUD" else "Show Performance HUD"
         )
         popup.menu.add(0, MENU_EXIT, 3, "Quit Game")
 
@@ -373,13 +334,12 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun toggleStatsOverlay() {
-        if (statsOverlayMode == 2) {
-            statsOverlayMode = lastVisibleStatsMode
-        } else {
-            lastVisibleStatsMode = statsOverlayMode
-            statsOverlayMode = 2
+        showStatsOverlay = !showStatsOverlay
+        tvStatsOverlay.visibility = if (showStatsOverlay) View.VISIBLE else View.GONE
+        statsHandler.removeCallbacks(statsRunnable)
+        if (showStatsOverlay) {
+            statsHandler.post(statsRunnable)
         }
-        tvStatsOverlay.visibility = if (statsOverlayMode != 2) View.VISIBLE else View.GONE
     }
 
     private fun confirmExit() {
