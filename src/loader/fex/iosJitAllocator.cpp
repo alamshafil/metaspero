@@ -242,14 +242,10 @@ static uint8_t* KytyRwAlias(uint8_t* rx, size_t size, bool fixed) {
                                 fixed ? (VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE) : VM_FLAGS_ANYWHERE,
                                 mach_task_self(), reinterpret_cast<vm_address_t>(rx), FALSE, &cur, &max, VM_INHERIT_NONE);
     if (kr != KERN_SUCCESS) {
-        std::printf("[Kyty JIT] KytyRwAlias: vm_remap failed: %d (%s)\n", kr, mach_error_string(kr));
-        std::fflush(stdout);
         return nullptr;
     }
     kr = vm_protect(mach_task_self(), alias, static_cast<vm_size_t>(size), FALSE, VM_PROT_READ | VM_PROT_WRITE);
     if (kr != KERN_SUCCESS) {
-        std::printf("[Kyty JIT] KytyRwAlias: vm_protect failed: %d (%s)\n", kr, mach_error_string(kr));
-        std::fflush(stdout);
         vm_deallocate(mach_task_self(), alias, static_cast<vm_size_t>(size));
         return nullptr;
     }
@@ -269,9 +265,6 @@ static Loader::Fex::DualMappedRegion KytySelfDualMapping(size_t bytes) {
             region.rx_addr = map_jit_ptr;
             region.rw_addr = rw;
             region.size = size;
-            std::printf("[Kyty JIT] MAP_JIT dual-mapping succeeded: RW=%p, RX=%p (%zu bytes)\n",
-                        static_cast<void*>(rw), static_cast<void*>(map_jit_ptr), size);
-            std::fflush(stdout);
             return region;
         }
         if (rw != nullptr) {
@@ -283,9 +276,6 @@ static Loader::Fex::DualMappedRegion KytySelfDualMapping(size_t bytes) {
             region.rx_addr = map_jit_ptr;
             region.rw_addr = map_jit_ptr;
             region.size = size;
-            std::printf("[Kyty JIT] MAP_JIT single-mapping succeeded: RW=%p, RX=%p (%zu bytes)\n",
-                        static_cast<void*>(map_jit_ptr), static_cast<void*>(map_jit_ptr), size);
-            std::fflush(stdout);
             return region;
         }
 
@@ -327,10 +317,6 @@ bool KytyAcquireJitPool() noexcept {
 
     const bool is_traced = IsTraced();
     const bool is_debugged = IsProcessDebugged();
-
-    std::printf("[Kyty JIT] Attempting to acquire %zu MB JIT pool (P_TRACED=%d, CS_DEBUGGED=%d)...\n",
-                kJitPoolSize / (1024 * 1024), is_traced ? 1 : 0, is_debugged ? 1 : 0);
-    std::fflush(stdout);
 
     // Strategy 1: Xcode LLDB attached (P_TRACED=1) -> MAP_JIT permitted by kernel
     if (is_traced) {
@@ -461,13 +447,13 @@ const char* KytyGetJitPoolStatus() noexcept {
 
 void KytyResetJitPoolForNewSession() noexcept {
     std::lock_guard<std::mutex> lock(g_pool.mutex);
-    if (g_pool.is_ready) {
+    if (g_pool.is_ready && g_pool.allocated_offset > 0) {
+        const size_t used_mb = (g_pool.allocated_offset + (1024 * 1024) - 1) / (1024 * 1024);
         g_pool.allocated_offset = 0;
         if (g_pool.rx_base && g_pool.total_size > 0) {
             sys_icache_invalidate(g_pool.rx_base, g_pool.total_size);
         }
-        std::printf("[Kyty JIT] Reset JIT pool offset to 0 MB for new session (cleared %zu MB)\n",
-                    g_pool.total_size / (1024 * 1024));
+        std::printf("[Kyty JIT] Pool reset (cleared %zu MB)\n", used_mb);
         std::fflush(stdout);
     }
 }

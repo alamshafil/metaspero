@@ -395,27 +395,27 @@ static void KytyFatalExitCallback(int status, const char *message) {
     if ([[NSUserDefaults standardUserDefaults] boolForKey:@"enableMetalHud"]) {
         setenv("MTL_HUD_ENABLED", "1", 1);
     }
+    NSString *workDir = nil;
 #if TARGET_OS_OSX
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
     if (paths.count > 0) {
-        NSString *appSupportDir = [paths[0] stringByAppendingPathComponent:@"Metaspero"];
-        [[NSFileManager defaultManager] createDirectoryAtPath:appSupportDir
+        workDir = [paths[0] stringByAppendingPathComponent:@"Metaspero"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:workDir
                                   withIntermediateDirectories:YES
                                                    attributes:nil
                                                         error:nil];
-        chdir([appSupportDir UTF8String]);
-        std::printf("[KytyBridge] Working directory set to Application Support: %s\n", [appSupportDir UTF8String]);
+        chdir([workDir UTF8String]);
     }
 #else
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     if (paths.count > 0) {
-        NSString *docsDir = paths[0];
-        chdir([docsDir UTF8String]);
-        std::printf("[KytyBridge] Working directory set to Documents: %s\n", [docsDir UTF8String]);
+        workDir = paths[0];
+        chdir([workDir UTF8String]);
     }
 #endif
-    std::printf("[KytyBridge] Subsystems initialized. Process ID: %d, Debugger: %s\n",
-                getpid(), CheckProcessDebugged() ? "ACTIVE" : "INACTIVE");
+    std::printf("[KytyBridge] Ready (PID: %d, Debugger: %s, WorkDir: %s)\n",
+                getpid(), CheckProcessDebugged() ? "active" : "inactive",
+                workDir ? [workDir UTF8String] : "(unchanged)");
     std::fflush(stdout);
 }
 
@@ -615,12 +615,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
     [KytyBridge configureAudioSession];
     [KytyBridge applyGraphicsDebugSettings];
 
-    std::printf("[KytyBridge] ---\n");
-    std::printf("[KytyBridge] Launching Game: %s\n", path.c_str());
-    std::printf("[KytyBridge] Debugger: %s, PID: %d\n", CheckProcessDebugged() ? "ATTACHED" : "NONE", getpid());
-    std::printf("[KytyBridge] ---\n");
-    std::fflush(stdout);
-
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         std::unique_lock<std::timed_mutex> session_lock(g_session_mutex, std::chrono::seconds(10));
         if (!session_lock.owns_lock()) {
@@ -754,22 +748,39 @@ static void KytyFatalExitCallback(int status, const char *message) {
             
             BOOL skipMesh = getBoolSetting(@"skipMeshShaders", false);
             BOOL srtJit = getBoolSetting(@"enableSrtArm64Jit", false);
-            std::string debugFlags;
-            if (skipMesh) debugFlags += ", Skip Mesh Shaders: ENABLED";
-            if (srtJit) debugFlags += ", ARM64 SRT JIT: ENABLED";
+            std::string flags;
+            if ([KytyBridge isMetalHudEnabled]) flags += ", Metal HUD";
+            if (options.config.perf_overlay_enabled) flags += ", Stats Overlay";
 
-            std::printf("[KytyBridge] Configured app0_dir: %s, elf: %s\n",
+            std::string experimental;
+            auto addExperimental = [&](const std::string& item) {
+                if (!experimental.empty()) experimental += ", ";
+                experimental += item;
+            };
+            if (options.config.resolution_scale < 100) {
+                addExperimental("Scale " + std::to_string(options.config.resolution_scale) + "%");
+            }
+            if (skipMesh) addExperimental("Skip Mesh Shaders");
+            if (srtJit) addExperimental("ARM64 SRT JIT");
+            if (options.config.relaxed_shader_float) addExperimental("Relaxed Float");
+            if (!experimental.empty()) flags += " | Experimental: " + experimental;
+
+            std::printf("[KytyBridge] Launch: %s (%s)\n",
                         options.app0_dir.string().c_str(), options.elf.string().c_str());
-            std::printf("[KytyBridge] Graphics: %ux%u, Present Mode: %s, Metal HUD: %s, Kyty Stats Overlay: %s%s\n",
-                        options.config.screen_width, options.config.screen_height,
+            std::printf("[KytyBridge] Graphics: %s, %u Hz%s\n",
                         present ? [present UTF8String] : "Mailbox",
-                        [KytyBridge isMetalHudEnabled] ? "ENABLED" : "DISABLED",
-                        options.config.perf_overlay_enabled ? "ENABLED" : "DISABLED",
-                        debugFlags.c_str());
-            std::printf("[KytyBridge] User: %s (ID: %d), Lang: %u, VBlank: %u Hz, Patch: %s\n",
-                        options.config.user_name.c_str(), options.config.user_id,
-                        options.config.console_language, options.config.vblank_frequency,
-                        options.game_patch.empty() ? "None" : options.game_patch.string().c_str());
+                        options.config.vblank_frequency,
+                        flags.c_str());
+            if (options.game_patch.empty()) {
+                std::printf("[KytyBridge] User: %s (ID: %d), Lang: %u\n",
+                            options.config.user_name.c_str(), options.config.user_id,
+                            options.config.console_language);
+            } else {
+                std::printf("[KytyBridge] User: %s (ID: %d), Lang: %u, Patch: %s\n",
+                            options.config.user_name.c_str(), options.config.user_id,
+                            options.config.console_language,
+                            options.game_patch.string().c_str());
+            }
             std::fflush(stdout);
 
             if (completion) {
