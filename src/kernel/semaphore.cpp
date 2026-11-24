@@ -436,6 +436,10 @@ public:
 		Common::Timer timer;
 
 		while (m_count <= 0) {
+			if (Common::HostException::IsEmulationShuttingDown()) {
+				SyncGuest();
+				return POSIX_EINTR;
+			}
 			if (timed_wait && elapsed >= *micros) {
 				SyncGuest();
 				return POSIX_ETIMEDOUT;
@@ -445,14 +449,17 @@ public:
 			SyncGuest();
 
 			if (timed_wait) {
-				m_cond_var.WaitFor(&m_mutex, *micros - elapsed);
+				m_cond_var.WaitFor(&m_mutex,
+				                   std::min<uint32_t>(SIGNAL_APC_POLL_MICROS, *micros - elapsed));
 			} else {
 				m_cond_var.WaitFor(&m_mutex, SIGNAL_APC_POLL_MICROS);
 			}
 
-			m_mutex.Unlock();
-			LibKernel::KernelDispatchPendingSignalForCurrentThread();
-			m_mutex.Lock();
+			if (!Common::HostException::IsEmulationShuttingDown()) {
+				m_mutex.Unlock();
+				LibKernel::KernelDispatchPendingSignalForCurrentThread();
+				m_mutex.Lock();
+			}
 
 			m_waiters--;
 			elapsed = static_cast<uint32_t>(timer.GetTimeS() * 1000000.0);

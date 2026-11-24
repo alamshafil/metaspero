@@ -2526,6 +2526,15 @@ static int RwlockLockCooperative(PthreadRwlock rwlock, bool write, KernelUsecond
 				}
 			}
 
+			if (Common::HostException::IsEmulationShuttingDown()
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+			    || Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()
+#endif
+			) {
+				unregister_writer_wait();
+				return KERNEL_ERROR_ECANCELED;
+			}
+
 			if (has_timeout) {
 				const auto now = std::chrono::steady_clock::now();
 				if (wait_us == 0 || now >= deadline) {
@@ -3420,6 +3429,14 @@ int KYTY_SYSV_ABI PthreadCreate(Pthread* thread, const PthreadAttr* attr,
 		return KERNEL_ERROR_EINVAL;
 	}
 
+	if (Common::HostException::IsEmulationShuttingDown()
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+	    || Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()
+#endif
+	) {
+		return KERNEL_ERROR_EAGAIN;
+	}
+
 	auto* pthread_pool = g_pthread_context->GetPthreadPool();
 
 	if (attr == nullptr) {
@@ -4181,9 +4198,13 @@ int KYTY_SYSV_ABI pthread_once(void* once_control, void(KYTY_SYSV_ABI* init_rout
 				case PTHREAD_ONCE_WAIT:
 					once->state = PTHREAD_ONCE_WAIT;
 					while (once->state == PTHREAD_ONCE_WAIT) {
+						if (Common::HostException::IsEmulationShuttingDown()) {
+							return OK;
+						}
 						g_pthread_once_cv.wait_for(
 						    lock, std::chrono::microseconds(LibKernel::SIGNAL_APC_POLL_MICROS));
-						if (once->state == PTHREAD_ONCE_WAIT) {
+						if (once->state == PTHREAD_ONCE_WAIT &&
+						    !Common::HostException::IsEmulationShuttingDown()) {
 							lock.unlock();
 							LibKernel::KernelDispatchPendingSignalForCurrentThread();
 							lock.lock();

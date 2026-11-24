@@ -279,8 +279,13 @@ static void SignalHandler(int sig, siginfo_t* si, void* uctx) {
 		info.r15 = arm_thread_state64_get_lr(ss);
 	}
 
-	// 1. If emulation is shutting down (e.g. user pressed Quit), suppress crash alert and suspend thread cleanly
+	// 1. If emulation is shutting down (e.g. user pressed Quit), redirect guest JIT threads to HLT
+	//    so they unwind and exit cleanly
 	if (IsEmulationShuttingDown()) {
+		auto fex_handler = g_fex_signal_handler.load(std::memory_order_acquire);
+		if (fex_handler != nullptr && fex_handler(sig, si, uctx)) {
+			return;
+		}
 #if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
 		mach_port_t self = mach_thread_self();
 		thread_suspend(self);
@@ -721,6 +726,7 @@ bool InstallHandler(Handler handler) {
 	// SIGUSR1; block it while a fault is being resolved so a stop-the-world request
 	// cannot preempt the handler between the protection fix and the retry.
 	sigaddset(&sa.sa_mask, SIGUSR1);
+	sigaddset(&sa.sa_mask, SIGUSR2);
 
 	// macOS raises SIGBUS for protection faults on some paths and SIGSEGV on others;
 	// SIGILL covers instructions the host cannot execute (routed to the x64 emulator);

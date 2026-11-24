@@ -59,6 +59,7 @@ public:
                                uint64_t arg3 = 0, uint64_t arg4 = 0, uint64_t arg5 = 0);
 
     static bool HandleHostSignal(int sig, void* si, void* uctx);
+    static bool IsAddressInCurrentThreadCodeBuffer(uintptr_t pc) noexcept;
 
 private:
     FexGuestEngine() = default;

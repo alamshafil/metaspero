@@ -31,6 +31,10 @@
 #include <chrono>
 #include <cinttypes>
 #include <cmath>
+#if defined(__APPLE__) || defined(__ANDROID__) || defined(__linux__)
+#include <setjmp.h>
+#endif
+#include <csignal>
 #include <cstring>
 #include <condition_variable>
 #include <limits>
@@ -89,10 +93,62 @@ struct ActiveGuestThreadEntry {
 };
 
 static std::mutex s_active_threads_mutex;
+static std::mutex s_stop_threads_mutex;
 static std::vector<std::shared_ptr<ActiveGuestThreadEntry>> s_active_guest_threads;
+static std::atomic<uint64_t> s_cached_hlt_address{0};
 static thread_local ActiveGuestThreadEntry* s_tls_active_entry{nullptr};
+static thread_local sigjmp_buf* s_tls_exit_jmp{nullptr};
+static thread_local int s_tls_callback_depth{0};
 static thread_local void (*s_tls_cleanup_before_exit)(void*){nullptr};
 static thread_local void* s_tls_cleanup_arg{nullptr};
+
+#if defined(__APPLE__) || defined(__ANDROID__) || defined(__linux__)
+static void ShutdownSafepointSignalHandler(int /*sig*/, siginfo_t* /*si*/, void* uctx) {
+    if (!Common::HostException::IsEmulationShuttingDown() &&
+        !Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()) {
+        return;
+    }
+#if defined(__APPLE__) && (defined(__arm64__) || defined(__aarch64__))
+    auto* thread = s_tls_current_fex_thread;
+    auto* active = s_tls_active_entry;
+    auto* uc = static_cast<ucontext_t*>(uctx);
+    if (thread == nullptr || thread->CurrentFrame == nullptr || uc == nullptr || uc->uc_mcontext == nullptr) {
+        return;
+    }
+    if (active != nullptr && active->in_syscall.load(std::memory_order_acquire)) {
+        return;
+    }
+    auto& ss = const_cast<decltype(uc->uc_mcontext->__ss)&>(uc->uc_mcontext->__ss);
+    if (ss.__x[28] != reinterpret_cast<uint64_t>(thread->CurrentFrame)) {
+        return;
+    }
+    const uint64_t hlt_addr = s_cached_hlt_address.load(std::memory_order_acquire);
+    const uintptr_t loop_top = thread->CurrentFrame->Pointers.DispatcherLoopTop;
+    if (hlt_addr == 0 || loop_top == 0) {
+        return;
+    }
+    const uintptr_t pc = arm_thread_state64_get_pc(ss);
+    if (Loader::Fex::FexGuestEngine::IsAddressInCurrentThreadCodeBuffer(pc)) {
+        thread->CurrentFrame->State.rip = hlt_addr;
+        arm_thread_state64_set_pc_fptr(ss, reinterpret_cast<void*>(loop_top));
+    }
+#else
+    (void)uctx;
+#endif
+}
+
+static void EnsureShutdownSafepointHandlerInstalled() {
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        struct sigaction sa{};
+        sa.sa_sigaction = ShutdownSafepointSignalHandler;
+        // Intentionally omit SA_RESTART so blocking POSIX syscalls unblock with EINTR during shutdown.
+        sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGUSR2, &sa, nullptr);
+    });
+}
+#endif
 
 static void ExitStaleGuestThreadNow() {
     if (Common::Thread::IsMainThread()) {
@@ -154,6 +210,12 @@ public:
     uint64_t HandleSyscall(FEXCore::Core::CpuStateFrame* frame, FEXCore::HLE::SyscallArguments* args) override {
         if (Common::HostException::IsEmulationShuttingDown() ||
             Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()) {
+            if (s_tls_active_entry) {
+                s_tls_active_entry->in_syscall.store(false, std::memory_order_release);
+            }
+            if (s_tls_exit_jmp != nullptr && s_tls_callback_depth == 0) {
+                siglongjmp(*s_tls_exit_jmp, 1);
+            }
             if (frame != nullptr) {
                 frame->State.rip = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
                 return 0;
@@ -197,6 +259,9 @@ public:
         }
         if (Common::HostException::IsEmulationShuttingDown() ||
             Loader::Fex::FexGuestEngine::IsCurrentThreadFromStaleSession()) {
+            if (s_tls_exit_jmp != nullptr && s_tls_callback_depth == 0) {
+                siglongjmp(*s_tls_exit_jmp, 1);
+            }
             if (frame != nullptr) {
                 frame->State.rip = Loader::Fex::FexHleBridge::Instance().GetHltAddress();
                 return 0;
@@ -444,6 +509,10 @@ bool FexGuestEngine::Initialize() {
     m_signal_delegator = signal_delegator.release();
     m_syscall_handler = syscall_handler.release();
     m_initialized = true;
+    s_cached_hlt_address.store(Loader::Fex::FexHleBridge::Instance().GetHltAddress(), std::memory_order_release);
+#if defined(__APPLE__) || defined(__ANDROID__) || defined(__linux__)
+    EnsureShutdownSafepointHandlerInstalled();
+#endif
     Common::HostException::RegisterFexSignalHandler(&FexGuestEngine::HandleHostSignal);
     return true;
 #else
@@ -455,6 +524,7 @@ bool FexGuestEngine::Initialize() {
 void FexGuestEngine::Shutdown() {
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
     Common::HostException::RegisterFexSignalHandler(nullptr);
+    s_cached_hlt_address.store(0, std::memory_order_release);
     if (m_fex_context != nullptr) {
         auto* ctx = static_cast<FEXCore::Context::Context*>(m_fex_context);
         delete ctx;
@@ -536,10 +606,14 @@ bool FexGuestEngine::HaltCurrentThread() noexcept {
 void FexGuestEngine::CleanupCurrentThreadBeforeExit() noexcept {
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
     if (s_tls_active_entry != nullptr) {
-        s_tls_active_entry->exited.store(true, std::memory_order_release);
-        if (s_tls_active_entry->guest_thread != nullptr) {
-            auto* gt = s_tls_active_entry->guest_thread;
+        GuestThreadState* gt = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(s_active_threads_mutex);
+            s_tls_active_entry->exited.store(true, std::memory_order_release);
+            gt = s_tls_active_entry->guest_thread;
             s_tls_active_entry->guest_thread = nullptr;
+        }
+        if (gt != nullptr) {
             FexGuestEngine::Instance().DestroyThread(gt);
         }
         s_tls_active_entry = nullptr;
@@ -557,56 +631,45 @@ void FexGuestEngine::CleanupCurrentThreadBeforeExit() noexcept {
 
 void FexGuestEngine::StopAllThreads() {
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+    std::lock_guard<std::mutex> stop_lock(s_stop_threads_mutex);
     Common::HostException::SetEmulationShuttingDown(true);
     const uint64_t finished_session = s_current_session_id.fetch_add(1, std::memory_order_seq_cst);
 
-    // Cancel guest threads first so they unblock from blocking waits/syscalls
-    {
-        std::lock_guard<std::mutex> lock(s_active_threads_mutex);
-        for (auto& entry : s_active_guest_threads) {
-            if (entry && entry->session_id <= finished_session && !entry->exited.load(std::memory_order_acquire)) {
-                if (entry->pthread_handle != 0 && entry->pthread_handle != pthread_self()) {
-                    pthread_cancel(entry->pthread_handle);
-                }
-            }
-        }
-    }
+#if defined(__APPLE__) || defined(__ANDROID__) || defined(__linux__)
+    EnsureShutdownSafepointHandlerInstalled();
+#endif
 
-    // Give active threads a cooperative window to notice shutdown and exit cleanly
-    for (int i = 0; i < 30; ++i) {
-        bool any_running = false;
+    // Cooperatively stop all guest threads without pthread_cancel() or thread_terminate().
+    // SIGUSR2 safely redirects threads in JIT code to the HLT exit trampoline and
+    // interrupts blocking POSIX syscalls with EINTR, while HLE waits observe IsEmulationShuttingDown().
+    size_t remaining_threads = 0;
+    for (int i = 0; i < 200; ++i) {
+        remaining_threads = 0;
+        const bool send_safepoint = (i == 0 || i == 1 || (i % 5) == 0);
         {
             std::lock_guard<std::mutex> lock(s_active_threads_mutex);
             for (const auto& entry : s_active_guest_threads) {
                 if (entry && entry->session_id <= finished_session && !entry->exited.load(std::memory_order_acquire)) {
-                    any_running = true;
-                    break;
+                    ++remaining_threads;
+#if defined(__APPLE__) || defined(__ANDROID__) || defined(__linux__)
+                    if (send_safepoint && entry->pthread_handle != 0 && entry->pthread_handle != pthread_self()) {
+                        pthread_kill(entry->pthread_handle, SIGUSR2);
+                    }
+#endif
                 }
             }
         }
-        if (!any_running) {
+        if (remaining_threads == 0) {
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-#if defined(__APPLE__)
-    mach_port_t self_mach = mach_thread_self();
-    {
-        std::lock_guard<std::mutex> lock(s_active_threads_mutex);
-        for (auto& entry : s_active_guest_threads) {
-            if (!entry || entry->session_id > finished_session || entry->exited.load(std::memory_order_acquire)) {
-                continue;
-            }
-            if (entry->mach_port != MACH_PORT_NULL && entry->mach_port != self_mach) {
-                thread_abort(entry->mach_port);
-                thread_terminate(entry->mach_port);
-                entry->exited.store(true, std::memory_order_release);
-            }
-        }
+    if (remaining_threads > 0) {
+        std::printf("[FexGuestEngine] Warning: %zu guest thread(s) did not exit within shutdown timeout\n",
+                    remaining_threads);
+        std::fflush(stdout);
     }
-    mach_port_deallocate(mach_task_self(), self_mach);
-#endif
 
     {
         std::lock_guard<std::mutex> lock(s_active_threads_mutex);
@@ -614,10 +677,6 @@ void FexGuestEngine::StopAllThreads() {
             return !entry || entry->exited.load(std::memory_order_acquire);
         });
     }
-
-#if defined(__APPLE__)
-    Loader::Fex::KytyResetJitPoolForNewSession();
-#endif
 
     s_tls_guest_session_id = 0;
 #endif
@@ -650,6 +709,9 @@ GuestThreadState* FexGuestEngine::CreateThreadWithArgs(uint64_t entry_rip, uint6
                                                        uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                                        uint64_t arg3, uint64_t arg4, uint64_t arg5,
                                                        uint64_t fs_base) {
+    if (Common::HostException::IsEmulationShuttingDown() || IsCurrentThreadFromStaleSession()) {
+        return nullptr;
+    }
     if (!Initialize()) {
         return nullptr;
     }
@@ -802,28 +864,40 @@ uint64_t FexGuestEngine::Run(GuestThreadState* thread, bool enable_watchdog) {
     }
 
     auto prev_session_id = s_tls_guest_session_id;
-    s_tls_guest_session_id = s_current_session_id.load(std::memory_order_acquire);
     auto* prev_active_entry = s_tls_active_entry;
     auto active_entry = std::make_shared<ActiveGuestThreadEntry>();
     active_entry->pthread_handle = runner_pthread;
 #if defined(__APPLE__)
     active_entry->mach_port = runner_mach;
 #endif
-    active_entry->session_id = s_tls_guest_session_id;
     active_entry->guest_thread = thread;
-    s_tls_active_entry = active_entry.get();
     {
         std::lock_guard<std::mutex> lock(s_active_threads_mutex);
+        if (Common::HostException::IsEmulationShuttingDown() || IsCurrentThreadFromStaleSession()) {
+            return 0;
+        }
+        s_tls_guest_session_id = s_current_session_id.load(std::memory_order_acquire);
+        active_entry->session_id = s_tls_guest_session_id;
         s_active_guest_threads.push_back(active_entry);
     }
+    s_tls_active_entry = active_entry.get();
 
     auto* prev_fex_thread = s_tls_current_fex_thread;
     s_tls_current_fex_thread = fex_thread;
-    ctx->ExecuteThread(fex_thread);
+    sigjmp_buf* prev_exit_jmp = s_tls_exit_jmp;
+    sigjmp_buf exit_jmp;
+    s_tls_exit_jmp = &exit_jmp;
+    if (sigsetjmp(exit_jmp, 0) == 0) {
+        ctx->ExecuteThread(fex_thread);
+    }
+    s_tls_exit_jmp = prev_exit_jmp;
     s_tls_current_fex_thread = prev_fex_thread;
 
-    active_entry->guest_thread = nullptr;
-    active_entry->exited.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(s_active_threads_mutex);
+        active_entry->guest_thread = nullptr;
+        active_entry->exited.store(true, std::memory_order_release);
+    }
     s_tls_active_entry = prev_active_entry;
     if (prev_active_entry == nullptr) {
         s_tls_guest_session_id = 0;
@@ -842,7 +916,7 @@ uint64_t FexGuestEngine::Run(GuestThreadState* thread, bool enable_watchdog) {
 uint64_t FexGuestEngine::CallGuestFunction(uint64_t rip,
                                            uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                            uint64_t arg3, uint64_t arg4, uint64_t arg5) {
-    if (rip == 0) {
+    if (rip == 0 || Common::HostException::IsEmulationShuttingDown() || IsCurrentThreadFromStaleSession()) {
         return 0;
     }
     uint64_t target_rip = Libs::LibKernel::Memory::KernelTranslateAddress(rip);
@@ -877,7 +951,9 @@ uint64_t FexGuestEngine::CallGuestFunction(uint64_t rip,
         frame->State.gregs[FEXCore::X86State::REG_R9]  = arg5;
 
         auto* ctx = static_cast<FEXCore::Context::Context*>(m_fex_context);
+        ++s_tls_callback_depth;
         ctx->HandleCallback(current_fex_thread, target_rip);
+        --s_tls_callback_depth;
 
         uint64_t ret = frame->State.gregs[FEXCore::X86State::REG_RAX];
 
@@ -937,6 +1013,26 @@ static inline std::mutex& GetAtomicLockForAddress(uintptr_t addr) {
     return s_striped_atomic_locks[bucket & 255].mtx;
 }
 
+bool FexGuestEngine::IsAddressInCurrentThreadCodeBuffer(uintptr_t pc) noexcept {
+#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
+    auto* thread = s_tls_current_fex_thread;
+    auto* engine_instance = &Instance();
+    if (thread == nullptr || engine_instance->m_fex_context == nullptr) {
+        return false;
+    }
+    auto* ctx = static_cast<FEXCore::Context::Context*>(engine_instance->m_fex_context);
+    if (ctx->IsAddressInCodeBuffer(thread, pc)) {
+        return true;
+    }
+    const auto* writable = FEXCore::Allocator::GetWritableAddress(reinterpret_cast<void*>(pc));
+    return writable != nullptr &&
+           ctx->IsAddressInCodeBuffer(thread, reinterpret_cast<uintptr_t>(writable));
+#else
+    (void)pc;
+    return false;
+#endif
+}
+
 bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext) {
 #if defined(KYTY_ENABLE_FEX_GUEST_CPU) && (defined(__arm64__) || defined(__aarch64__)) && defined(__APPLE__)
     auto* thread = s_tls_current_fex_thread;
@@ -961,6 +1057,23 @@ bool FexGuestEngine::HandleHostSignal(int sig, void* siginfo_ptr, void* ucontext
         return writable != nullptr &&
                ctx->IsAddressInCodeBuffer(thread, reinterpret_cast<uintptr_t>(writable));
     };
+
+    // 0. During shutdown, redirect faulting JIT execution to HLT
+    //    so ExecuteThread() unwinds and exits cleanly without looping on the faulting instruction.
+    if (Common::HostException::IsEmulationShuttingDown() || IsCurrentThreadFromStaleSession()) {
+        if (thread->CurrentFrame != nullptr &&
+            ss.__x[28] == reinterpret_cast<uint64_t>(thread->CurrentFrame) &&
+            is_fex_code(pc)) {
+            const uint64_t hlt_addr = s_cached_hlt_address.load(std::memory_order_acquire);
+            const uintptr_t loop_top = thread->CurrentFrame->Pointers.DispatcherLoopTop;
+            if (hlt_addr != 0 && loop_top != 0) {
+                thread->CurrentFrame->State.rip = hlt_addr;
+                arm_thread_state64_set_pc_fptr(ss, reinterpret_cast<void*>(loop_top));
+                return true;
+            }
+        }
+        return false;
+    }
 
     // 1. Recover from branch to NULL (PC == 0) caused by unlinked or failed JIT block compilation
     if ((sig == SIGSEGV || sig == SIGBUS) && pc == 0 && thread->CurrentFrame != nullptr) {

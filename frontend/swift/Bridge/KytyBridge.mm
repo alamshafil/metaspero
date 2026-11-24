@@ -833,9 +833,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
     std::memset(&quit_ev, 0, sizeof(quit_ev));
     quit_ev.type = SDL_EVENT_QUIT;
     SDL_PushEvent(&quit_ev);
-#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
-    Loader::Fex::FexGuestEngine::Instance().StopAllThreads();
-#endif
 #endif
 
     if (g_emulator_thread && g_emulator_thread->joinable()) {
@@ -856,9 +853,6 @@ static void KytyFatalExitCallback(int status, const char *message) {
     std::memset(&quit_ev, 0, sizeof(quit_ev));
     quit_ev.type = SDL_EVENT_QUIT;
     SDL_PushEvent(&quit_ev);
-#if defined(KYTY_ENABLE_FEX_GUEST_CPU)
-    Loader::Fex::FexGuestEngine::Instance().StopAllThreads();
-#endif
 #endif
     g_host_layer = nil;
     g_host_view = nullptr;
