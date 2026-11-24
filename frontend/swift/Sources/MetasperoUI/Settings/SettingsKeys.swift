@@ -17,7 +17,6 @@ enum SettingsKey {
     static let shaderCacheEnabled = "shaderCacheEnabled"
 
     // Graphics
-    static let resolutionScale = "resolutionScale"
     static let renderScalePercent = "renderScalePercent"
     static let presentMode = "presentMode"
     static let vblankFrequency = "vblankFrequency"
@@ -44,7 +43,6 @@ enum SettingsDefault {
     static let userName = "Metaspero"
     static let userId = 1000
     static let consoleLanguage = 1
-    static let resolutionScale = "720p"
     static let renderScalePercent = 100
     static let presentMode = "Mailbox"
     static let vblankFrequency = 60

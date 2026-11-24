@@ -19,7 +19,6 @@ struct EmulationView: View {
     @State private var isClosing: Bool = false
     @State private var closingTimeoutTask: Task<Void, Never>? = nil
     @AppStorage(SettingsKey.enableTouchOverlay) private var enableTouchOverlay = SettingsDefault.enableTouchOverlay
-    @AppStorage(SettingsKey.resolutionScale) private var resolutionScale = SettingsDefault.resolutionScale
     @ObservedObject private var physicalManager = PhysicalControllerManager.shared
 #endif
 
@@ -251,35 +250,8 @@ struct InGameOverlayView: View {
 
 // MARK: - Metal Render Canvas
 
-/// Returns the target drawable pixel dimensions for the configured resolution setting.
-private func configuredDrawableSize() -> (width: Int, height: Int) {
-    let res = UserDefaults.standard.string(forKey: "resolutionScale") ?? "720p"
-    if res == "480p" {
-        return (854, 480)
-    }
-    if res == "1080p" {
-        return (1920, 1080)
-    }
-    return (1280, 720)
-}
-
-private func configureMetalLayerScale(_ metalLayer: CAMetalLayer, hostBounds: CGRect) -> (width: Int, height: Int) {
-    let (targetW, targetH) = configuredDrawableSize()
-    metalLayer.frame = hostBounds
-    guard hostBounds.width > 0, hostBounds.height > 0 else { return (targetW, targetH) }
-    let scale = CGFloat(targetH) / hostBounds.height
-    metalLayer.contentsScale = scale
-    var w = Int((hostBounds.width * scale).rounded())
-    let h = targetH
-    if abs(w - targetW) <= 3 {
-        w = targetW
-    }
-    metalLayer.drawableSize = CGSize(width: w, height: h)
-    return (w, h)
-}
-
 /// The core renders straight into this view's CAMetalLayer. The view reports
-/// its pixel size to the bridge so the renderer can resize its swapchain.
+/// its native backing pixel size to the bridge so the renderer can resize its swapchain.
 #if os(iOS)
 final class HostMetalView: UIView {
     let metalLayer = CAMetalLayer()
@@ -291,16 +263,28 @@ final class HostMetalView: UIView {
         metalLayer.device = MTLCreateSystemDefaultDevice()
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.framebufferOnly = true
-        let (w, h) = configuredDrawableSize()
-        metalLayer.drawableSize = CGSize(width: w, height: h)
+        metalLayer.drawableSize = CGSize(width: 1280, height: 720)
         layer.addSublayer(metalLayer)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    func updateDrawableSizeIfNeeded() {
+        metalLayer.frame = bounds
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let scale = max(traitCollection.displayScale > 0 ? traitCollection.displayScale : UIScreen.main.scale, 1.0)
+        metalLayer.contentsScale = scale
+        let w = max(Int((bounds.width * scale).rounded()), 1)
+        let h = max(Int((bounds.height * scale).rounded()), 1)
+        let targetSize = CGSize(width: w, height: h)
+        if metalLayer.drawableSize != targetSize {
+            metalLayer.drawableSize = targetSize
+            KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
+        }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
-        let (w, h) = configureMetalLayerScale(metalLayer, hostBounds: bounds)
-        KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
+        updateDrawableSizeIfNeeded()
     }
 }
 
@@ -323,8 +307,7 @@ struct EmulatorMetalSurface: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: HostMetalView, context: Context) {
-        let (w, h) = configureMetalLayerScale(uiView.metalLayer, hostBounds: uiView.bounds)
-        KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
+        uiView.updateDrawableSizeIfNeeded()
     }
 
     static func dismantleUIView(_ uiView: HostMetalView, coordinator: ()) {
@@ -347,8 +330,7 @@ final class HostMetalView: NSView {
         metalLayer.device = MTLCreateSystemDefaultDevice()
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.framebufferOnly = true
-        let (w, h) = configuredDrawableSize()
-        metalLayer.drawableSize = CGSize(width: w, height: h)
+        metalLayer.drawableSize = CGSize(width: 1280, height: 720)
         wantsLayer = true
         layer = metalLayer
     }
@@ -409,14 +391,28 @@ final class HostMetalView: NSView {
         previousModifierFlags = event.modifierFlags
     }
 
-    override func layout() {
-        super.layout()
+    func updateDrawableSizeIfNeeded() {
         guard bounds.width > 0, bounds.height > 0 else { return }
-        let (w, h) = configuredDrawableSize()
-        if metalLayer.drawableSize.width != CGFloat(w) || metalLayer.drawableSize.height != CGFloat(h) {
-            metalLayer.drawableSize = CGSize(width: w, height: h)
+        let backingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        metalLayer.contentsScale = backingScale
+        let backingSize = convertToBacking(bounds.size)
+        let w = max(Int(backingSize.width.rounded()), 1)
+        let h = max(Int(backingSize.height.rounded()), 1)
+        let targetSize = CGSize(width: w, height: h)
+        if metalLayer.drawableSize != targetSize {
+            metalLayer.drawableSize = targetSize
             KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
         }
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateDrawableSizeIfNeeded()
+    }
+
+    override func layout() {
+        super.layout()
+        updateDrawableSizeIfNeeded()
     }
 }
 
@@ -439,12 +435,7 @@ struct EmulatorMetalSurface: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: HostMetalView, context: Context) {
-        guard nsView.bounds.width > 0, nsView.bounds.height > 0 else { return }
-        let (w, h) = configuredDrawableSize()
-        if nsView.metalLayer.drawableSize.width != CGFloat(w) || nsView.metalLayer.drawableSize.height != CGFloat(h) {
-            nsView.metalLayer.drawableSize = CGSize(width: w, height: h)
-            KytyBridge.hostViewDidResize(toPixelWidth: Int32(w), height: Int32(h))
-        }
+        nsView.updateDrawableSizeIfNeeded()
     }
 
     static func dismantleNSView(_ nsView: HostMetalView, coordinator: ()) {

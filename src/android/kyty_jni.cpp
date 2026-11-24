@@ -367,7 +367,6 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
         unsetenv("KYTY_SRT_ARM64_JIT");
     }
 
-    const std::string resolution = getStringSetting("resolutionScale", "720p");
     const std::string present_mode = getStringSetting("presentMode", "Mailbox");
     const std::string user_name = getStringSetting("userName", "Metaspero");
     const int32_t user_id = static_cast<int32_t>(getIntSetting("userId", Config::DEFAULT_USER_ID));
@@ -392,8 +391,8 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
     const bool network_connected = getBoolSetting("networkConnected", false);
     const bool enable_haptics = getBoolSetting("enableHaptics", true);
 
-    LOGI("Settings: res=%s, present=%s, renderScale=%u%%, vblank=%lldHz, relaxedFloat=%s, perfOverlay=%s, skipMesh=%s, srtJit=%s, user=%s(%d), lang=%u",
-         resolution.c_str(), present_mode.c_str(), render_scale, static_cast<long long>(vblank_freq),
+    LOGI("Settings: present=%s, renderScale=%u%%, vblank=%lldHz, relaxedFloat=%s, perfOverlay=%s, skipMesh=%s, srtJit=%s, user=%s(%d), lang=%u",
+         present_mode.c_str(), render_scale, static_cast<long long>(vblank_freq),
          relaxed_shader_float ? "on" : "off", perf_overlay ? "on" : "off",
          skip_mesh ? "on" : "off", srt_arm64_jit ? "on" : "off",
          user_name.c_str(), user_id, console_language);
@@ -401,7 +400,7 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
     g_is_running.store(true);
     g_is_stopping.store(false);
 
-    g_emulator_thread = std::thread([game_path, resolution, present_mode, user_name, user_id,
+    g_emulator_thread = std::thread([game_path, present_mode, user_name, user_id,
                                      console_language, vblank_freq, perf_overlay, render_scale,
                                      relaxed_shader_float, shader_cache_enabled,
                                      skip_notice_screen, network_connected, enable_haptics]() {
@@ -437,16 +436,11 @@ JNIEXPORT jboolean JNICALL Java_com_alamshafil_ps5emu_NativeBridge_nativeStartGa
 
         options.config.printf_direction = Config::LogDirection::Silent;
 
-        if (resolution == "480p") {
-            options.config.screen_width  = 854;
-            options.config.screen_height = 480;
-        } else if (resolution == "1080p") {
-            options.config.screen_width  = 1920;
-            options.config.screen_height = 1080;
-        } else {
-            options.config.screen_width  = 1280;
-            options.config.screen_height = 720;
-        }
+        ANativeWindow* win = g_host_native_window.load();
+        int native_w = win ? ANativeWindow_getWidth(win) : 0;
+        int native_h = win ? ANativeWindow_getHeight(win) : 0;
+        options.config.screen_width  = native_w > 0 ? static_cast<uint32_t>(native_w) : 1280;
+        options.config.screen_height = native_h > 0 ? static_cast<uint32_t>(native_h) : 720;
 
         if (present_mode == "Fifo") {
             options.config.present_mode = Config::PresentMode::Fifo;

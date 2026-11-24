@@ -680,17 +680,10 @@ static void KytyFatalExitCallback(int status, const char *message) {
                 return defaultVal;
             };
             
-            NSString *res = getStringSetting(@"resolutionScale", @"720p");
-            if ([res isEqualToString:@"480p"]) {
-                options.config.screen_width = 854;
-                options.config.screen_height = 480;
-            } else if ([res isEqualToString:@"1080p"]) {
-                options.config.screen_width = 1920;
-                options.config.screen_height = 1080;
-            } else {
-                options.config.screen_width = 1280;
-                options.config.screen_height = 720;
-            }
+            int hostW = g_host_pixel_w.load();
+            int hostH = g_host_pixel_h.load();
+            options.config.screen_width = hostW > 0 ? hostW : 1280;
+            options.config.screen_height = hostH > 0 ? hostH : 720;
 
             NSString *present = getStringSetting(@"presentMode", @"Mailbox");
             if ([present isEqualToString:@"Fifo"]) {

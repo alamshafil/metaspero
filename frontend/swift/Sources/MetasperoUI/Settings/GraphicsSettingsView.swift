@@ -3,7 +3,6 @@ import SwiftUI
 
 struct GraphicsSettingsView: View {
     // Display
-    @AppStorage(SettingsKey.resolutionScale) private var resolutionScale = SettingsDefault.resolutionScale
     @AppStorage(SettingsKey.presentMode) private var presentMode = SettingsDefault.presentMode
     @AppStorage(SettingsKey.vblankFrequency) private var vblankFrequency = SettingsDefault.vblankFrequency
 
@@ -24,12 +23,6 @@ struct GraphicsSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Resolution", selection: $resolutionScale) {
-                    Text("480p").tag("480p")
-                    Text("720p (Default)").tag("720p")
-                    Text("1080p").tag("1080p")
-                }
-
                 Picker("V-Sync / Present Mode", selection: $presentMode) {
                     Text("Mailbox (Fast V-Sync)").tag("Mailbox")
                     Text("Fifo (60 FPS V-Sync)").tag("Fifo")
