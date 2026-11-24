@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 #if SKIP
 import androidx.compose.foundation.layout.size
@@ -69,6 +72,7 @@ public struct ContentView: View {
 #else
             LibraryView(selectedGame: $selectedGame, isEmulating: $isEmulating)
                 .frame(minWidth: 960, minHeight: 640)
+                .background(MacFullScreenToolbarController(autoHideToolbar: isEmulating))
 #endif
         }
         .alert("Experimental Software", isPresented: $showExperimentalAlert) {
@@ -190,3 +194,111 @@ public struct ContentView: View {
         return combined
     }
 }
+
+#if os(macOS)
+/// Forwarding NSWindowDelegate proxy
+private final class FullScreenWindowDelegateProxy: NSObject, NSWindowDelegate {
+    nonisolated(unsafe) static var associatedKey: UInt8 = 0
+    weak var originalDelegate: NSWindowDelegate?
+    var autoHideToolbarInFullScreen: Bool
+
+    init(originalDelegate: NSWindowDelegate?, autoHideToolbarInFullScreen: Bool) {
+        self.originalDelegate = originalDelegate
+        self.autoHideToolbarInFullScreen = autoHideToolbarInFullScreen
+        super.init()
+    }
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        if aSelector == #selector(NSWindowDelegate.window(_:willUseFullScreenPresentationOptions:)) {
+            return true
+        }
+        if super.responds(to: aSelector) {
+            return true
+        }
+        return originalDelegate?.responds(to: aSelector) ?? false
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        if aSelector == #selector(NSWindowDelegate.window(_:willUseFullScreenPresentationOptions:)) {
+            return self
+        }
+        if let original = originalDelegate, original.responds(to: aSelector) {
+            return original
+        }
+        return super.forwardingTarget(for: aSelector)
+    }
+
+    func window(
+        _ window: NSWindow,
+        willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions = []
+    ) -> NSApplication.PresentationOptions {
+        var options = originalDelegate?.window?(window, willUseFullScreenPresentationOptions: proposedOptions) ?? proposedOptions
+        if autoHideToolbarInFullScreen {
+            options.remove([.hideMenuBar, .hideDock])
+            options.insert([.fullScreen, .autoHideMenuBar, .autoHideDock, .autoHideToolbar])
+        } else {
+            options.remove(.autoHideToolbar)
+        }
+        return options
+    }
+}
+
+private final class FullScreenToolbarObserverView: NSView {
+    var autoHideToolbar: Bool = false {
+        didSet {
+            applyToWindow()
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyToWindow()
+    }
+
+    func applyToWindow() {
+        guard let window = self.window else { return }
+
+        if let existing = window.delegate as? FullScreenWindowDelegateProxy {
+            existing.autoHideToolbarInFullScreen = autoHideToolbar
+        } else {
+            let proxy = FullScreenWindowDelegateProxy(
+                originalDelegate: window.delegate,
+                autoHideToolbarInFullScreen: autoHideToolbar
+            )
+            objc_setAssociatedObject(
+                window,
+                &FullScreenWindowDelegateProxy.associatedKey,
+                proxy,
+                .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            )
+            window.delegate = proxy
+        }
+
+        // If already in native fullscreen when toggling emulation state, update presentation options live.
+        if window.styleMask.contains(.fullScreen) {
+            var opts = NSApp.presentationOptions
+            if autoHideToolbar {
+                opts.remove([.hideMenuBar, .hideDock])
+                opts.insert([.fullScreen, .autoHideMenuBar, .autoHideDock, .autoHideToolbar])
+            } else {
+                opts.remove(.autoHideToolbar)
+            }
+            NSApp.presentationOptions = opts
+        }
+    }
+}
+
+private struct MacFullScreenToolbarController: NSViewRepresentable {
+    let autoHideToolbar: Bool
+
+    func makeNSView(context: Context) -> FullScreenToolbarObserverView {
+        let view = FullScreenToolbarObserverView(frame: .zero)
+        view.autoHideToolbar = autoHideToolbar
+        return view
+    }
+
+    func updateNSView(_ nsView: FullScreenToolbarObserverView, context: Context) {
+        nsView.autoHideToolbar = autoHideToolbar
+    }
+}
+#endif
