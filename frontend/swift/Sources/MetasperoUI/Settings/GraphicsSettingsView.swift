@@ -15,7 +15,7 @@ struct GraphicsSettingsView: View {
 
     // Experimental
     @AppStorage(SettingsKey.renderScalePercent) private var renderScalePercent = SettingsDefault.renderScalePercent
-    @AppStorage(SettingsKey.relaxedShaderFloat) private var relaxedShaderFloat = false
+    @AppStorage(SettingsKey.relaxedShaderFloat) private var relaxedShaderFloat = true
     @AppStorage(SettingsKey.skipMeshShaders) private var skipMeshShaders = false
     @AppStorage(SettingsKey.enableSrtArm64Jit) private var enableSrtArm64Jit = false
 
