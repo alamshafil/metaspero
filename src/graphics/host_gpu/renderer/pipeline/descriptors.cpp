@@ -483,6 +483,14 @@ static bool ResolveTextureMipView(ImageInfo& info, uint32_t physical_levels, boo
 
 TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   resource,
                                               const ShaderRecompiler::IR::DescriptorValue& value) {
+	TextureBinding out {};
+	ResolveTextureInto(resource, value, out);
+	return out;
+}
+
+void RenderExecutor::ResolveTextureInto(const ShaderRecompiler::IR::ImageResource&   resource,
+                                        const ShaderRecompiler::IR::DescriptorValue& value,
+                                        TextureBinding&                              out) {
 	if (resource.atomic64 && !m_context.GetGraphics().shader_image_int64_atomics_enabled) {
 		EXIT("64-bit image atomics require shaderImageInt64Atomics\n");
 	}
@@ -494,7 +502,11 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 
 	auto& texture_cache = m_context.GetTextureCache();
 	if (descriptor.IsNull()) {
-		return {.layout = vk::ImageLayout::eGeneral};
+		out.image_id   = {};
+		out.image_view = nullptr;
+		out.layout     = vk::ImageLayout::eGeneral;
+		out.mip_views.clear();
+		return;
 	}
 	// Image heap resolves do not follow the draws that sample them and storage access is not
 	// sampling: neither reports samples.
@@ -531,7 +543,7 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	auto& cached_slot =
 	    m_texture_desc_cache[(desc_hash ^ (desc_hash >> 32u)) & (m_texture_desc_cache.size() - 1)];
 
-	TextureCache::ImageDesc desc {};
+	auto&                   desc              = out.desc;
 	Prospero::BufferFormat  format            = Prospero::BufferFormat::kInvalid;
 	vk::Format              pixel_format      = vk::Format::eUndefined;
 	vk::Format              view_format       = vk::Format::eUndefined;
@@ -544,6 +556,7 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		view_format       = cached_slot.view_format;
 		shader_conversion = cached_slot.shader_conversion;
 	} else {
+		desc = {};
 		const auto address         = descriptor.Base40();
 		const auto width           = static_cast<uint32_t>(descriptor.Width5()) + 1u;
 		const auto height          = static_cast<uint32_t>(descriptor.Height5()) + 1u;
@@ -657,7 +670,11 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		                     (address & (static_cast<uint64_t>(alignment) - 1u)) != 0);
 		// Image heaps keep the descriptors of unmapped textures, which PS5 never samples.
 		if (resource.heap && !m_context.IsMapped(address, desc.info.data.size)) {
-			return {.layout = vk::ImageLayout::eGeneral};
+			out.image_id   = {};
+			out.image_view = nullptr;
+			out.layout     = vk::ImageLayout::eGeneral;
+			out.mip_views.clear();
+			return;
 		}
 		if (storage) {
 			ValidateStorageTexture(resource, descriptor, desc.info.data.size);
@@ -700,7 +717,11 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	auto id = texture_cache.FindImage(desc, shader_conversion);
 	if (!id) {
 		// Another extent at the address holds it; the heap retries once an image is created.
-		return {.desc = std::move(desc), .layout = vk::ImageLayout::eGeneral};
+		out.image_id   = {};
+		out.image_view = nullptr;
+		out.layout     = vk::ImageLayout::eGeneral;
+		out.mip_views.clear();
+		return;
 	}
 	auto*      image               = &texture_cache.GetImage(id);
 	const bool stencil_association = static_cast<bool>(image->depth_id);
@@ -722,7 +743,10 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		(void)SelectSampledColorView(image->info.pixel_format, desc.view_info.format,
 		                             descriptor.DstSelXYZW());
 	}
-	return {id, nullptr, std::move(desc)};
+	out.image_id   = id;
+	out.image_view = nullptr;
+	out.layout     = vk::ImageLayout::eUndefined;
+	out.mip_views.clear();
 }
 
 static vk::Sampler NativeSampler(RenderContext&                       context,
@@ -793,11 +817,9 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 			prepared.images[i] = {};
 			continue;
 		}
-		auto binding = ResolveTexture(program.info.images[i], snapshot.images[i]);
-		BindImage(binding.image_id, binding.desc.type == TextureCache::BindingType::Storage);
-		binding.mip_views.swap(prepared.images[i].mip_views);
-		binding.mip_views.clear();
-		prepared.images[i] = std::move(binding);
+		ResolveTextureInto(program.info.images[i], snapshot.images[i], prepared.images[i]);
+		BindImage(prepared.images[i].image_id,
+		          prepared.images[i].desc.type == TextureCache::BindingType::Storage);
 	}
 	prepared.samplers.reserve(program.info.samplers.size());
 	for (uint32_t i = 0; i < program.info.samplers.size(); i++) {

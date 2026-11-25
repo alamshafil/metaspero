@@ -138,7 +138,8 @@ struct Request;
 
 class RenderExecutor {
 public:
-	explicit RenderExecutor(RenderContext& context): m_context(context) {}
+	explicit RenderExecutor(RenderContext& context)
+	    : m_context(context), m_texture_desc_cache(1024) {}
 	~RenderExecutor();
 	KYTY_CLASS_NO_COPY(RenderExecutor);
 
@@ -157,6 +158,9 @@ public:
 	                    std::span<PreparedBindings* const> bindings);
 	[[nodiscard]] TextureBinding ResolveTexture(const ShaderRecompiler::IR::ImageResource&   resource,
 	                                            const ShaderRecompiler::IR::DescriptorValue& value);
+	void ResolveTextureInto(const ShaderRecompiler::IR::ImageResource&   resource,
+	                        const ShaderRecompiler::IR::DescriptorValue& value,
+	                        TextureBinding&                              out);
 
 private:
 	// False, with nothing drawn, when the draw's indirect records need CPU counts.
@@ -234,7 +238,7 @@ private:
 		bool                    shader_conversion = false;
 		bool                    valid             = false;
 	};
-	std::array<CachedTextureDesc, 64>     m_texture_desc_cache {};
+	std::vector<CachedTextureDesc>        m_texture_desc_cache;
 	struct CachedColorTargetDesc {
 		HW::RenderTarget                rt {};
 		TextureCache::ImageDesc         desc {};

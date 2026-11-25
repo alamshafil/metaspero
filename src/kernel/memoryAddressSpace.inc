@@ -232,7 +232,26 @@ public:
 	// Needs no lock either, as the alias stays mapped. A read racing an unmap copies the backing's
 	// current bytes, or zeros for a page unmapped between the check and the copy.
 	bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) const {
-		if (data == nullptr || !IsBacked(vaddr, size)) {
+		if (data == nullptr || size == 0 || UINT64_MAX - vaddr < size) {
+			return false;
+		}
+		constexpr uint64_t page_size = uint64_t {1} << PageBits;
+		const uint64_t     in_page   = vaddr & (page_size - 1u);
+		if (in_page + size <= page_size) {
+			const auto entry = LoadPage(vaddr >> PageBits);
+			if (entry == 0) {
+				return false;
+			}
+			const uint64_t offset = (uint64_t {entry - 1u} << PageBits) + in_page;
+			if (m_backing_base != nullptr) {
+				std::memcpy(data, m_backing_base + offset, size);
+				return true;
+			}
+			WithBackingRun(offset, vaddr, size,
+			               [&](const uint8_t* backing) { std::memcpy(data, backing, size); });
+			return true;
+		}
+		if (!IsBacked(vaddr, size)) {
 			return false;
 		}
 		ReadSparseBacking(vaddr, data, size, [](uint64_t, uint8_t* destination, uint64_t bytes) {
