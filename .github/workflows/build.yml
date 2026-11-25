@@ -380,17 +380,22 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup Java 17
+      - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Android NDK
+        id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r30
+          add-to-path: true
           link-to-sdk: true
+
+      - name: Cache Gradle packages
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Install build tools
         shell: bash
@@ -400,6 +405,9 @@ jobs:
 
       - name: Build Android APK
         shell: bash
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           cmake --preset android-arm64 \
             -DCMAKE_BUILD_TYPE=Release \
