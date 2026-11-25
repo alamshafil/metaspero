@@ -14,7 +14,7 @@ uint32_t EmitExt(EmitterState& state, uint32_t type, uint32_t opcode,
 
 uint32_t EmitMinMaxF64(EmitterState& state, uint32_t lhs, uint32_t rhs, bool max_value) {
 	if (state.profile.relaxed_float) {
-		return EmitExt(state, TypeF64(state), max_value ? GLSLstd450NMax : GLSLstd450NMin,
+		return EmitExt(state, TypeF64(state), max_value ? GLSLstd450FMax : GLSLstd450FMin,
 		               {lhs, rhs});
 	}
 	const auto bits_type = TypeU32Vector(state, 2);
@@ -62,7 +62,8 @@ uint32_t EmitF32ToU32(EmitterState& state, uint32_t src, bool signed_value) {
 	// Clamping first keeps the truncating conversion defined; NaN and values past the largest
 	// float below the integer limit are selected afterwards.
 	const auto clamped =
-	    EmitExt(state, TypeF32(state), GLSLstd450NClamp,
+	    EmitExt(state, TypeF32(state),
+	            state.profile.relaxed_float ? GLSLstd450FClamp : GLSLstd450NClamp,
 	            {src, ConstantF32(state, signed_value ? 0xcf000000u : 0u),
 	             ConstantF32(state, signed_value ? 0x4effffffu : 0x4f7fffffu)});
 	const auto converted = signed_value
@@ -226,7 +227,8 @@ uint32_t EmitPackFloat2x16Rtz(EmitterState& state, uint32_t arg0, uint32_t arg1)
 
 uint32_t EmitFPSaturate32(EmitterState& state, uint32_t arg0) {
 	// The clamp modifier runs in DX10 clamp mode: NaN becomes 0, as NClamp's NMax step does.
-	return EmitExt(state, TypeF32(state), GLSLstd450NClamp,
+	return EmitExt(state, TypeF32(state),
+	               state.profile.relaxed_float ? GLSLstd450FClamp : GLSLstd450NClamp,
 	               {arg0, ConstantF32(state, 0), ConstantF32(state, 0x3f800000u)});
 }
 
