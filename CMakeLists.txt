@@ -25,6 +25,9 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "CMake")
 
 project(Kyty)
+if(APPLE)
+	enable_language(OBJCXX)
+endif()
 
 find_program(SCCACHE_PROGRAM sccache)
 find_program(CCACHE_PROGRAM ccache)
@@ -303,7 +306,6 @@ if(KYTY_ENABLE_FEX_GUEST_CPU)
 endif()
 
 if(APPLE)
-	enable_language(OBJCXX)
 	list(APPEND kyty_emulator_src "${KYTY_SOURCE_DIR}/graphics/presentation/window/metalFxScaler.mm")
 endif()
 
@@ -463,6 +465,12 @@ if (KYTY_CLANG_CL)
 	list(APPEND inc_headers
 		${KYTY_THIRD_PARTY_DIR}/winpthread/include
 	)
+endif()
+
+if(APPLE)
+	set_source_files_properties("${KYTY_SOURCE_DIR}/graphics/presentation/window/metalFxScaler.mm"
+		PROPERTIES COMPILE_FLAGS "-fobjc-arc -Wno-pragma-pack -Wno-deprecated-declarations")
+	list(APPEND kyty_emulator_link_libraries "-framework Metal" "-framework MetalFX")
 endif()
 
 list(APPEND check_headers
@@ -1087,12 +1095,6 @@ if(BUILD_TESTING AND APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
 endif()
 
 unset(CMAKE_FOLDER)
-
-if(APPLE)
-	set_source_files_properties("${KYTY_SOURCE_DIR}/graphics/presentation/window/metalFxScaler.mm"
-		PROPERTIES COMPILE_FLAGS "-fobjc-arc -Wno-pragma-pack -Wno-deprecated-declarations")
-	list(APPEND kyty_emulator_link_libraries "-framework Metal" "-framework MetalFX")
-endif()
 
 if(IOS OR KYTY_BUILD_SWIFTUI_APP)
 	# The emulator core is a library target so the SwiftUI app (frontend/swift) links it with all of its

@@ -28,6 +28,8 @@ public:
 		}
 	}
 
+	[[nodiscard]] T&             operator[](size_type i) noexcept { return m_data[i]; }
+	[[nodiscard]] const T&       operator[](size_type i) const noexcept { return m_data[i]; }
 	[[nodiscard]] const T&       front() const noexcept { return m_data[0]; }
 	[[nodiscard]] const_iterator begin() const noexcept { return m_data; }
 	[[nodiscard]] const_iterator end() const noexcept { return m_data + m_size; }

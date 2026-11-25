@@ -124,6 +124,9 @@ inline void SleepMicro(uint32_t micros) {
 #define SDL_GetAudioStreamQueued    Fake::GetAudioStreamQueued
 #define SDL_PutAudioStreamData      Fake::PutAudioStreamData
 #define SDL_ClearAudioStream        Fake::ClearAudioStream
+namespace Libs::Audio::AvPlayer {
+void Shutdown() {} // test stub
+} // namespace Libs::Audio::AvPlayer
 namespace Libs::Audio::Ngs2 {
 void Shutdown() {} // test stub
 } // namespace Libs::Audio::Ngs2

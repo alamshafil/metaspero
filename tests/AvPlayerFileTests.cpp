@@ -172,10 +172,11 @@ void CheckVideoReadAhead(const std::filesystem::path& root) {
 		}
 	}
 	// Let the producer refill, then model the game's immediate late-frame retries.
+	// With current_video and previous_video retained for delayed buffer reuse, six buffers keep four frames ready.
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
-	for (unsigned i = 0; i < 5; ++i) {
+	for (unsigned i = 0; i < 4; ++i) {
 		const auto previous = info.time_stamp;
-		Check(source.Video(&info), "six output buffers keep five video frames ready");
+		Check(source.Video(&info), "six output buffers keep four video frames ready");
 		Check(info.time_stamp > previous, "video retries return successive frames");
 	}
 	Check(source.Pause() == 0, "pause video");

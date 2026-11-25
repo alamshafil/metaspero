@@ -499,6 +499,7 @@ struct Context {
 	void Advance(size_t length) {
 		native->uc_mcontext.gregs[REG_RIP] += static_cast<greg_t>(length);
 	}
+	void SetRip(uint64_t rip) { native->uc_mcontext.gregs[REG_RIP] = static_cast<greg_t>(rip); }
 	[[nodiscard]] void* Xmm(uint8_t index) const {
 		if (native->uc_mcontext.fpregs == nullptr) {
 			return nullptr;
