@@ -13,7 +13,7 @@ static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = 0x0200000000ull; // 8 GB (a
 static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x03ffffffffull; // 16 GB - 1
 static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x07ffffffffull; // 32 GB - 1
 static constexpr uint64_t HOST_USER_MIN            = 0x0800000000ull; // 32 GB
-static constexpr uint64_t HOST_USER_MAX            = 0x0fffffffe0ull; // 64 GB - 32
+static constexpr uint64_t HOST_USER_MAX            = 0x0bffffffe0ull; // 48 GB - 32
 #elif (defined(KYTY_ARM64_APPLE) && !TARGET_OS_IPHONE) || (defined(__APPLE__) && (defined(__x86_64__) || defined(_M_X64)))
 static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = 0x0000040000ull;
 static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x07ffffbfffull;
@@ -91,19 +91,17 @@ public:
 			EXIT("direct-memory backing: writable alias failed: 0x%08" PRIx32 "\n",
 			     static_cast<uint32_t>(GetLastError()));
 		}
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+		m_backing_base = nullptr;
+		m_phys_vaddr.resize(m_size >> PageBits, 0);
 #elif defined(__APPLE__)
 		auto* backing = mmap(nullptr, m_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_SHARED, -1, 0);
 		if (backing != MAP_FAILED) {
 			m_backing_base = static_cast<uint8_t*>(backing);
 		} else {
-#if TARGET_OS_IPHONE
-			m_backing_base = nullptr;
-			m_phys_vaddr.resize(m_size >> PageBits, 0);
-#else
 			EXIT("direct-memory backing: anonymous shared memory allocation failed (size=%" PRIu64
 			     " MB): %d\n",
 			     m_size / (1024U * 1024U), errno);
-#endif
 		}
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 		m_fd = static_cast<int>(syscall(SYS_memfd_create, "KytyDirectMemory", 0));
@@ -1120,9 +1118,14 @@ private:
 
 	void ReserveGuestRegions() {
 #if defined(__APPLE__) && TARGET_OS_IPHONE
-		const std::array<std::pair<uint64_t, uint64_t>, 2> regions {{
-		    {HOST_SYSTEM_MANAGED_MIN, HOST_SYSTEM_RESERVED_MAX + 1u},
-		    {HOST_USER_MIN, HOST_USER_MAX + 1u},
+		// Reserve only the guest VA windows needed on iOS
+		//  - [8 GB, 12 GB):  system-managed / default PS5 base (0x200000000)
+		//  - [31 GB, 32 GB): pthread stacks growing down from PTHREAD_STACK_TOP (0x7efff8000)
+		//  - [32 GB, 42 GB): HLE thunks (0x800000000), ELF code (0x900000000), and user/direct heaps
+		const std::array<std::pair<uint64_t, uint64_t>, 3> regions {{
+		    {HOST_SYSTEM_MANAGED_MIN, HOST_SYSTEM_MANAGED_MIN + (4ull << 30)},
+		    {0x07c0000000ull, HOST_SYSTEM_RESERVED_MAX + 1u},
+		    {HOST_USER_MIN, HOST_USER_MIN + (10ull << 30)},
 		}};
 #else
 		const std::array<std::pair<uint64_t, uint64_t>, 3> regions {{

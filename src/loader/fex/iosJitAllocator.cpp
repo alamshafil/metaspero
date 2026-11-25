@@ -450,6 +450,10 @@ void KytyResetJitPoolForNewSession() noexcept {
     if (g_pool.is_ready && g_pool.allocated_offset > 0) {
         const size_t used_mb = (g_pool.allocated_offset + (1024 * 1024) - 1) / (1024 * 1024);
         g_pool.allocated_offset = 0;
+        if (g_pool.rw_base && g_pool.rw_base != g_pool.rx_base && g_pool.total_size > 0) {
+            vm_protect(mach_task_self(), reinterpret_cast<vm_address_t>(g_pool.rw_base),
+                       static_cast<vm_size_t>(g_pool.total_size), FALSE, VM_PROT_READ | VM_PROT_WRITE);
+        }
         if (g_pool.rx_base && g_pool.total_size > 0) {
             sys_icache_invalidate(g_pool.rx_base, g_pool.total_size);
         }

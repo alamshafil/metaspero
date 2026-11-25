@@ -117,35 +117,41 @@ void BufferCache::ChangeRegister(BufferId id) {
 			m_page_table[page] = {};
 		}
 	}
-	const auto size_pages = pages.last_exclusive - pages.first;
+	const auto size_pages   = pages.last_exclusive - pages.first;
 	const auto table_offset = PageIndex(buffer.CpuAddress()) * sizeof(vk::DeviceAddress);
+	const auto table_bytes  = size_pages * sizeof(vk::DeviceAddress);
+	const bool in_bda_table =
+	    table_offset <= BDA_PAGETABLE_SIZE && table_bytes <= BDA_PAGETABLE_SIZE - table_offset;
 	if constexpr (insert) {
 		m_buffers.emplace(buffer.CpuAddress(), id);
 		m_total_used_memory += buffer.Size();
 		buffer.lru_id = m_lru_cache.Insert(id, m_gc_tick);
-		std::vector<vk::DeviceAddress> addresses;
-		addresses.reserve(size_pages);
-		for (uint64_t i = 0; i < size_pages; ++i) {
-			addresses.push_back(buffer.BufferDeviceAddress() + (i << CACHING_PAGEBITS));
+		if (in_bda_table) {
+			std::vector<vk::DeviceAddress> addresses;
+			addresses.reserve(size_pages);
+			for (uint64_t i = 0; i < size_pages; ++i) {
+				addresses.push_back(buffer.BufferDeviceAddress() + (i << CACHING_PAGEBITS));
+			}
+			{
+				std::lock_guard lock(m_bda_sync_mutex);
+				m_dma_accessed.ForEachInRange(
+				    buffer.CpuAddress(), buffer.Size(), [&](uint64_t begin, uint64_t end) {
+					    for (auto address = begin; address < end; address += CACHING_PAGESIZE) {
+						    addresses[buffer.Offset(address) >> CACHING_PAGEBITS] += BDA_ACCESSED;
+					    }
+				    });
+			}
+			WriteDataBuffer(m_bda_pagetable_buffer, table_offset,
+			                addresses.data(), addresses.size() * sizeof(vk::DeviceAddress));
+			QueueBdaSync(buffer.CpuAddress(), buffer.Size());
 		}
-		{
-			std::lock_guard lock(m_bda_sync_mutex);
-			m_dma_accessed.ForEachInRange(
-			    buffer.CpuAddress(), buffer.Size(), [&](uint64_t begin, uint64_t end) {
-				    for (auto address = begin; address < end; address += CACHING_PAGESIZE) {
-					    addresses[buffer.Offset(address) >> CACHING_PAGEBITS] += BDA_ACCESSED;
-				    }
-			    });
-		}
-		WriteDataBuffer(m_bda_pagetable_buffer, table_offset,
-		                addresses.data(), addresses.size() * sizeof(vk::DeviceAddress));
-		QueueBdaSync(buffer.CpuAddress(), buffer.Size());
 	} else {
 		m_buffers.erase(m_buffers.find(buffer.CpuAddress()));
 		m_total_used_memory -= buffer.Size();
 		m_lru_cache.Free(buffer.lru_id);
-		m_bda_pagetable_buffer.Fill(table_offset,
-		                            size_pages * sizeof(vk::DeviceAddress), 0);
+		if (in_bda_table) {
+			m_bda_pagetable_buffer.Fill(table_offset, table_bytes, 0);
+		}
 		buffer.is_deleted = true;
 	}
 }
@@ -274,10 +280,17 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_bda_pagetable_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 0, AllFlags,
                              BDA_PAGETABLE_SIZE),
       m_memory_tracker(page_manager),
+#if (defined(__APPLE__) && TARGET_OS_IPHONE) || defined(__ANDROID__)
+      m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, 128 * MiB),
+      m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 32 * MiB),
+      m_download_buffer(graphics, scheduler, MemoryUsage::Download, 32 * MiB),
+      m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 64 * MiB),
+#else
       m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, 512 * MiB),
       m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 64 * MiB),
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 64 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
+#endif
       m_texture_cache(texture_cache) {
 	std::memset(m_gds_buffer.Mapped().data(), 0, static_cast<size_t>(m_gds_buffer.Size()));
 	m_gds_buffer.Flush(0, m_gds_buffer.Size());
@@ -380,7 +393,9 @@ BufferId BufferCache::FindBuffer(uint64_t vaddr, uint64_t size) {
 		return NULL_BUFFER_ID;
 	}
 	if (!GuestRange {vaddr, size}.Valid()) {
-		EXIT("BufferCache: invalid buffer discovery request\n");
+		EXIT("BufferCache: invalid buffer discovery request (vaddr=0x%016" PRIx64
+		     ", size=0x%016" PRIx64 ")\n",
+		     vaddr, size);
 	}
 	const auto* owner = m_page_table.Find(vaddr >> PageTable::kPageBits);
 	if (owner != nullptr && *owner) {
@@ -878,8 +893,12 @@ void BufferCache::MarkDmaAccess(const RangeSet& pages) {
 			entries.push_back(buffer.BufferDeviceAddress() + buffer.Offset(address) + BDA_ACCESSED);
 		}
 		if (!unbacked.Contains(begin, end - begin)) {
-			WriteDataBuffer(m_bda_pagetable_buffer, PageIndex(begin) * sizeof(vk::DeviceAddress),
-			                entries.data(), entries.size() * sizeof(vk::DeviceAddress));
+			const auto table_offset = PageIndex(begin) * sizeof(vk::DeviceAddress);
+			const auto table_bytes  = entries.size() * sizeof(vk::DeviceAddress);
+			if (table_offset <= BDA_PAGETABLE_SIZE &&
+			    table_bytes <= BDA_PAGETABLE_SIZE - table_offset) {
+				WriteDataBuffer(m_bda_pagetable_buffer, table_offset, entries.data(), table_bytes);
+			}
 		}
 	});
 	unbacked.ForEach(

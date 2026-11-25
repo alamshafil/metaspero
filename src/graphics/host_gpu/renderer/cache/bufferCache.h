@@ -18,6 +18,10 @@
 #include <utility>
 #include <vector>
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
 namespace Libs::Graphics {
 
 struct GraphicContext;
@@ -31,7 +35,12 @@ class BufferCache {
 public:
 	static constexpr uint32_t CACHING_PAGEBITS  = 14;
 	static constexpr uint64_t CACHING_PAGESIZE  = uint64_t {1} << CACHING_PAGEBITS;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	// iOS guest VA space is bounded to 64 GB (36-bit), so 32 MB covers all guest pages.
+	static constexpr uint64_t CACHING_NUMPAGES  = (uint64_t {1} << 36u) >> CACHING_PAGEBITS;
+#else
 	static constexpr uint64_t CACHING_NUMPAGES  = (LOWER_ADDRESS_SIZE + LibKernel::Memory::kExtendedMemorySize) >> CACHING_PAGEBITS;
+#endif
 	static constexpr uint64_t BDA_PAGETABLE_SIZE =
 	    CACHING_NUMPAGES * sizeof(vk::DeviceAddress);
 	// Tags the BDA page-table entries of pages a DMA shader accessed; an access to another page

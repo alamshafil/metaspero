@@ -5,6 +5,10 @@
 #include "common/common.h"
 #include "kernel/memory.h"
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
 #include <compare>
 
 namespace Libs::Graphics {
@@ -15,7 +19,11 @@ constexpr uint64_t TRACKER_PAGE_SIZE    = 16ull * 1024ull;
 constexpr uint64_t TRACKER_PAGE_SIZE    = 4ull * 1024ull;
 #endif
 constexpr uint64_t TRACKER_REGION_SIZE  = 4ull * 1024ull * 1024ull;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+constexpr uint64_t TRACKER_ADDRESS_SIZE = 1ull << 40u;
+#else
 constexpr uint64_t TRACKER_ADDRESS_SIZE = 1ull << 44u;
+#endif
 constexpr uint64_t LOWER_ADDRESS_SIZE   = 1ull << 40u;
 constexpr size_t   TRACKER_REGION_PAGES = TRACKER_REGION_SIZE / TRACKER_PAGE_SIZE;
 
@@ -26,10 +34,14 @@ struct GuestRange {
 	[[nodiscard]] constexpr bool Empty() const noexcept { return address == 0 && size == 0; }
 	[[nodiscard]] constexpr bool Valid() const noexcept {
 		if (address == 0 || size == 0) return false;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		return address < TRACKER_ADDRESS_SIZE && size <= TRACKER_ADDRESS_SIZE - address;
+#else
 		if (address < LOWER_ADDRESS_SIZE) return size <= LOWER_ADDRESS_SIZE - address;
 		constexpr auto base = LibKernel::Memory::kExtendedMemoryBase;
 		constexpr auto length = LibKernel::Memory::kExtendedMemorySize;
 		return address >= base && address - base < length && size <= length - (address - base);
+#endif
 	}
 	[[nodiscard]] constexpr bool     ValidOrEmpty() const noexcept { return Empty() || Valid(); }
 	[[nodiscard]] constexpr uint64_t End() const noexcept { return address + size; }
