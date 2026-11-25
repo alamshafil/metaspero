@@ -709,8 +709,33 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
                                                        BufferId id) {
 	EXIT_IF(!(GuestRange {vaddr, size}.Valid()));
 
-	const uint64_t inline_limit =
-	    m_graphics.is_moltenvk ? 64ull * 1024ull : static_cast<uint64_t>(CACHING_PAGESIZE);
+	// Fast path: if a read-only buffer is already cached and clean on CPU, bind it directly
+	// without re-copying into m_stream_buffer or scanning upload ranges.
+	if (!is_written && !is_texel_buffer) {
+		BufferId cached_id = id;
+		if (IsBufferInvalid(cached_id) || !m_slot_buffers[cached_id].IsInBounds(vaddr, size)) {
+			const auto* owner = m_page_table.Find(vaddr >> PageTable::kPageBits);
+			cached_id         = (owner != nullptr && *owner &&
+                         m_slot_buffers[*owner].IsInBounds(vaddr, size))
+			                        ? *owner
+			                        : BufferId {};
+		}
+		if (cached_id && !m_memory_tracker.IsRegionCpuModified(vaddr, size)) {
+			auto& buffer = m_slot_buffers[cached_id];
+			TouchBuffer(buffer);
+			buffer.last_gpu_use_tick = m_scheduler.CurrentTick();
+			return {&buffer, buffer.Offset(vaddr)};
+		}
+	}
+
+	// On Apple Silicon UMA, static >4 KB buffers (e.g. index/vertex buffers) upload directly
+	// into host-mapped shared buffers once and then hit the zero-copy fast path above on
+	// subsequent frames, instead of re-copying up to 64 KB into m_stream_buffer every draw.
+	const uint64_t inline_limit = m_graphics.has_unified_memory
+	                                  ? 4096ull
+	                                  : (m_graphics.is_moltenvk
+	                                         ? 64ull * 1024ull
+	                                         : static_cast<uint64_t>(CACHING_PAGESIZE));
 	const bool allow_inline_stream =
 	    !is_written && size <= inline_limit && !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
 	    (size <= CACHING_PAGESIZE ||
