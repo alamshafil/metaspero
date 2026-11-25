@@ -51,10 +51,9 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 		mask = 0x0f;
 	}
 
-	r             = {};
-	r.target_slot = rt_slot;
-
 	if (rt.base.addr == 0 || mask == 0) {
+		r             = {};
+		r.target_slot = rt_slot;
 		if (graphics_debug_dump_enabled()) {
 			static std::atomic_uint log_count = 0;
 			const auto              log_id    = log_count.fetch_add(1, std::memory_order_relaxed);
@@ -67,6 +66,19 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 
 		return;
 	}
+	auto& cached = m_color_target_cache[rt_slot];
+	if (cached.valid && cached.rt == rt) {
+		r.target_slot       = rt_slot;
+		r.desc              = cached.desc;
+		r.guest_mip_level   = cached.mip;
+		r.guest_array_layer = cached.base_layer;
+		r.export_mapping    = cached.export_mapping;
+		r.image_id          = m_context.GetTextureCache().FindImage(r.desc, exact_format);
+		BindRenderTarget(r.image_id);
+		return;
+	}
+	r             = {};
+	r.target_slot = rt_slot;
 	const auto samples = render_sample_count(rt.attrib.num_fragments);
 	// TODO(PPSA24156): Replace this 2x MSAA approximation with proper 4-coverage/2-fragment EQAA.
 	const bool approximate_eqaa = rt.attrib.num_samples == 2 && rt.attrib.num_fragments == 1;
@@ -242,6 +254,12 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	desc.view_info.base_layer  = view.base_layer;
 	desc.view_info.layer_count = view.layer_count;
 	desc.view_info.usage       = vk::ImageUsageFlagBits::eColorAttachment;
+	cached.rt             = rt;
+	cached.desc           = desc;
+	cached.mip            = mip;
+	cached.base_layer     = view.base_layer;
+	cached.export_mapping = target_format.export_mapping;
+	cached.valid          = true;
 	auto& texture_cache        = m_context.GetTextureCache();
 	r.guest_mip_level          = mip;
 	r.guest_array_layer        = view.base_layer;

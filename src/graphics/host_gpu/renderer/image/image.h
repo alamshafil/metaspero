@@ -4,6 +4,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/slotVector.h"
+#include "common/smallVector.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 
@@ -134,11 +135,12 @@ public:
 	// Unique per image, unlike ImageId: freed slots are reused.
 	const uint64_t   serial = serials.fetch_add(1u, std::memory_order_relaxed) + 1u;
 	ImageInfo        info;
-	VulkanImage      backing;
-	std::vector<CachedImageView> views;
-	ImageUsage       usage;
-	ImageBinding     binding;
-	bool             registered     = false;
+	VulkanImage                         backing;
+	Common::SmallVector<CachedImageView, 2> views;
+	ImageUsage                          usage;
+	ImageBinding                        binding;
+	bool                                registered     = false;
+	bool                                has_overlap    = false;
 	uint64_t         track_addr     = 0;
 	uint64_t         track_addr_end = 0;
 	ImageId          depth_id {};

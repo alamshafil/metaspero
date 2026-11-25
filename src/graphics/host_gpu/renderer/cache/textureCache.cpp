@@ -221,8 +221,16 @@ void TextureCache::RegisterImage(ImageId id) {
 	}
 	const BucketEntry entry {
 	    .address = data.address, .size = static_cast<uint32_t>(data.size), .id = id};
-	ForEachPage(data.address, data.size, [this, &entry](uint64_t page) {
-		m_image_page_table[page].entries.push_back(entry);
+	image.has_overlap = false;
+	ForEachPage(data.address, data.size, [this, &entry, &image, &data](uint64_t page) {
+		auto& entries = m_image_page_table[page].entries;
+		for (const auto& other: entries) {
+			if (other.Overlaps(data.address, data.size)) {
+				image.has_overlap                  = true;
+				m_slot_images[other.id].has_overlap = true;
+			}
+		}
+		entries.push_back(entry);
 	});
 	image.registered = true;
 	image.lru_id     = m_lru_cache.Insert(id, m_gc_tick);
@@ -1278,6 +1286,26 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 	ImageId result {};
 	{
 		std::scoped_lock lock {m_lock};
+		// Fast path: if an exact non-overlapping match is registered at the first page, no other
+		// image can overlap this range (including BcAlias candidates), so skip scanning all pages.
+		const auto* first_bucket =
+		    m_image_page_table.Find(desc.info.data.address >> ImagePageTable::kPageBits);
+		if (first_bucket != nullptr) {
+			for (const auto& entry: first_bucket->entries) {
+				if (entry.address == desc.info.data.address &&
+				    entry.size == desc.info.data.size) {
+					auto& candidate = m_slot_images[entry.id];
+					if (!candidate.depth_id && !candidate.has_overlap &&
+					    SameBacking(candidate.info, desc.info, exact_format)) {
+						result                       = entry.id;
+						candidate.tick_accessed_last = m_gc_tick;
+						TouchImage(candidate);
+						break;
+					}
+				}
+			}
+		}
+		if (!result) {
 		Common::SmallVector<ImageId, 8> candidates;
 		ForEachImageInRegion(desc.info.data.address, desc.info.data.size,
 		                     [&](ImageId id, Image&) { candidates.push_back(id); });
@@ -1361,6 +1389,10 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			}
 		}
 		auto& image = m_slot_images[result];
+		if (candidates.size() == 1 && candidates.front() == result &&
+		    image.info.data == desc.info.data) {
+			image.has_overlap = false;
+		}
 		if (view_mip >= 0) {
 			desc.view_info.base_level = static_cast<uint32_t>(view_mip);
 		}
@@ -1369,6 +1401,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 		}
 		image.tick_accessed_last = m_gc_tick;
 		TouchImage(image);
+		}
 	}
 	MaterializeColorClear(result, desc, metadata_base_layer);
 	if (desc.type == BindingType::VideoOut &&

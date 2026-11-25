@@ -4,6 +4,7 @@
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
@@ -233,6 +234,21 @@ private:
 		bool                    valid             = false;
 	};
 	std::array<CachedTextureDesc, 64>     m_texture_desc_cache {};
+	struct CachedColorTargetDesc {
+		HW::RenderTarget                rt {};
+		TextureCache::ImageDesc         desc {};
+		uint32_t                        mip        = 0;
+		uint32_t                        base_layer = 0;
+		Prospero::ColorComponentMapping export_mapping {};
+		bool                            valid = false;
+	};
+	std::array<CachedColorTargetDesc, RENDER_COLOR_ATTACHMENTS_MAX> m_color_target_cache {};
+	struct CachedDepthTargetDesc {
+		HW::DepthRenderTarget   z {};
+		TextureCache::ImageDesc desc {};
+		bool                    valid = false;
+	};
+	CachedDepthTargetDesc                 m_depth_target_cache {};
 	vk::DescriptorSetLayout               m_pssr_descriptor_layout = nullptr;
 	vk::PipelineLayout                    m_pssr_pipeline_layout   = nullptr;
 	vk::Pipeline                          m_pssr_pipeline          = nullptr;

@@ -253,7 +253,6 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepthInfo& r) {
 	KYTY_PROFILER_FUNCTION();
-	r = {};
 
 	const auto& hw          = buffer.GetRegisters();
 	const auto& z           = hw.GetDepthRenderTarget();
@@ -271,6 +270,7 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 	const bool stencil_active =
 	    has_stencil && (dc.stencil_enable || rc.stencil_clear_enable || rc.copy_stencil_to_color);
 	if (!depth_active && !stencil_active) {
+		r = {};
 		return;
 	}
 	const bool attachment_unbound =
@@ -291,6 +291,7 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 	    !z.z_info.htile_acceleration && z.shading_rate_encoding == 0 && z.size.x_max == 0 &&
 	    z.size.y_max == 0;
 	if (attachment_unbound) {
+		r = {};
 		static std::atomic_bool logged = false;
 		if (!logged.exchange(true, std::memory_order_relaxed)) {
 			LOGF("DepthTarget: ignoring enabled depth/stencil state without a bound attachment\n");
@@ -311,7 +312,15 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 	     rc.depth_clear_enable || rc.stencil_clear_enable)) {
 		DepthFatal("unsupported depth-to-color copy state");
 	}
-	r.desc = MakeDepthTargetDesc(buffer, z);
+	if (m_depth_target_cache.valid && m_depth_target_cache.z == z) {
+		r.desc = m_depth_target_cache.desc;
+	} else {
+		r.desc                     = MakeDepthTargetDesc(buffer, z);
+		m_depth_target_cache.z     = z;
+		m_depth_target_cache.desc  = r.desc;
+		m_depth_target_cache.valid = true;
+	}
+	r.load_clear_aspects      = {};
 	r.depth_clear_enable      = rc.depth_clear_enable;
 	r.depth_clear_value       = hw.GetDepthClearValue();
 	r.depth_test_enable       = dc.z_enable;
@@ -347,6 +356,9 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 		} else {
 			r.stencil_back = r.stencil_front;
 		}
+	} else {
+		r.stencil_front = {};
+		r.stencil_back  = {};
 	}
 	auto& cache = m_context.GetTextureCache();
 	r.image_id = cache.FindImage(r.desc);

@@ -32,6 +32,7 @@ public:
 	[[nodiscard]] const_iterator begin() const noexcept { return m_data; }
 	[[nodiscard]] const_iterator end() const noexcept { return m_data + m_size; }
 	[[nodiscard]] size_type      size() const noexcept { return m_size; }
+	[[nodiscard]] bool           empty() const noexcept { return m_size == 0; }
 
 	void push_back(const T& v) {
 		if (m_size == m_capacity) [[unlikely]] {
