@@ -386,9 +386,6 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Swift
-        uses: swift-actions/setup-swift@v3
-
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         with:
