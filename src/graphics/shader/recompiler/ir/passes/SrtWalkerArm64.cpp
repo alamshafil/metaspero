@@ -1365,10 +1365,11 @@ std::shared_ptr<Arm64WalkCode> CompileArm64SrtWalker(ResourcePlan& plan, std::sp
 	constexpr size_t PageSize = 16384;
 	const size_t     alloc_size = (code_bytes + PageSize - 1) & ~(PageSize - 1);
 
+	void* rx_code = nullptr;
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 	// pthread_jit_write_protect_np is unavailable on iOS. Use RW then mprotect to RX.
 	// If the process lacks JIT entitlement, mprotect fails and we fall back (nullptr).
-	void* rx_code = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+	rx_code = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
 	if (rx_code == MAP_FAILED) return nullptr;
 	std::memcpy(rx_code, emitter.Data(), code_bytes);
 	if (mprotect(rx_code, alloc_size, PROT_READ | PROT_EXEC) != 0)
@@ -1378,8 +1379,8 @@ std::shared_ptr<Arm64WalkCode> CompileArm64SrtWalker(ResourcePlan& plan, std::sp
 	}
 	sys_icache_invalidate(rx_code, code_bytes);
 #elif defined(__APPLE__)
-	void* rx_code = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE | PROT_EXEC,
-	                     MAP_ANON | MAP_PRIVATE | MAP_JIT, -1, 0);
+	rx_code = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE | PROT_EXEC,
+	               MAP_ANON | MAP_PRIVATE | MAP_JIT, -1, 0);
 	if (rx_code == MAP_FAILED) return nullptr;
 
 	pthread_jit_write_protect_np(0);
@@ -1387,8 +1388,8 @@ std::shared_ptr<Arm64WalkCode> CompileArm64SrtWalker(ResourcePlan& plan, std::sp
 	pthread_jit_write_protect_np(1);
 	sys_icache_invalidate(rx_code, code_bytes);
 #elif defined(__linux__) || defined(__ANDROID__)
-	void* rx_code = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE,
-	                     MAP_ANON | MAP_PRIVATE, -1, 0);
+	rx_code = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE,
+	               MAP_ANON | MAP_PRIVATE, -1, 0);
 	if (rx_code == MAP_FAILED) return nullptr;
 	std::memcpy(rx_code, emitter.Data(), code_bytes);
 	mprotect(rx_code, alloc_size, PROT_READ | PROT_EXEC);
