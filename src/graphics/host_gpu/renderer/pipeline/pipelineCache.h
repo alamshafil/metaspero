@@ -151,6 +151,21 @@ struct DrawRenderState {
 	[[nodiscard]] std::span<const ShaderVertexInputInfo> VertexStages() const {
 		return {vertex_info.data(), vertex_info[1].stage ? 3u : 1u};
 	}
+
+	void Reset(const ShaderIndirectOffsets& offsets, bool indirect) {
+		mrt_mask                 = 0;
+		topology                 = vk::PrimitiveTopology::ePointList;
+		primitive_restart_enable = false;
+		ps_active                = false;
+		vertex_info[0]           = {};
+		if (vertex_info[1].stage) {
+			vertex_info[1] = {};
+			vertex_info[2] = {};
+		}
+		ps_input_info    = {};
+		indirect_offsets = offsets;
+		indirect_draw    = indirect;
+	}
 };
 
 // Writes the shader store on its own thread, running jobs in the order they were posted.

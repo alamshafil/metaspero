@@ -219,6 +219,7 @@ private:
 	GraphicsBindings                     m_graphics_bindings;
 	// The current draw's targets; PrepareDrawRenderState resolves them again for each draw.
 	DrawTargets                           m_targets;
+	DrawRenderState                       m_draw_state;
 	PreparedBindings                     m_compute_bindings;
 	std::vector<ImageId>                  m_bound_images;
 	std::vector<vk::DescriptorImageInfo>  m_descriptor_images;

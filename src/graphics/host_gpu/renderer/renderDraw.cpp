@@ -1391,8 +1391,8 @@ bool RenderExecutor::DrawIndex(CommandBuffer& buffer, const DrawIndexArgs& args)
 
 	hw_check(buffer);
 
-	DrawRenderState state {.indirect_offsets = args.indirect.offsets,
-	                       .indirect_draw    = args.indirect.address != 0};
+	auto& state = m_draw_state;
+	state.Reset(args.indirect.offsets, args.indirect.address != 0);
 	if (!GetDrawTopology(ucfg, state.topology)) {
 		return true;
 	}
@@ -1480,8 +1480,8 @@ bool RenderExecutor::DrawAuto(CommandBuffer& buffer, const DrawAutoArgs& args) {
 
 	const DrawCallInfo draw {false, args.vertex_count, args.instance_count};
 
-	DrawRenderState state {.indirect_offsets = args.indirect.offsets,
-	                       .indirect_draw    = args.indirect.address != 0};
+	auto& state = m_draw_state;
+	state.Reset(args.indirect.offsets, args.indirect.address != 0);
 	if (!GetDrawTopology(ucfg, state.topology)) {
 		ResetBindings();
 		return true;
