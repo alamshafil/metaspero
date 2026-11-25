@@ -38,6 +38,16 @@ uint32_t EmitMinMaxF64(EmitterState& state, uint32_t lhs, uint32_t rhs, bool max
 }
 
 uint32_t EmitMulHigh(EmitterState& state, uint32_t lhs, uint32_t rhs, bool signed_value) {
+	if (state.profile.avoid_mul_extended) {
+		const auto wide    = TypeU64(state);
+		const auto convert = signed_value ? spv::OpSConvert : spv::OpUConvert;
+		const auto lhs64   = Unary(state, convert, wide, lhs);
+		const auto rhs64   = Unary(state, convert, wide, rhs);
+		const auto prod64  = Binary(state, spv::OpIMul, wide, lhs64, rhs64);
+		const auto high64 =
+		    Binary(state, spv::OpShiftRightLogical, wide, prod64, ConstantU32(state, 32));
+		return Unary(state, spv::OpUConvert, TypeU32(state), high64);
+	}
 	const auto operand_type = signed_value ? TypeI32(state) : TypeU32(state);
 	const auto pair_type    = signed_value ? TypeI32Pair(state) : TypeU32Pair(state);
 	uint32_t   lhs_operand  = lhs;

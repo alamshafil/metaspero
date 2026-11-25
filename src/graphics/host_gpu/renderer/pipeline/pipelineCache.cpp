@@ -247,7 +247,8 @@ ShaderRecompiler::Spirv::Profile SpirvProfile(const GraphicContext& graphics) {
 	        .relaxed_float            = Config::RelaxedShaderFloatEnabled(),
 	        .float32_denorm_ftz       = graphics.float32_denorm_flush_to_zero,
 	        .fragment_barycentric     = graphics.fragment_shader_barycentric_enabled,
-	        .resolution_scale_percent = Config::GetResolutionScale()};
+	        .resolution_scale_percent = Config::GetResolutionScale(),
+	        .avoid_mul_extended       = graphics.physical_device_properties.vendorID == 0x106bu};
 }
 
 std::filesystem::path ShaderStorePath() {

@@ -28,6 +28,8 @@ struct Profile {
 	bool fragment_barycentric = true;
 	// Emulator-side 4K resolution downscale percentage (25-100, 100 = native).
 	uint32_t resolution_scale_percent = 100u;
+	// Lower UMulHi/SMulHi via 64-bit multiply to avoid SPIRV-Cross [[clang::optnone]] spvMulExtended.
+	bool avoid_mul_extended = false;
 };
 
 inline constexpr Profile DefaultProfile {};
