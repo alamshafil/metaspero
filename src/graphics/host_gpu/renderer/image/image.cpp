@@ -770,18 +770,16 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 		    info.tile_mode != Prospero::TileMode::kLinear &&
 		    static_cast<bool>(create.usage & (vk::ImageUsageFlagBits::eColorAttachment |
 		                                      vk::ImageUsageFlagBits::eDepthStencilAttachment)) &&
-		    info.extent.width > info.extent.height &&
-		    info.extent.width >= 1920u && info.extent.height >= 1080u;
+		    ShouldScaleRenderTarget2D(info.extent.width, info.extent.height);
 		const bool scale_shadow_map =
 		    info.type == Prospero::ImageType::kColor2D &&
 		    info.tile_mode != Prospero::TileMode::kLinear &&
 		    static_cast<bool>(create.usage & vk::ImageUsageFlagBits::eDepthStencilAttachment) &&
-		    info.extent.width == info.extent.height && info.extent.width >= 2048u;
+		    ShouldScaleShadowMap2D(info.extent.width, info.extent.height);
 		const bool scale_3d_froxel =
 		    info.type == Prospero::ImageType::kColor3D &&
 		    static_cast<bool>(create.usage & vk::ImageUsageFlagBits::eStorage) &&
-		    info.extent.width >= 320u && info.extent.height >= 180u &&
-		    info.extent.depth >= 64u && info.extent.width > info.extent.height;
+		    ShouldScaleFroxel3D(info.extent.width, info.extent.height, info.extent.depth);
 		if (scale_2d || scale_shadow_map || scale_3d_froxel) {
 			create.extent.width  = std::max(1u, (info.extent.width * scale) / 100u);
 			create.extent.height = std::max(1u, (info.extent.height * scale) / 100u);

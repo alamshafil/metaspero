@@ -13,6 +13,21 @@ namespace Libs::Graphics {
 	return Config::GetResolutionScale();
 }
 
+[[nodiscard]] inline constexpr bool ShouldScaleRenderTarget2D(uint32_t width,
+                                                              uint32_t height) noexcept {
+	return width > height && width >= 1920u && height >= 1080u;
+}
+
+[[nodiscard]] inline constexpr bool ShouldScaleShadowMap2D(uint32_t width,
+                                                           uint32_t height) noexcept {
+	return width == height && width >= 2048u;
+}
+
+[[nodiscard]] inline constexpr bool ShouldScaleFroxel3D(uint32_t width, uint32_t height,
+                                                        uint32_t depth) noexcept {
+	return width > height && width >= 320u && height >= 180u && depth >= 64u;
+}
+
 static constexpr uint32_t RENDER_COLOR_ATTACHMENTS_MAX = 8;
 
 struct RenderAttachment {

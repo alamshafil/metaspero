@@ -908,7 +908,7 @@ void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRender
 				    rt.attrib3.tile_mode != Prospero::TileMode::kLinear) {
 					const uint32_t w = rt.attrib2.width + 1u;
 					const uint32_t h = rt.attrib2.height + 1u;
-					if (w > h && w >= 1920u && h >= 1080u) {
+					if (ShouldScaleRenderTarget2D(w, h)) {
 						pixel_info.scaled_render_target = true;
 						break;
 					}
@@ -920,7 +920,7 @@ void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRender
 				    (z.z_read_base_addr != 0 || z.z_write_base_addr != 0)) {
 					const uint32_t w = static_cast<uint32_t>(z.size.x_max) + 1u;
 					const uint32_t h = static_cast<uint32_t>(z.size.y_max) + 1u;
-					if ((w > h && w >= 1920u && h >= 1080u) || (w == h && w >= 2048u)) {
+					if (ShouldScaleRenderTarget2D(w, h) || ShouldScaleShadowMap2D(w, h)) {
 						pixel_info.scaled_render_target = true;
 					}
 				}

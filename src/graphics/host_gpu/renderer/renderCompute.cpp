@@ -480,7 +480,9 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 			    thread_group_z == 1u && thread_group_y >= 80u &&
 			    thread_group_x > thread_group_y && total_xy >= 2560ull * 1440ull;
 			const bool scale_3d_froxel =
-			    total_z >= 64u && total_x >= 320u && total_y >= 180u && total_x > total_y;
+			    ShouldScaleFroxel3D(static_cast<uint32_t>(std::min<uint64_t>(total_x, UINT32_MAX)),
+			                        static_cast<uint32_t>(std::min<uint64_t>(total_y, UINT32_MAX)),
+			                        static_cast<uint32_t>(std::min<uint64_t>(total_z, UINT32_MAX)));
 			if (scale_2d || scale_3d_froxel) {
 				dispatch_x = std::max(1u, (thread_group_x * scale + 99u) / 100u);
 				dispatch_y = std::max(1u, (thread_group_y * scale + 99u) / 100u);
