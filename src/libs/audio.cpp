@@ -382,7 +382,8 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking, float 
 		return false;
 	}
 
-	std::vector<uint8_t> prepared_buffer;
+	thread_local std::vector<uint8_t> prepared_buffer;
+	prepared_buffer.clear();
 	const void*          prepared_data = PrepareOutputBuffer(*port, data, &prepared_buffer, gain, gains);
 	const auto           output_channels = OutputChannels(*port);
 	const auto           prepared_size =

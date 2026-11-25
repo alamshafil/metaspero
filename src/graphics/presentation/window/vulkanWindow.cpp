@@ -573,6 +573,20 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	graphics.physical_device_properties = properties2.properties;
 	graphics.driver_id                  = driver_properties.driverID;
 	graphics.is_moltenvk                = (driver_properties.driverID == vk::DriverId::eMoltenvk);
+	graphics.has_unified_memory         = false;
+	if (graphics.physical_device_properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu) {
+		constexpr auto uma_flags = vk::MemoryPropertyFlagBits::eDeviceLocal |
+		                           vk::MemoryPropertyFlagBits::eHostVisible |
+		                           vk::MemoryPropertyFlagBits::eHostCoherent;
+		const auto& mem_props = graphics.physical_device_memory_properties;
+		for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
+			if ((mem_props.memoryTypes[i].propertyFlags & uma_flags) == uma_flags) {
+				graphics.has_unified_memory = true;
+				break;
+			}
+		}
+	}
+	LOGF("Vulkan unified memory: %s\n", graphics.has_unified_memory ? "true" : "false");
 	graphics.max_push_descriptors       = SelectMaxPushDescriptors(
 	    driver_properties.driverID, push_descriptor.maxPushDescriptors);
 	graphics.device_address_destruction_waits_for_queue =

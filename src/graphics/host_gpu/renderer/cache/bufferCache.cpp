@@ -136,6 +136,7 @@ void BufferCache::ChangeRegister(BufferId id) {
 				std::lock_guard lock(m_bda_sync_mutex);
 				m_dma_accessed.ForEachInRange(
 				    buffer.CpuAddress(), buffer.Size(), [&](uint64_t begin, uint64_t end) {
+					    buffer.bda_accessed = true;
 					    for (auto address = begin; address < end; address += CACHING_PAGESIZE) {
 						    addresses[buffer.Offset(address) >> CACHING_PAGEBITS] += BDA_ACCESSED;
 					    }
@@ -285,6 +286,12 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 32 * MiB),
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 32 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 64 * MiB),
+#elif defined(__APPLE__) && defined(__arm64__)
+      // Apple Silicon UMA: direct mapped uploads/downloads bypass staging and download rings.
+      m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, 128 * MiB),
+      m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 64 * MiB),
+      m_download_buffer(graphics, scheduler, MemoryUsage::Download, 32 * MiB),
+      m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
 #else
       m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, 512 * MiB),
       m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 64 * MiB),
@@ -375,7 +382,9 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 					                     old_addr, old_size);
 					new_buffer.fault_readback_count = readback_count;
 					new_buffer.CopyFrom(m_scheduler.Current(), old_buffer, 0, 0, old_size);
-					new_buffer.last_gpu_write_tick  = m_scheduler.CurrentTick();
+					const auto tick                 = m_scheduler.CurrentTick();
+					new_buffer.last_gpu_write_tick  = tick;
+					new_buffer.last_gpu_use_tick    = tick;
 					DeleteBuffer(id);
 					Register(new_id);
 				}
@@ -466,11 +475,14 @@ void BufferCache::JoinOverlap(BufferId new_id, BufferId overlap_id, bool accumul
 	if (accumulate_stream_score) {
 		new_buffer.IncreaseStreamScore(overlap.StreamScore() + 1);
 	}
+	new_buffer.bda_accessed = new_buffer.bda_accessed || overlap.bda_accessed;
 	new_buffer.fault_readback_count =
 	    std::max(new_buffer.fault_readback_count, overlap.fault_readback_count);
 	new_buffer.CopyFrom(m_scheduler.Current(), overlap, 0,
 	                    overlap.CpuAddress() - new_buffer.CpuAddress(), overlap.Size());
-	new_buffer.last_gpu_write_tick = m_scheduler.CurrentTick();
+	const auto tick                = m_scheduler.CurrentTick();
+	new_buffer.last_gpu_write_tick = tick;
+	new_buffer.last_gpu_use_tick   = tick;
 	DeleteBuffer(overlap_id);
 }
 
@@ -480,8 +492,11 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 	size               = end - vaddr;
 	const auto overlap = ResolveOverlaps(vaddr, size);
 	const uint64_t new_size = overlap.end - overlap.begin;
-	MemoryUsage    usage    = MemoryUsage::DeviceLocal;
-	if (m_graphics.is_moltenvk && new_size <= 4ull * 1024ull * 1024ull) {
+	MemoryUsage    usage    = (m_graphics.has_unified_memory && m_graphics.is_moltenvk)
+	                              ? MemoryUsage::Stream
+	                              : MemoryUsage::DeviceLocal;
+	if (usage == MemoryUsage::DeviceLocal && m_graphics.is_moltenvk &&
+	    new_size <= 4ull * 1024ull * 1024ull) {
 		for (auto it = overlap.first; it != overlap.last; ++it) {
 			if (m_slot_buffers[it->second].Usage() == MemoryUsage::Stream) {
 				usage = MemoryUsage::Stream;
@@ -525,12 +540,123 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 	return false;
 }
 
+bool BufferCache::CanDirectUmaUpload(const Buffer& buffer) const noexcept {
+	return m_graphics.has_unified_memory && !buffer.Mapped().empty() && !buffer.bda_accessed &&
+	       (buffer.last_gpu_use_tick == 0 || m_scheduler.IsFree(buffer.last_gpu_use_tick));
+}
+
 void BufferCache::UploadCopies(std::span<const BufferUpload> uploads,
                                std::span<vk::BufferCopy> copies, uint64_t total_size) {
 	if (copies.empty()) {
 		return;
 	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::BufferUploadBytes, total_size);
+
+	// Fast path on Unified Memory (Apple Silicon macOS & iOS): write directly into
+	// host-mapped shared buffers that are not in-flight on the GPU, avoiding staging copies,
+	// EndRendering() render-pass breaks, vkCmdCopyBuffer, and full pipeline barriers.
+	if (m_graphics.has_unified_memory) {
+		bool all_direct = true;
+		bool any_direct = false;
+		for (const auto& upload: uploads) {
+			if (CanDirectUmaUpload(*upload.buffer)) {
+				any_direct = true;
+			} else {
+				all_direct = false;
+			}
+		}
+		if (all_direct) {
+			size_t first = 0;
+			for (const auto& upload: uploads) {
+				auto* dst = upload.buffer->Mapped().data();
+				for (const auto& copy: copies.subspan(first, upload.end - first)) {
+					const auto address = upload.buffer->CpuAddress() + copy.dstOffset;
+					if (!LibKernel::Memory::CopySparseMemory(address, dst + copy.dstOffset,
+					                                         copy.size)) {
+						EXIT("BufferCache: failed to read sparse guest buffer memory\n");
+					}
+					upload.buffer->Flush(copy.dstOffset, copy.size);
+				}
+				first = upload.end;
+			}
+			return;
+		}
+		if (any_direct) {
+			std::vector<BufferUpload>   staged_uploads;
+			std::vector<vk::BufferCopy> staged_copies;
+			uint64_t                    staged_total = 0;
+			size_t                      first        = 0;
+			for (const auto& upload: uploads) {
+				const auto range = copies.subspan(first, upload.end - first);
+				if (CanDirectUmaUpload(*upload.buffer)) {
+					auto* dst = upload.buffer->Mapped().data();
+					for (const auto& copy: range) {
+						const auto address = upload.buffer->CpuAddress() + copy.dstOffset;
+						if (!LibKernel::Memory::CopySparseMemory(address, dst + copy.dstOffset,
+						                                         copy.size)) {
+							EXIT("BufferCache: failed to read sparse guest buffer memory\n");
+						}
+						upload.buffer->Flush(copy.dstOffset, copy.size);
+					}
+				} else {
+					for (auto copy: range) {
+						copy.srcOffset = staged_total;
+						staged_copies.push_back(copy);
+						staged_total += copy.size;
+					}
+					staged_uploads.push_back({upload.buffer, staged_copies.size()});
+				}
+				first = upload.end;
+			}
+			if (staged_copies.empty()) {
+				return;
+			}
+			const auto source = UploadMemory(
+			    m_graphics, m_scheduler, m_staging_buffer, staged_total, 4,
+			    vk::BufferUsageFlagBits::eTransferSrc, [&](uint8_t* mapped, uint64_t base_offset) {
+				    size_t s_first = 0;
+				    for (const auto& upload: staged_uploads) {
+					    for (auto& copy: std::span(staged_copies).subspan(s_first, upload.end - s_first)) {
+						    const auto address = upload.buffer->CpuAddress() + copy.dstOffset;
+						    if (!LibKernel::Memory::CopySparseMemory(address, mapped + copy.srcOffset,
+						                                             copy.size)) {
+							    EXIT("BufferCache: failed to read sparse guest buffer memory\n");
+						    }
+						    copy.srcOffset += base_offset;
+					    }
+					    s_first = upload.end;
+				    }
+			    });
+			auto& command = m_scheduler.Current();
+			command.EndRendering();
+			const auto native = command.Handle();
+			const vk::PipelineStageFlags buffer_stages =
+			    vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexInput |
+			    vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader |
+			    vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer |
+			    (m_graphics.mesh_shader_enabled ? vk::PipelineStageFlagBits::eMeshShaderEXT
+			                                    : vk::PipelineStageFlags {});
+			const vk::MemoryBarrier before {
+			    .srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite |
+			                     vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite,
+			    .dstAccessMask = vk::AccessFlagBits::eTransferWrite};
+			native.pipelineBarrier(buffer_stages, vk::PipelineStageFlagBits::eTransfer, {}, 1,
+			                       &before, 0, nullptr, 0, nullptr);
+			size_t s_first = 0;
+			for (const auto& upload: staged_uploads) {
+				native.copyBuffer(source.first->Handle(), upload.buffer->Handle(),
+				                  static_cast<uint32_t>(upload.end - s_first),
+				                  staged_copies.data() + s_first);
+				s_first = upload.end;
+			}
+			const vk::MemoryBarrier after {.srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+			                               .dstAccessMask = vk::AccessFlagBits::eMemoryRead |
+			                                                vk::AccessFlagBits::eMemoryWrite};
+			native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, buffer_stages, {}, 1,
+			                       &after, 0, nullptr, 0, nullptr);
+			return;
+		}
+	}
 
 	const auto source = UploadMemory(
 	    m_graphics, m_scheduler, m_staging_buffer, total_size, 4,
@@ -610,8 +736,10 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	auto& buffer = m_slot_buffers[id];
 	TouchBuffer(buffer);
 	(void)SynchronizeBuffer(buffer, vaddr, size, is_written, is_texel_buffer);
+	const auto tick          = m_scheduler.CurrentTick();
+	buffer.last_gpu_use_tick = tick;
 	if (is_written) {
-		buffer.last_gpu_write_tick = m_scheduler.CurrentTick();
+		buffer.last_gpu_write_tick = tick;
 		m_gpu_modified_ranges.Add(vaddr, size);
 		ForgetColorMetadataChecks(vaddr, size);
 	}
@@ -625,6 +753,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 		if (buffer.IsInBounds(vaddr, size)) {
 			TouchBuffer(buffer);
 			(void)SynchronizeBuffer(buffer, vaddr, size, false, false);
+			buffer.last_gpu_use_tick = m_scheduler.CurrentTick();
 			return {&buffer, buffer.Offset(vaddr)};
 		}
 	}
@@ -889,7 +1018,8 @@ void BufferCache::MarkDmaAccess(const RangeSet& pages) {
 				entries.push_back(0);
 				continue;
 			}
-			const auto& buffer = m_slot_buffers[*owner];
+			auto& buffer        = m_slot_buffers[*owner];
+			buffer.bda_accessed = true;
 			entries.push_back(buffer.BufferDeviceAddress() + buffer.Offset(address) + BDA_ACCESSED);
 		}
 		if (!unbacked.Contains(begin, end - begin)) {
