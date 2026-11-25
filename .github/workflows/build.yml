@@ -396,6 +396,8 @@ jobs:
 
       - name: Cache Gradle packages
         uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: false
 
       - name: Install build tools
         shell: bash
