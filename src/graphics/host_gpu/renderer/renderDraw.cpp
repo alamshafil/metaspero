@@ -489,10 +489,18 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		image.binding.attachment_layout = layout;
 		image.binding.attachment_access =
 		    vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite;
-		image.Transit(layout, image.binding.attachment_access,
-		              ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
-		                                     view.layer_count},
-		              buffer.Handle());
+		const auto transit_access =
+		    image.binding.is_bound
+		        ? (image.binding.attachment_access | vk::AccessFlagBits2::eShaderRead |
+		           (image.binding.shader_write ? vk::AccessFlagBits2::eShaderWrite
+		                                       : vk::AccessFlags2 {}))
+		        : image.binding.attachment_access;
+		const std::optional<ImageSubresourceRange> transit_range =
+		    image.binding.is_bound
+		        ? std::nullopt
+		        : std::optional<ImageSubresourceRange> {
+		              {view.base_level, view.level_count, view.base_layer, view.layer_count}};
+		image.Transit(layout, transit_access, transit_range, buffer.Handle());
 		const uint32_t backing_w = std::max(1u, image.backing.extent.width >> view.base_level);
 		const uint32_t backing_h = std::max(1u, image.backing.extent.height >> view.base_level);
 		state.width             = std::min(state.width, backing_w);
@@ -558,11 +566,19 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		                    vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
 		image.binding.attachment_layout = layout;
 		image.binding.attachment_access = access;
-		const auto& view                = depth.desc.view_info;
-		image.Transit(layout, access,
-		              ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
-		                                     view.layer_count},
-		              buffer.Handle());
+		const auto transit_access =
+		    image.binding.is_bound
+		        ? (access | vk::AccessFlagBits2::eShaderRead |
+		           (image.binding.shader_write ? vk::AccessFlagBits2::eShaderWrite
+		                                       : vk::AccessFlags2 {}))
+		        : access;
+		const auto&                                view          = depth.desc.view_info;
+		const std::optional<ImageSubresourceRange> transit_range =
+		    image.binding.is_bound
+		        ? std::nullopt
+		        : std::optional<ImageSubresourceRange> {
+		              {view.base_level, view.level_count, view.base_layer, view.layer_count}};
+		image.Transit(layout, transit_access, transit_range, buffer.Handle());
 		const uint32_t depth_w = std::max(1u, image.backing.extent.width >> view.base_level);
 		const uint32_t depth_h = std::max(1u, image.backing.extent.height >> view.base_level);
 		state.width            = std::min(state.width, depth_w);
