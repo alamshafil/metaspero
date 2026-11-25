@@ -140,6 +140,33 @@ bool IsComplementPair(const Inst& inst, ValueOpcode negation) {
 	return false;
 }
 
+bool IsSelectOpcode(ValueOpcode opcode) noexcept {
+	return opcode == ValueOpcode::SelectU1 || opcode == ValueOpcode::SelectU32 ||
+	       opcode == ValueOpcode::SelectF32 || opcode == ValueOpcode::SelectF64;
+}
+
+bool ConditionImplies(Value stronger, Value weaker, int depth = 4) {
+	stronger = stronger.Resolve();
+	weaker   = weaker.Resolve();
+	if (stronger == weaker) return true;
+	if (depth <= 0) return false;
+	const auto* inst = stronger.TryInstruction();
+	if (inst == nullptr || inst->GetOpcode() != ValueOpcode::LogicalAnd) return false;
+	return ConditionImplies(Arg(*inst, 0), weaker, depth - 1) ||
+	       ConditionImplies(Arg(*inst, 1), weaker, depth - 1);
+}
+
+bool IsPureLaneLocal(ValueOpcode opcode) noexcept {
+	if (opcode == ValueOpcode::SelectU32) return true;
+	const auto raw = static_cast<uint16_t>(opcode);
+	if (raw < static_cast<uint16_t>(ValueOpcode::BitCastU16F16) ||
+	    raw > static_cast<uint16_t>(ValueOpcode::FPFract64)) {
+		return false;
+	}
+	return opcode != ValueOpcode::DppMoveU32 && opcode != ValueOpcode::DppUpdateU32 &&
+	       opcode != ValueOpcode::WqmU64 && opcode != ValueOpcode::UDiv32;
+}
+
 bool FoldSelect(Inst& inst) {
 	const auto condition   = Arg(inst, 0);
 	const auto true_value  = Arg(inst, 1);
@@ -150,6 +177,18 @@ bool FoldSelect(Inst& inst) {
 	}
 	if (true_value == false_value) {
 		Replace(inst, true_value);
+		return true;
+	}
+	if (const auto* inner_true = true_value.TryInstruction();
+	    inner_true != nullptr && inner_true->GetOpcode() == inst.GetOpcode() &&
+	    ConditionImplies(condition, Arg(*inner_true, 0))) {
+		inst.SetArg(1, Arg(*inner_true, 1));
+		return true;
+	}
+	if (const auto* inner_false = false_value.TryInstruction();
+	    inner_false != nullptr && inner_false->GetOpcode() == inst.GetOpcode() &&
+	    Arg(*inner_false, 0) == condition) {
+		inst.SetArg(2, Arg(*inner_false, 2));
 		return true;
 	}
 	return false;
@@ -1102,6 +1141,66 @@ void ConstantPropagationPass(const BlockList& blocks, uint32_t wave_size) {
 		}
 		drain();
 	} while (normalized);
+	// Unwrap EXEC-predicated VGPR selects whose false lane is never observed: every consumer
+	// stays inside the same block through pure lane-local ALU ops and feeds only the true branch
+	// of a select guarded by the same (or stronger) predicate. This kills dead old-VGPR live
+	// ranges and lets BitCast pairs fold away.
+	std::vector<const Inst*> check_queue;
+	std::vector<const Inst*> check_visited;
+	bool                     unwrapped = false;
+	for (auto* block: blocks) {
+		auto& instructions = block->Instructions();
+		for (auto it = instructions.rbegin(); it != instructions.rend(); ++it) {
+			auto& inst = *it;
+			if (!IsSelectOpcode(inst.GetOpcode()) || inst.Uses().empty()) continue;
+			const auto condition = Arg(inst, 0);
+			if (IsImmediate(condition, Type::U1)) continue;
+			check_queue.clear();
+			check_visited.clear();
+			check_queue.push_back(&inst);
+			check_visited.push_back(&inst);
+			bool safe = true;
+			for (size_t qi = 0; qi < check_queue.size() && safe; ++qi) {
+				const auto* node = check_queue[qi];
+				for (const auto& use: node->Uses()) {
+					const auto* user = use.user;
+					const auto  op   = user->GetOpcode();
+					if (op == ValueOpcode::Identity ||
+					    (!user->HasUses() && !user->MayHaveSideEffects())) {
+						continue;
+					}
+					if (user->Parent() != block) {
+						safe = false;
+						break;
+					}
+					if (IsSelectOpcode(op) && use.operand == 1u &&
+					    ConditionImplies(Arg(*user, 0), condition)) {
+						continue;
+					}
+					if (!IsPureLaneLocal(op)) {
+						safe = false;
+						break;
+					}
+					if (std::ranges::find(check_visited, user) == check_visited.end()) {
+						if (check_visited.size() >= 64u) {
+							safe = false;
+							break;
+						}
+						check_visited.push_back(user);
+						check_queue.push_back(user);
+					}
+				}
+			}
+			if (safe) {
+				worklist.QueueUsers(inst.Uses());
+				Replace(inst, Arg(inst, 1));
+				unwrapped = true;
+			}
+		}
+	}
+	if (unwrapped) {
+		drain();
+	}
 	// Repeated register reads share a bitcast only within the same SSA block.
 	std::unordered_map<const Inst*, Inst*> bitcasts;
 	for (auto* block: blocks) {
