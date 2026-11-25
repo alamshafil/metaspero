@@ -77,6 +77,7 @@ target_compile_definitions(Metaspero PRIVATE
 set(COMMON_FRAMEWORKS
     "-framework SwiftUI"
     "-framework Metal"
+    "-framework MetalFX"
     "-framework MetalKit"
     "-framework GameController"
     "-framework Foundation"

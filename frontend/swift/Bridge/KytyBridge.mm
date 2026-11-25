@@ -699,6 +699,7 @@ static void KytyFatalExitCallback(int status, const char *message) {
 
             options.config.controller_vibration_intensity = getBoolSetting(@"enableHaptics", true) ? 100u : 0u;
             options.config.relaxed_shader_float = getBoolSetting(@"relaxedShaderFloat", true);
+            options.config.metalfx_spatial_enabled = getBoolSetting(@"metalFxSpatial", false);
             options.config.shader_cache_enabled = getBoolSetting(@"shaderCacheEnabled", true);
             NSInteger renderScale = getIntSetting(@"renderScalePercent", 100);
             if (renderScale < 20 || renderScale > 100) {

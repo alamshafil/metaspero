@@ -44,6 +44,10 @@
 
 // IWYU pragma: no_include <intrin.h>
 
+#if defined(__APPLE__)
+#include <vulkan/vulkan_metal.h>
+#endif
+
 namespace Libs::Graphics {
 
 struct VulkanExtensions {
@@ -489,6 +493,9 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	if (!add(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME)) {
 		supported.unlink<vk::PhysicalDeviceConditionalRenderingFeaturesEXT>();
 	}
+#if defined(__APPLE__)
+	graphics.metal_objects_ext_enabled = add(VK_EXT_METAL_OBJECTS_EXTENSION_NAME);
+#endif
 	if (!add(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME)) {
 		supported.unlink<vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR>();
 	}

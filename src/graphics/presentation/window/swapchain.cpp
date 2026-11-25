@@ -17,6 +17,7 @@
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
+#include "graphics/presentation/window/metalFxScaler.h"
 #include "graphics/presentation/window/windowInternal.h"
 
 #include <algorithm>
@@ -31,6 +32,7 @@
 #include <TargetConditionals.h>
 #include <dispatch/dispatch.h>
 #include <pthread.h>
+#include <vulkan/vulkan_metal.h>
 #endif
 
 // IWYU pragma: no_include <intrin.h>
@@ -166,6 +168,14 @@ void Presenter::Frame::Configure(GraphicContext& graphics, vk::Extent2D extent, 
 
 	vk::ImageCreateInfo create {};
 	create.sType         = vk::StructureType::eImageCreateInfo;
+#if defined(__APPLE__)
+	VkExportMetalObjectCreateInfoEXT export_metal {};
+	if (graphics.metal_objects_ext_enabled) {
+		export_metal.sType            = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECT_CREATE_INFO_EXT;
+		export_metal.exportObjectType = VK_EXPORT_METAL_OBJECT_TYPE_METAL_TEXTURE_BIT_EXT;
+		create.pNext                  = &export_metal;
+	}
+#endif
 	create.imageType     = vk::ImageType::e2D;
 	create.extent        = {extent.width, extent.height, 1};
 	create.mipLevels     = 1;
@@ -245,7 +255,8 @@ class Swapchain final {
 public:
 	enum class Status : uint8_t { Success, Recreate, SurfaceLost };
 
-	explicit Swapchain(WindowContext& window): m_window(window) {}
+	explicit Swapchain(WindowContext& window)
+	    : m_window(window), m_metalfx(window.graphic_ctx) {}
 	~Swapchain();
 	KYTY_CLASS_NO_COPY(Swapchain);
 
@@ -254,6 +265,7 @@ public:
 	[[nodiscard]] bool   NeedsResize() const;
 	[[nodiscard]] Status AcquireNextImage(CommandScheduler& scheduler);
 	[[nodiscard]] bool   PrepareSystemOverlay();
+	void                 PrepareUpscale(Presenter::Frame* source);
 	void     RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
 	                               const Presenter::Layer& overlay, bool draw_system_overlay);
 	uint64_t Submit(CommandScheduler& scheduler);
@@ -297,6 +309,8 @@ private:
 	vk::Sampler                    m_overlay_sampler     = nullptr;
 	uint32_t                       m_image_index         = 0;
 	uint32_t                       m_frame_index         = 0;
+	MetalFxSpatialScaler           m_metalfx;
+	VulkanImage*                   m_upscaled_source     = nullptr;
 };
 
 struct Presenter::Impl {
@@ -798,6 +812,24 @@ void Swapchain::DrawLayer(vk::CommandBuffer command, const Presenter::Layer& lay
 	command.endRendering();
 }
 
+void Swapchain::PrepareUpscale(Presenter::Frame* source) {
+	m_upscaled_source = nullptr;
+	if (!Config::MetalFxSpatialEnabled() || source == nullptr || source->blank ||
+	    !m_metalfx.IsAvailable()) {
+		return;
+	}
+	const bool convert_source = source->hdr && !m_hdr_active;
+	if (convert_source) {
+		return;
+	}
+	const auto game_rect = !Config::StretchEnabled()
+	                           ? FitAspect(source->image.extent, m_extent)
+	                           : vk::Rect2D {{0, 0}, m_extent};
+	const vk::Extent2D src_extent {source->image.extent.width, source->image.extent.height};
+	std::ignore = m_metalfx.Upscale(source->image.image, src_extent, source->image.format,
+	                                source->hdr, game_rect.extent, m_upscaled_source);
+}
+
 void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
                                       const Presenter::Layer& overlay, bool draw_system_overlay) {
 	auto       vk_command      = command.Handle();
@@ -805,7 +837,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	const bool blit_source     = source != nullptr && !convert_source;
 	const bool draw_overlay    = overlay.frame != nullptr;
 	const bool draw_attachment = convert_source || draw_overlay || draw_system_overlay;
-	if (blit_source) {
+	if (blit_source && m_upscaled_source == nullptr) {
 		source->Transit(vk_command, vk::ImageLayout::eTransferSrcOptimal,
 		                vk::AccessFlagBits2::eTransferRead);
 	}
@@ -855,13 +887,14 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		}
 	}
 	if (blit_source) {
+		const auto& blit_src = m_upscaled_source != nullptr ? *m_upscaled_source : source->image;
 		vk::ImageBlit region {};
 		region.srcSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
 		region.srcSubresource.mipLevel       = 0;
 		region.srcSubresource.baseArrayLayer = 0;
 		region.srcSubresource.layerCount     = 1;
-		region.srcOffsets[1].x               = static_cast<int>(source->image.extent.width);
-		region.srcOffsets[1].y               = static_cast<int>(source->image.extent.height);
+		region.srcOffsets[1].x               = static_cast<int>(blit_src.extent.width);
+		region.srcOffsets[1].y               = static_cast<int>(blit_src.extent.height);
 		region.srcOffsets[1].z               = 1;
 		region.dstSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
 		region.dstSubresource.mipLevel       = 0;
@@ -872,7 +905,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		region.dstOffsets[1].x = game_rect.offset.x + static_cast<int>(game_rect.extent.width);
 		region.dstOffsets[1].y = game_rect.offset.y + static_cast<int>(game_rect.extent.height);
 		region.dstOffsets[1].z               = 1;
-		vk_command.blitImage(source->image.image, vk::ImageLayout::eTransferSrcOptimal,
+		vk_command.blitImage(blit_src.image, vk::ImageLayout::eTransferSrcOptimal,
 		                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1,
 		                     &region, vk::Filter::eLinear);
 	}
@@ -1142,6 +1175,7 @@ void Presenter::Impl::Present() {
 		}
 		{
 			Common::LockGuard render_lock(renderer.GetMutex());
+			swapchain.PrepareUpscale(layers[0].frame);
 			auto&             command = present_scheduler.BeginCommand();
 			const bool        draw_system_overlay = [&] {
                 ScopedTimer overlay_time(Counter::OverlayNs);

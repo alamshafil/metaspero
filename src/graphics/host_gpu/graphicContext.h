@@ -55,6 +55,7 @@ struct GraphicContext {
 	bool                               depth_clamp_enabled                   = false;
 	bool                               is_moltenvk                           = false;
 	bool                               has_unified_memory                    = false;
+	bool                               metal_objects_ext_enabled             = false;
 	vk::DriverId                       driver_id                             = static_cast<vk::DriverId>(0);
 	bool                               mesh_shader_enabled                   = false;
 	bool                               task_shader_enabled                   = false;

@@ -22,6 +22,7 @@ enum SettingsKey {
     static let vblankFrequency = "vblankFrequency"
     static let moltenVkVariant = "moltenVkVariant"
     static let relaxedShaderFloat = "relaxedShaderFloat"
+    static let metalFxSpatial = "metalFxSpatial"
     static let perfOverlayEnabled = "perfOverlayEnabled"
     static let enableMetalHud = "enableMetalHud"
     static let skipMeshShaders = "skipMeshShaders"

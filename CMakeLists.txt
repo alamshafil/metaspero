@@ -302,6 +302,11 @@ if(KYTY_ENABLE_FEX_GUEST_CPU)
 	list(APPEND kyty_emulator_src ${kyty_fex_src})
 endif()
 
+if(APPLE)
+	enable_language(OBJCXX)
+	list(APPEND kyty_emulator_src "${KYTY_SOURCE_DIR}/graphics/presentation/window/metalFxScaler.mm")
+endif()
+
 find_program(KYTY_GLSLANG_VALIDATOR NAMES glslangValidator glslang REQUIRED)
 set(gpu_tiler_shader_dir "${KYTY_SOURCE_DIR}/graphics/host_gpu/shaders")
 set(gpu_tiler_generated_dir "${PROJECT_BINARY_DIR}/gpu_tiler_shaders")
@@ -1082,6 +1087,12 @@ if(BUILD_TESTING AND APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
 endif()
 
 unset(CMAKE_FOLDER)
+
+if(APPLE)
+	set_source_files_properties("${KYTY_SOURCE_DIR}/graphics/presentation/window/metalFxScaler.mm"
+		PROPERTIES COMPILE_FLAGS "-fobjc-arc -Wno-pragma-pack -Wno-deprecated-declarations")
+	list(APPEND kyty_emulator_link_libraries "-framework Metal" "-framework MetalFX")
+endif()
 
 if(IOS OR KYTY_BUILD_SWIFTUI_APP)
 	# The emulator core is a library target so the SwiftUI app (frontend/swift) links it with all of its

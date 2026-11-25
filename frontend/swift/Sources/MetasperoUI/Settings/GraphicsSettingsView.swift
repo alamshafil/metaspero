@@ -15,6 +15,9 @@ struct GraphicsSettingsView: View {
 
     // Experimental
     @AppStorage(SettingsKey.renderScalePercent) private var renderScalePercent = SettingsDefault.renderScalePercent
+    #if !SKIP
+    @AppStorage(SettingsKey.metalFxSpatial) private var metalFxSpatial = false
+    #endif
     @AppStorage(SettingsKey.relaxedShaderFloat) private var relaxedShaderFloat = true
     @AppStorage(SettingsKey.skipMeshShaders) private var skipMeshShaders = false
     @AppStorage(SettingsKey.enableSrtArm64Jit) private var enableSrtArm64Jit = false
@@ -94,6 +97,10 @@ struct GraphicsSettingsView: View {
                     Text("25% (540p)").tag(25)
                     Text("22% (480p)").tag(22)
                 }
+
+                #if !SKIP
+                Toggle("MetalFX Spatial Upscaling", isOn: $metalFxSpatial)
+                #endif
 
                 Toggle("Skip Mesh Shaders", isOn: $skipMeshShaders)
                 Toggle("ARM64 SRT Walker JIT", isOn: $enableSrtArm64Jit)

@@ -251,6 +251,10 @@ bool RelaxedShaderFloatEnabled() {
 	return g_config->relaxed_shader_float;
 }
 
+bool MetalFxSpatialEnabled() {
+	return g_config != nullptr && g_config->metalfx_spatial_enabled;
+}
+
 uint32_t GetResolutionScale() {
 	if (g_config != nullptr && g_config->resolution_scale >= 20u && g_config->resolution_scale < 100u) {
 		return g_config->resolution_scale;
