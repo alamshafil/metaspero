@@ -23,6 +23,7 @@ import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -32,6 +33,7 @@ import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.view.WindowCompat
+import androidx.core.view.doOnLayout
 import java.io.File
 import java.util.Locale
 
@@ -50,6 +52,7 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     private var enableTouchControls: Boolean = false
     private var isStopping: Boolean = false
     private var showStatsOverlay: Boolean = false
+    private var lastLogLines: List<String> = emptyList()
 
     private val density: Float get() = resources.displayMetrics.density
     private fun dp(v: Float): Int = (v * density).toInt()
@@ -428,7 +431,8 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         )
         header.addView(overlayButton("Clear", 13f) {
             KytyLogs.clear()
-            refreshLogOverlay()
+            lastLogLines = emptyList()
+            refreshLogOverlay(forceScrollToBottom = true)
         })
         header.addView(overlayButton("✕", 18f) { hideLogOverlay() })
 
@@ -444,12 +448,12 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
             typeface = Typeface.MONOSPACE
             textSize = 10f
             setTextColor(Color.rgb(235, 235, 245))
-            setTextIsSelectable(true)
             setPadding(0, dp(8f), 0, dp(8f))
         }
 
         logScrollView = ScrollView(this).apply {
             isFillViewport = true
+            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
             addView(
                 logTextView,
                 FrameLayout.LayoutParams(
@@ -515,9 +519,9 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
     private fun showLogOverlay() {
         logOverlay.visibility = View.VISIBLE
         logOverlay.bringToFront()
-        refreshLogOverlay()
+        refreshLogOverlay(forceScrollToBottom = true)
         statsHandler.removeCallbacks(logRefreshRunnable)
-        statsHandler.post(logRefreshRunnable)
+        statsHandler.postDelayed(logRefreshRunnable, 1000)
     }
 
     private fun hideLogOverlay() {
@@ -528,18 +532,41 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         logOverlay.visibility = View.GONE
     }
 
-    private fun refreshLogOverlay() {
+    private fun isLogScrollNearBottom(): Boolean {
+        val maxScroll = (logTextView.bottom - logScrollView.height + logScrollView.paddingBottom)
+            .coerceAtLeast(0)
+        return maxScroll - logScrollView.scrollY <= dp(32f)
+    }
+
+    private fun scrollLogsToBottom() {
+        logTextView.doOnLayout {
+            val targetY = (logTextView.bottom - logScrollView.height + logScrollView.paddingBottom)
+                .coerceAtLeast(0)
+            logScrollView.scrollTo(0, targetY)
+        }
+    }
+
+    private fun refreshLogOverlay(forceScrollToBottom: Boolean = false) {
         if (!::logTextView.isInitialized) {
             return
         }
 
         val lines = KytyLogs.recentLogLines()
-        val wasAtBottom = !logScrollView.canScrollVertically(1)
-
         if (lines.isEmpty()) {
+            lastLogLines = emptyList()
             logTextView.text = "No log entries available."
             return
         }
+
+        if (lines == lastLogLines && logTextView.text.isNotEmpty()) {
+            if (forceScrollToBottom) {
+                scrollLogsToBottom()
+            }
+            return
+        }
+
+        val shouldScrollToBottom = forceScrollToBottom || isLogScrollNearBottom()
+        val prevScrollY = logScrollView.scrollY
 
         val builder = SpannableStringBuilder()
         for (line in lines) {
@@ -552,10 +579,15 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
                 Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
             )
         }
+        lastLogLines = lines
         logTextView.text = builder
 
-        if (wasAtBottom) {
-            logScrollView.post { logScrollView.fullScroll(View.FOCUS_DOWN) }
+        if (shouldScrollToBottom) {
+            scrollLogsToBottom()
+        } else {
+            logTextView.doOnLayout {
+                logScrollView.scrollTo(0, prevScrollY)
+            }
         }
     }
 
