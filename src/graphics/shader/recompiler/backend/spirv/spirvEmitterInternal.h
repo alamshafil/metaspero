@@ -213,7 +213,9 @@ uint32_t EmitNative(EmitterState& state, Args... args) {
 	state.builder.AddFunction(opcode, TypeId(state, type), result, args...);
 	if constexpr (type == IR::Type::F64 &&
 	              (opcode == spv::OpFMul || opcode == spv::OpFDiv || opcode == spv::OpExtInst)) {
-		state.builder.AddAnnotation(spv::OpDecorate, result, spv::DecorationNoContraction);
+		if (!state.profile.relaxed_float) {
+			state.builder.AddAnnotation(spv::OpDecorate, result, spv::DecorationNoContraction);
+		}
 	}
 	return result;
 }

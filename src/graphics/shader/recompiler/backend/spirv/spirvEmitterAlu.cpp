@@ -69,6 +69,9 @@ uint32_t EmitF32ToU32(EmitterState& state, uint32_t src, bool signed_value) {
 	                           ? Unary(state, spv::OpBitcast, TypeU32(state),
 	                                   Unary(state, spv::OpConvertFToS, TypeI32(state), clamped))
 	                           : Unary(state, spv::OpConvertFToU, TypeU32(state), clamped);
+	if (state.profile.relaxed_float) {
+		return converted;
+	}
 	const auto above     = Binary(state, spv::OpFOrdGreaterThanEqual, TypeBool(state), src,
 	                              ConstantF32(state, signed_value ? 0x4f000000u : 0x4f800000u));
 	const auto high =
@@ -168,6 +171,9 @@ uint32_t EmitConvertU32F32(EmitterState& state, uint32_t arg0) {
 
 uint32_t EmitConvertF32F64(EmitterState& state, uint32_t arg0) {
 	const auto converted = Unary(state, spv::OpFConvert, TypeF32(state), arg0);
+	if (state.profile.relaxed_float) {
+		return converted;
+	}
 	const auto source    = EmitNative<spv::OpCompositeExtract, IR::Type::U32>(
 	    state, Unary(state, spv::OpBitcast, TypeU32Vector(state, 2), arg0), 1u);
 	const auto exponent = EmitAndConstant(state, source, 0x7ff00000u);
@@ -206,6 +212,12 @@ uint32_t EmitCompositeExtractU32x2(EmitterState& state, uint32_t arg0, IR::Value
 }
 
 uint32_t EmitPackFloat2x16Rtz(EmitterState& state, uint32_t arg0, uint32_t arg1) {
+	if (state.profile.relaxed_float) {
+		const auto pair = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeConstruct, TypeF32Vector(state, 2), pair, arg0,
+		                          arg1);
+		return EmitPackHalf2x16(state, pair);
+	}
 	return EmitNative<spv::OpBitFieldInsert, IR::Type::U32>(
 	    state, EmitF32BitsToF16RtzBits(state, EmitBitcastF32ToU32(state, arg0)),
 	    EmitF32BitsToF16RtzBits(state, EmitBitcastF32ToU32(state, arg1)),
