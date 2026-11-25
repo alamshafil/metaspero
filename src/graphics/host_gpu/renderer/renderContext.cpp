@@ -44,7 +44,7 @@ void RenderContext::ShutdownGpu() {
 		if (m_command_scheduler.Active()) {
 			m_command_scheduler.Finish();
 		}
-		m_command_scheduler.DrainPriorityOperations();
+		m_command_scheduler.Shutdown();
 		m_video_out = nullptr;
 	}
 }

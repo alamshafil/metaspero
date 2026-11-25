@@ -120,6 +120,15 @@ void CommandScheduler::Shutdown() {
 	}
 	{
 		std::lock_guard lock(m_operation_mutex);
+		if (Common::HostException::IsEmulationShuttingDown()) {
+			while (!m_pending_operations.empty()) {
+				m_pending_operations.pop();
+			}
+			while (!m_priority_operations.empty()) {
+				m_priority_operations.pop();
+			}
+			m_priority_active_tick = 0;
+		}
 		EXIT_IF(!m_pending_operations.empty() || !m_priority_operations.empty() ||
 		        m_priority_active_tick != 0);
 		m_operation_state = OperationState::Closed;
@@ -250,7 +259,7 @@ void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
 			m_priority_active_tick = operation.tick;
 		}
 		m_master.Wait(operation.tick);
-		if (!stop.stop_requested()) {
+		if (!stop.stop_requested() && !Common::HostException::IsEmulationShuttingDown()) {
 			RunOperation(std::move(operation.callback));
 		}
 		{

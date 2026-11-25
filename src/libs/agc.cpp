@@ -94,9 +94,9 @@ void Shutdown() {
 		return;
 	}
 	ShaderShutdown();
-	VideoOut::VideoOutShutdown();
 	Gen5Driver::ReleaseDmem();
 	g_renderer->ShutdownGpu();
+	VideoOut::VideoOutShutdown();
 	WindowShutdown();
 	g_renderer = nullptr;
 }

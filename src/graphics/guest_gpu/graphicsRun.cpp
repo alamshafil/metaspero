@@ -1132,16 +1132,22 @@ void CommandProcessor::Flip(int handle, int index, int flip_mode, int64_t flip_a
 
 	auto& command = CurrentBuffer();
 	auto  request = Sync::PrepareVideoOutFlip(command, handle, index, flip_mode, flip_arg);
-	GetScheduler().DeferPriorityOperation(
-	    [&renderer = m_renderer, request] { renderer.GetVideoOut().CompleteFlip(request); });
+	GetScheduler().DeferPriorityOperation([&renderer = m_renderer, request] {
+		if (!Common::HostException::IsEmulationShuttingDown()) {
+			renderer.GetVideoOut().CompleteFlip(request);
+		}
+	});
 	GetScheduler().Flush();
 }
 
 void CommandProcessor::PrepareCpuFlip(uint64_t request_id) {
 	auto& command = CurrentBuffer();
 	m_renderer.GetVideoOut().PrepareFlip(request_id, command);
-	GetScheduler().DeferPriorityOperation(
-	    [this, request_id] { m_renderer.GetVideoOut().CompleteFlip(request_id); });
+	GetScheduler().DeferPriorityOperation([this, request_id] {
+		if (!Common::HostException::IsEmulationShuttingDown()) {
+			m_renderer.GetVideoOut().CompleteFlip(request_id);
+		}
+	});
 	GetScheduler().Flush();
 }
 
