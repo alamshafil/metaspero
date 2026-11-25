@@ -157,7 +157,7 @@ bool ConditionImplies(Value stronger, Value weaker, int depth = 4) {
 }
 
 bool IsPureLaneLocal(ValueOpcode opcode) noexcept {
-	if (opcode == ValueOpcode::SelectU32) return true;
+	if (opcode == ValueOpcode::SelectU32 || opcode == ValueOpcode::MakeImageAddress) return true;
 	const auto raw = static_cast<uint16_t>(opcode);
 	if (raw < static_cast<uint16_t>(ValueOpcode::BitCastU16F16) ||
 	    raw > static_cast<uint16_t>(ValueOpcode::FPFract64)) {
@@ -165,6 +165,27 @@ bool IsPureLaneLocal(ValueOpcode opcode) noexcept {
 	}
 	return opcode != ValueOpcode::DppMoveU32 && opcode != ValueOpcode::DppUpdateU32 &&
 	       opcode != ValueOpcode::WqmU64 && opcode != ValueOpcode::UDiv32;
+}
+
+bool HasExecPredicateLastArg(ValueOpcode opcode) noexcept {
+	if (opcode == ValueOpcode::SetAttribute || opcode == ValueOpcode::SetTessellationAttribute ||
+	    opcode == ValueOpcode::ImageRead || opcode == ValueOpcode::ImageWrite) {
+		return true;
+	}
+	const auto raw = static_cast<uint16_t>(opcode);
+	if (raw >= static_cast<uint16_t>(ValueOpcode::LoadAddressU8) &&
+	    raw <= static_cast<uint16_t>(ValueOpcode::BufferAtomicFMax32)) {
+		return true;
+	}
+	if (raw >= static_cast<uint16_t>(ValueOpcode::LoadSharedU8) &&
+	    raw <= static_cast<uint16_t>(ValueOpcode::SharedAtomicMaskedOr32)) {
+		return true;
+	}
+	if (raw >= static_cast<uint16_t>(ValueOpcode::ImageAtomicCompareSwap32) &&
+	    raw <= static_cast<uint16_t>(ValueOpcode::ImageAtomicFMax32)) {
+		return true;
+	}
+	return false;
 }
 
 bool FoldSelect(Inst& inst) {
@@ -1143,62 +1164,68 @@ void ConstantPropagationPass(const BlockList& blocks, uint32_t wave_size) {
 	} while (normalized);
 	// Unwrap EXEC-predicated VGPR selects whose false lane is never observed: every consumer
 	// stays inside the same block through pure lane-local ALU ops and feeds only the true branch
-	// of a select guarded by the same (or stronger) predicate. This kills dead old-VGPR live
-	// ranges and lets BitCast pairs fold away.
+	// of a select or a predicated memory/image/export op guarded by the same (or stronger)
+	// predicate. This kills dead old-VGPR live ranges and lets BitCast pairs fold away.
 	std::vector<const Inst*> check_queue;
 	std::vector<const Inst*> check_visited;
-	bool                     unwrapped = false;
-	for (auto* block: blocks) {
-		auto& instructions = block->Instructions();
-		for (auto it = instructions.rbegin(); it != instructions.rend(); ++it) {
-			auto& inst = *it;
-			if (!IsSelectOpcode(inst.GetOpcode()) || inst.Uses().empty()) continue;
-			const auto condition = Arg(inst, 0);
-			if (IsImmediate(condition, Type::U1)) continue;
-			check_queue.clear();
-			check_visited.clear();
-			check_queue.push_back(&inst);
-			check_visited.push_back(&inst);
-			bool safe = true;
-			for (size_t qi = 0; qi < check_queue.size() && safe; ++qi) {
-				const auto* node = check_queue[qi];
-				for (const auto& use: node->Uses()) {
-					const auto* user = use.user;
-					const auto  op   = user->GetOpcode();
-					if (op == ValueOpcode::Identity ||
-					    (!user->HasUses() && !user->MayHaveSideEffects())) {
-						continue;
-					}
-					if (user->Parent() != block) {
-						safe = false;
-						break;
-					}
-					if (IsSelectOpcode(op) && use.operand == 1u &&
-					    ConditionImplies(Arg(*user, 0), condition)) {
-						continue;
-					}
-					if (!IsPureLaneLocal(op)) {
-						safe = false;
-						break;
-					}
-					if (std::ranges::find(check_visited, user) == check_visited.end()) {
-						if (check_visited.size() >= 64u) {
+	for (int pass = 0; pass < 4; ++pass) {
+		bool unwrapped = false;
+		for (auto* block: blocks) {
+			auto& instructions = block->Instructions();
+			for (auto it = instructions.rbegin(); it != instructions.rend(); ++it) {
+				auto& inst = *it;
+				if (!IsSelectOpcode(inst.GetOpcode()) || inst.Uses().empty()) continue;
+				const auto condition = Arg(inst, 0);
+				if (IsImmediate(condition, Type::U1)) continue;
+				check_queue.clear();
+				check_visited.clear();
+				check_queue.push_back(&inst);
+				check_visited.push_back(&inst);
+				bool safe = true;
+				for (size_t qi = 0; qi < check_queue.size() && safe; ++qi) {
+					const auto* node = check_queue[qi];
+					for (const auto& use: node->Uses()) {
+						const auto* user = use.user;
+						const auto  op   = user->GetOpcode();
+						if (op == ValueOpcode::Identity ||
+						    (!user->HasUses() && !user->MayHaveSideEffects())) {
+							continue;
+						}
+						if (user->Parent() != block) {
 							safe = false;
 							break;
 						}
-						check_visited.push_back(user);
-						check_queue.push_back(user);
+						if (IsSelectOpcode(op) && use.operand == 1u &&
+						    ConditionImplies(Arg(*user, 0), condition)) {
+							continue;
+						}
+						if (HasExecPredicateLastArg(op) && user->NumArgs() > 0u &&
+						    use.operand + 1u < user->NumArgs() &&
+						    ConditionImplies(Arg(*user, user->NumArgs() - 1u), condition)) {
+							continue;
+						}
+						if (!IsPureLaneLocal(op)) {
+							safe = false;
+							break;
+						}
+						if (std::ranges::find(check_visited, user) == check_visited.end()) {
+							if (check_visited.size() >= 64u) {
+								safe = false;
+								break;
+							}
+							check_visited.push_back(user);
+							check_queue.push_back(user);
+						}
 					}
 				}
-			}
-			if (safe) {
-				worklist.QueueUsers(inst.Uses());
-				Replace(inst, Arg(inst, 1));
-				unwrapped = true;
+				if (safe) {
+					worklist.QueueUsers(inst.Uses());
+					Replace(inst, Arg(inst, 1));
+					unwrapped = true;
+				}
 			}
 		}
-	}
-	if (unwrapped) {
+		if (!unwrapped) break;
 		drain();
 	}
 	// Repeated register reads share a bitcast only within the same SSA block.
