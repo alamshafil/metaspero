@@ -372,7 +372,7 @@ jobs:
   android:
     name: Build Metaspero (Android ARM64)
     needs: metadata
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
 
     steps:
       - name: Checkout repository
@@ -401,9 +401,7 @@ jobs:
 
       - name: Install build tools
         shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y glslang-tools ninja-build
+        run: brew install glslang ninja
 
       - name: Build Android APK
         shell: bash
